@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Environments
+.venv/
+venv/
+
+# Large/raw data (do not track)
+Behavioural/
+EEG/
+task_eeg_preprocessed/
+
+# Generated outputs
+EEG_epo/
+figures/
+output/
