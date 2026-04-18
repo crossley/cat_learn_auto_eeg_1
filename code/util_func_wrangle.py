@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import mne
 
-os.environ["NUMBA_DISABLE_JIT"] = "1"
+# os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
 def util_wrangle_load_sessions():
@@ -16,7 +16,8 @@ def util_wrangle_load_sessions():
     """
 
     beh_dir = Path("../Behavioural")
-    epo_dir = Path("../task_eeg_preprocessed")
+    # epo_dir = Path("../task_eeg_preprocessed")
+    epo_dir = Path("../EEG_epo")
 
     beh_re = re.compile(r"^sub_(\d+)_day_(\d+)_data\.csv$")
     epo_re = re.compile(r"^P(\d+)_D([\d_]+)-epo\.fif$")

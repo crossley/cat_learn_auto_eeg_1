@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import mne
 from util_func_wrangle import util_wrangle_load_sessions
 
-os.environ["NUMBA_DISABLE_JIT"] = "1"
+# os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
 def util_erp_make_figures():

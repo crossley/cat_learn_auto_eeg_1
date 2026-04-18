@@ -4,18 +4,18 @@ from pathlib import Path
 import re
 import os
 import mne
+import numpy as np
+from joblib import Parallel, delayed
 from pyprep.prep_pipeline import PrepPipeline
 from autoreject import AutoReject
 
-os.environ["NUMBA_DISABLE_JIT"] = "1"
+# os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
-def util_epo_make_from_bdf():
-    """Create epoched FIF files from raw BDF files."""
+def process_single_subject(raw_path, epo_dir):
 
-    raw_dir = Path("../EEG")
-    epo_dir = Path("../EEG_epo")
-    epo_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = Path(raw_path)
+    epo_dir = Path(epo_dir)
 
     event_id = {
         "Stim/A": 20,
@@ -40,63 +40,90 @@ def util_epo_make_from_bdf():
     )
     biosemi64_montage = mne.channels.make_standard_montage("biosemi64")
 
-    for raw_path in sorted(raw_dir.glob("*.bdf")):
+    m = bdf_re.match(raw_path.name)
+    if m is None:
+        return None
+    subject = int(m.group(1))
+    day_token = m.group(2)
 
-        m = bdf_re.match(raw_path.name)
-        if m is None:
-            continue
+    raw = mne.io.read_raw_bdf(raw_path, preload=True, stim_channel="Status", verbose="ERROR")
+    cap_chs = [ch for ch in raw.ch_names if cap_ch_re.match(ch)]
+    if len(cap_chs) == 64:
+        raw.rename_channels(dict(zip(cap_chs, biosemi64_montage.ch_names)))
 
-        subject = int(m.group(1))
-        day_token = m.group(2)
+    channel_types = {}
+    for channel_name, channel_type in aux_types.items():
+        if channel_name in raw.ch_names:
+            channel_types[channel_name] = channel_type
+    raw.set_channel_types(channel_types, verbose="ERROR")
+    raw.set_montage(biosemi64_montage, on_missing="ignore")
 
-        raw = mne.io.read_raw_bdf(raw_path, preload=True, stim_channel="Status", verbose="ERROR")
+    raw.filter(l_freq=0.5, h_freq=40.0, verbose="ERROR")
 
-        cap_chs = [ch for ch in raw.ch_names if cap_ch_re.match(ch)]
-        if len(cap_chs) == 64:
-            raw.rename_channels(dict(zip(cap_chs, biosemi64_montage.ch_names)))
+    events = mne.find_events(raw, stim_channel="Status", shortest_event=1, verbose="ERROR")
 
-        raw.set_channel_types({k: v for k, v in aux_types.items() if k in raw.ch_names}, verbose="ERROR")
-        raw.set_montage(biosemi64_montage, on_missing="ignore")
+    # codes, counts = np.unique(events[:, 2], return_counts=True)
+    # print(f"[{raw_path.name}] event counts")
+    # for code, count in zip(codes, counts):
+    #     print(f"event {int(code)}: {int(count)}")
 
-        raw.notch_filter(freqs=[50, 100], verbose="ERROR")
-        raw.filter(l_freq=0.1, h_freq=40.0, verbose="ERROR")
+    raw, events = raw.resample(256, npad="auto", events=events, verbose="ERROR")
 
-        prep_params = {"ref_chs": "eeg", "reref_chs": "eeg", "line_freqs": [50]}
-        prep_raw = raw.copy().pick_types(eeg=True, eog=False, stim=False, exclude=[])
-        prep = PrepPipeline(
-            prep_raw,
-            prep_params=prep_params,
-            montage=prep_raw.get_montage(),
-            random_state=42,
-        )
-        prep.fit()
-        raw.info["bads"] = prep_raw.info["bads"]
-        raw.interpolate_bads(reset_bads=True, verbose="ERROR")
+    eeg_chans = [ch for ch, ch_type in zip(raw.ch_names, raw.get_channel_types()) if ch_type == "eeg"]
+    prep_params = {"ref_chs": eeg_chans, "reref_chs": eeg_chans, "line_freqs": []}
+    prep = PrepPipeline(
+        raw,
+        prep_params=prep_params,
+        montage=biosemi64_montage,
+        ransac=False,
+        random_state=42,
+    )
+    prep.fit()
+    raw.info["bads"] = prep.still_noisy_channels
 
-        events = mne.find_events(
-            raw,
-            stim_channel="Status",
-            shortest_event=1,
-            verbose="ERROR",
-        )
-        picks = mne.pick_types(raw.info, eeg=True, eog=False, stim=False, exclude="bads")
+    epochs = mne.Epochs(
+        raw,
+        events=events,
+        event_id=event_id,
+        tmin=-0.2,
+        tmax=0.8,
+        baseline=(-0.2, 0.0),
+        picks="eeg",
+        preload=True,
+        reject_by_annotation=True,
+        verbose="ERROR",
+    )
 
-        epochs = mne.Epochs(
-            raw,
-            events=events,
-            event_id=event_id,
-            tmin=-0.2,
-            tmax=0.8,
-            baseline=(-0.2, 0.0),
-            picks=picks,
-            preload=True,
-            reject_by_annotation=True,
-            verbose="ERROR",
-        )
+    ar = AutoReject(
+        cv=3,
+        thresh_method="bayesian_optimization",
+        n_interpolate=[4, 8, 12],
+        consensus=np.linspace(0.5, 1.0, 3),
+        n_jobs=1,
+        random_state=42,
+        verbose=False,
+    )
+    ar.fit(epochs[::10])
+    epochs_clean = ar.transform(epochs)
 
-        ar = AutoReject(random_state=42, verbose=False)
-        epochs = ar.fit_transform(epochs)
+    epo_name = f"P{subject}_D{day_token}-epo.fif"
+    epo_path = epo_dir / epo_name
+    epochs_clean.save(epo_path, overwrite=True, verbose="ERROR")
+    del raw, epochs, epochs_clean
+    return f"Finished sub {subject}, day {day_token}"
 
-        epo_name = f"P{subject}_D{day_token}-epo.fif"
-        epo_path = epo_dir / epo_name
-        epochs.save(epo_path, overwrite=True, verbose="ERROR")
+
+def util_epo_make_from_bdf():
+    """Create epoched FIF files from raw BDF files."""
+    raw_dir = Path("../EEG")
+    epo_dir = Path("../EEG_epo")
+    epo_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_files = sorted(raw_dir.glob("*.bdf"))
+    results = Parallel(n_jobs=10)(
+        delayed(process_single_subject)(raw_path, epo_dir) for raw_path in raw_files
+    )
+
+    for result in results:
+        if result is not None:
+            print(result)

@@ -2,365 +2,188 @@
 """Compute visual-motor functional connectivity across days."""
 
 from pathlib import Path
-import os
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import statsmodels.formula.api as smf
+import seaborn as sns
 import mne
 from util_func_wrangle import util_wrangle_load_sessions
 
-os.environ["NUMBA_DISABLE_JIT"] = "1"
-
-_CODE_DIR = Path(__file__).resolve().parent
-_PROJECT_DIR = _CODE_DIR.parent
-_OUTPUT_ROOT = _PROJECT_DIR / "output"
-_FIGURES_ROOT = _PROJECT_DIR / "figures"
+# os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
-def _resolve_connectivity_func():
-    try:
-        from mne_connectivity import spectral_connectivity_epochs  # type: ignore
+def util_connect_compute_visual_motor():
+    """Compute broadband Hilbert-phase imaginary coherence for visual-motor ROIs."""
 
-        return spectral_connectivity_epochs, "mne_connectivity"
-    except Exception:
-        pass
-
-    try:
-        from mne.connectivity import spectral_connectivity_epochs  # type: ignore
-
-        return spectral_connectivity_epochs, "mne.connectivity"
-    except Exception:
-        return None, None
-
-
-def util_connect_compute_visual_motor(
-    epo_dir: Path | str = Path("../task_eeg_preprocessed"),
-    output_dir: Path | str = _OUTPUT_ROOT / "connectivity",
-    figures_dir: Path | str = _FIGURES_ROOT / "connectivity",
-    min_epochs: int = 20,
-):
-    """Compute dWPLI/ImCoh visual-motor connectivity and day-level statistics."""
-    epo_dir = Path(epo_dir)
-    output_dir = Path(output_dir)
-    figures_dir = Path(figures_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir = Path("../figures/connectivity")
     figures_dir.mkdir(parents=True, exist_ok=True)
+
     mne.set_log_level("ERROR")
-
-    session_csv = output_dir / "connectivity_session_level.csv"
-    subject_day_csv = output_dir / "connectivity_day_subject_means.csv"
-    model_csv = output_dir / "connectivity_mixed_model_results.csv"
-    qc_csv = output_dir / "connectivity_qc_log.csv"
-
-    qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
-    qc_rows = []
-    conn_func, conn_source = _resolve_connectivity_func()
-    if conn_func is None:
-        msg = (
-            "spectral_connectivity_epochs unavailable. Install mne-connectivity "
-            "or use an MNE version exposing mne.connectivity.spectral_connectivity_epochs."
-        )
-        qc_rows.append(
-            {
-                "session_file": "",
-                "subject": np.nan,
-                "day": np.nan,
-                "stage": "dependency",
-                "reason": msg,
-                "detail": "",
-            }
-        )
-        pd.DataFrame(qc_rows, columns=qc_columns).to_csv(qc_csv, index=False)
-        raise RuntimeError(msg)
 
     roi_visual = ["O1", "Oz", "O2"]
     roi_motor = ["C3", "Cz", "C4"]
 
-    bands = {
-        "alpha": (8.0, 12.0),
-        "beta": (13.0, 30.0),
-    }
-    metrics = {
-        "dwpli": "wpli2_debiased",
-        "imcoh": "imcoh",
-    }
+    broad_fmin = 12.0
+    broad_fmax = 30.0
+    window_sec = 0.12
+    step_sec = 0.02
+    plot_tmin = 0.00
+    plot_tmax = 0.60
+    baseline_tmin = -0.15
+    baseline_tmax = 0.00
+    analysis_tmin = min(plot_tmin, baseline_tmin)
+    analysis_tmax = plot_tmax
+    edge_buffer_sec = 0.00
 
-    session_rows = []
+    sessions = util_wrangle_load_sessions()
+    d = pd.DataFrame(sessions)
+    d_connect_rec = []
+    for sbj in d["subject"].unique():
+        ds = d[d["subject"] == sbj]
+        for day in ds["day"].unique():
+            dsd = ds[ds["day"] == day]
+            epochs = dsd["epochs"].iloc[0]
+            epochs = epochs[["Stim/A", "Stim/B"]]
+            epochs = epochs.load_data()
+            epochs.pick(roi_visual + roi_motor)
 
-    sessions = util_wrangle_load_sessions(epo_dir=epo_dir, preload=False)
-    for item in sessions:
-        session_file = item["epo_file"]
-        subject = item["subject"]
-        day = item["day"]
-        epochs = item["epochs"]
+            vis_idx = [epochs.ch_names.index(ch) for ch in roi_visual]
+            mot_idx = [epochs.ch_names.index(ch) for ch in roi_motor]
 
-        missing_channels = [
-            ch for ch in (roi_visual + roi_motor) if ch not in epochs.ch_names
-        ]
-        if missing_channels:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "roi_channels",
-                    "reason": "missing_roi_channels",
-                    "detail": ",".join(missing_channels),
-                }
+            indices = (
+                np.repeat(vis_idx, len(mot_idx)),
+                np.tile(mot_idx, len(vis_idx)),
             )
-            continue
 
-        stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
-        if not stim_events:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "event_select",
-                    "reason": "no_stim_events",
-                    "detail": "",
-                }
+            epochs = (
+                epochs.copy()
+                .filter(
+                    l_freq=broad_fmin,
+                    h_freq=broad_fmax,
+                    method="fir",
+                    fir_design="firwin",
+                    phase="zero-double",
+                    verbose="ERROR",
+                )
+                .apply_hilbert(envelope=False, verbose="ERROR")
             )
-            continue
+            data = epochs.get_data()
+            times = epochs.times
 
-        stim_epochs = epochs[stim_events]
-        if len(stim_epochs) < min_epochs:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "epoch_count",
-                    "reason": "insufficient_epochs",
-                    "detail": f"n_stim_epochs={len(stim_epochs)} < min_epochs={min_epochs}",
-                }
-            )
-            continue
+            safe_tmin = max(analysis_tmin, float(times[0]) + edge_buffer_sec)
+            safe_tmax = min(analysis_tmax, float(times[-1]) - edge_buffer_sec)
+            start_times = np.arange(safe_tmin, safe_tmax - window_sec + 1e-12, step_sec)
 
-        tmax_use = min(0.6, float(stim_epochs.tmax))
-        work_epochs = (
-            stim_epochs.copy()
-            .load_data()
-            .crop(tmin=0.1, tmax=tmax_use)
-        )
-        work_epochs.pick(roi_visual + roi_motor)
+            if len(start_times) == 0:
+                continue
 
-        vis_idx = [work_epochs.ch_names.index(ch) for ch in roi_visual]
-        mot_idx = [work_epochs.ch_names.index(ch) for ch in roi_motor]
-        indices = (
-            np.repeat(vis_idx, len(mot_idx)),
-            np.tile(mot_idx, len(vis_idx)),
-        )
-
-        for band_name, (fmin, fmax) in bands.items():
-            for metric_name, method_name in metrics.items():
-                try:
-                    conn = conn_func(
-                        work_epochs,
-                        method=method_name,
-                        mode="multitaper",
-                        indices=indices,
-                        fmin=fmin,
-                        fmax=fmax,
-                        faverage=True,
-                        verbose="ERROR",
-                    )
-                    conn_data = np.asarray(conn.get_data()).squeeze()
-                    conn_value = float(np.nanmean(np.real(conn_data)))
-                except Exception as exc:
-                    qc_rows.append(
-                        {
-                            "session_file": session_file,
-                            "subject": subject,
-                            "day": day,
-                            "stage": "connectivity",
-                            "reason": "compute_error",
-                            "detail": (
-                                f"metric={metric_name}, band={band_name}, error={exc}"
-                            ),
-                        }
-                    )
+            for t_start in start_times:
+                t_end = t_start + window_sec
+                i0 = int(np.searchsorted(times, t_start, side="left"))
+                i1 = int(np.searchsorted(times, t_end, side="left"))
+                if i1 - i0 < 2:
                     continue
 
-                session_rows.append(
+                win = data[:, :, i0:i1]
+                pair_vals = []
+                for i_vis, i_mot in zip(indices[0], indices[1]):
+                    x = win[:, i_vis, :].reshape(-1)
+                    y = win[:, i_mot, :].reshape(-1)
+
+                    sxy = np.mean(x * np.conjugate(y))
+                    sxx = np.mean(np.abs(x) ** 2)
+                    syy = np.mean(np.abs(y) ** 2)
+                    denom = np.sqrt(sxx * syy)
+                    # EEG is in Volts, so power terms are tiny; use a strict floor instead of np.isclose().
+                    if (not np.isfinite(denom)) or (denom <= np.finfo(float).eps):
+                        continue
+
+                    coh = sxy / denom
+                    pair_vals.append(float(np.abs(np.imag(coh))))
+
+                if len(pair_vals) == 0:
+                    continue
+
+                d_connect_rec.append(
                     {
-                        "session_file": session_file,
-                        "subject": subject,
+                        "subject": sbj,
                         "day": day,
-                        "metric": metric_name,
-                        "method": method_name,
-                        "band": band_name,
-                        "fmin": fmin,
-                        "fmax": fmax,
-                        "n_stim_epochs_used": int(len(work_epochs)),
-                        "roi_visual": ",".join(roi_visual),
-                        "roi_motor": ",".join(roi_motor),
-                        "n_channel_pairs": int(len(indices[0])),
-                        "connectivity_value": conn_value,
-                        "connectivity_backend": conn_source,
+                        "time_window": f"{t_start:.3f}-{t_end:.3f}",
+                        "window_start": float(t_start),
+                        "window_center": float(t_start + window_sec / 2.0),
+                        "conn_val": float(np.nanmean(pair_vals)),
                     }
                 )
 
-    session_df = pd.DataFrame(session_rows)
-    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
+    d_connect = pd.DataFrame(d_connect_rec)
 
-    if session_df.empty:
-        session_df.to_csv(session_csv, index=False)
-        qc_df.to_csv(qc_csv, index=False)
-        pd.DataFrame().to_csv(subject_day_csv, index=False)
-        pd.DataFrame().to_csv(model_csv, index=False)
-        raise RuntimeError("Connectivity stage produced no valid session rows.")
+    if d_connect.empty:
+        print("No connectivity values computed. Check epoch time span and window settings.")
+        return
 
-    subject_day_df = (
-        session_df.groupby(["subject", "day", "metric", "band"], as_index=False)[
-            "connectivity_value"
-        ]
+    d_connect = d_connect.sort_values(["subject", "day", "window_center"])
+
+    # results figure
+    fig, ax = plt.subplots(1, 1, squeeze=False, figsize=(8, 5))
+    d_time = (
+        d_connect.groupby(["day", "window_center"], as_index=False)["conn_val"]
         .mean()
-        .sort_values(["metric", "band", "subject", "day"])
+        .sort_values(["day", "window_center"])
     )
+    d_base = (
+        d_time[
+            (d_time["window_center"] >= baseline_tmin)
+            & (d_time["window_center"] <= baseline_tmax)
+        ]
+        .groupby("day", as_index=False)["conn_val"]
+        .mean()
+        .rename(columns={"conn_val": "baseline_conn"})
+    )
+    d_base_fallback = (
+        d_time[
+            (d_time["window_center"] >= plot_tmin)
+            & (d_time["window_center"] <= min(plot_tmin + 0.10, plot_tmax))
+        ]
+        .groupby("day", as_index=False)["conn_val"]
+        .mean()
+        .rename(columns={"conn_val": "baseline_fallback"})
+    )
+    d_time = d_time.merge(d_base, on="day", how="left")
+    d_time = d_time.merge(d_base_fallback, on="day", how="left")
+    d_time["baseline_conn"] = d_time["baseline_conn"].fillna(d_time["baseline_fallback"])
+    d_time["baseline_conn"] = d_time["baseline_conn"].fillna(0.0)
+    d_time["conn_val_bc"] = d_time["conn_val"] - d_time["baseline_conn"]
+    d_peak = (
+        d_time.groupby("day", as_index=False)["conn_val_bc"]
+        .max()
+        .rename(columns={"conn_val_bc": "peak_conn"})
+    )
+    d_time = d_time.merge(d_peak, on="day", how="left")
+    d_time["peak_conn"] = d_time["peak_conn"].where(d_time["peak_conn"] > np.finfo(float).eps, np.nan)
+    d_time["conn_val_bc_norm"] = d_time["conn_val_bc"] / d_time["peak_conn"]
+    d_time_plot = d_time[
+        (d_time["window_center"] >= plot_tmin) & (d_time["window_center"] <= plot_tmax)
+    ].copy()
 
-    model_rows = []
-    for (metric_name, band_name), g in subject_day_df.groupby(["metric", "band"]):
-        if g["subject"].nunique() < 2 or g["day"].nunique() < 2:
-            model_rows.append(
-                {
-                    "metric": metric_name,
-                    "band": band_name,
-                    "n_subjects": int(g["subject"].nunique()),
-                    "n_rows": int(len(g)),
-                    "day_coef": np.nan,
-                    "day_se": np.nan,
-                    "day_pvalue": np.nan,
-                    "day_ci_low": np.nan,
-                    "day_ci_high": np.nan,
-                    "status": "insufficient_data",
-                    "detail": "Need >=2 subjects and >=2 day values",
-                }
-            )
-            continue
-
-        try:
-            model = smf.mixedlm(
-                "connectivity_value ~ day",
-                data=g,
-                groups=g["subject"],
-            ).fit(reml=False, method="lbfgs", disp=False)
-
-            ci = model.conf_int().loc["day"]
-            model_rows.append(
-                {
-                    "metric": metric_name,
-                    "band": band_name,
-                    "n_subjects": int(g["subject"].nunique()),
-                    "n_rows": int(len(g)),
-                    "day_coef": float(model.params["day"]),
-                    "day_se": float(model.bse["day"]),
-                    "day_pvalue": float(model.pvalues["day"]),
-                    "day_ci_low": float(ci[0]),
-                    "day_ci_high": float(ci[1]),
-                    "status": "ok",
-                    "detail": "",
-                }
-            )
-        except Exception as exc:
-            try:
-                ols = smf.ols("connectivity_value ~ day", data=g).fit(
-                    cov_type="cluster",
-                    cov_kwds={"groups": g["subject"]},
-                )
-                ci = ols.conf_int().loc["day"]
-                model_rows.append(
-                    {
-                        "metric": metric_name,
-                        "band": band_name,
-                        "n_subjects": int(g["subject"].nunique()),
-                        "n_rows": int(len(g)),
-                        "day_coef": float(ols.params["day"]),
-                        "day_se": float(ols.bse["day"]),
-                        "day_pvalue": float(ols.pvalues["day"]),
-                        "day_ci_low": float(ci[0]),
-                        "day_ci_high": float(ci[1]),
-                        "status": "ols_fallback",
-                        "detail": f"mixedlm_error={exc}",
-                    }
-                )
-            except Exception as exc2:
-                model_rows.append(
-                    {
-                        "metric": metric_name,
-                        "band": band_name,
-                        "n_subjects": int(g["subject"].nunique()),
-                        "n_rows": int(len(g)),
-                        "day_coef": np.nan,
-                        "day_se": np.nan,
-                        "day_pvalue": np.nan,
-                        "day_ci_low": np.nan,
-                        "day_ci_high": np.nan,
-                        "status": "model_error",
-                        "detail": f"mixedlm_error={exc}; ols_error={exc2}",
-                    }
-                )
-
-    model_df = pd.DataFrame(model_rows).sort_values(["metric", "band"])
-
-    figure_paths = {}
-    for (metric_name, band_name), g in subject_day_df.groupby(["metric", "band"]):
-        fig, ax = plt.subplots(figsize=(7, 4.5))
-        for subject, g_sub in g.groupby("subject"):
-            g_sub = g_sub.sort_values("day")
-            ax.plot(
-                g_sub["day"],
-                g_sub["connectivity_value"],
-                color="gray",
-                alpha=0.35,
-                linewidth=1.2,
-            )
-
-        g_mean = g.groupby("day", as_index=False)["connectivity_value"].mean()
-        ax.plot(
-            g_mean["day"],
-            g_mean["connectivity_value"],
-            color="tab:blue",
-            marker="o",
-            linewidth=2.4,
-            label="Group mean",
-        )
-        ax.set_title(f"Visual-Motor Connectivity Across Days ({metric_name}, {band_name})")
-        ax.set_xlabel("Day")
-        ax.set_ylabel("Connectivity")
-        ax.legend(loc="best")
-        ax.grid(alpha=0.25)
-
-        fig_path = figures_dir / f"connectivity_{metric_name}_{band_name}.png"
+    sns.lineplot(
+        data=d_time_plot,
+        x="window_center",
+        y="conn_val_bc_norm",
+        hue="day",
+        ax=ax[0, 0],
+    )
+    ax[0, 0].set_title("Sliding-window baseline-corrected abs(ImCoh), peak-normalized")
+    ax[0, 0].set_ylabel("normalized delta abs(Imaginary coherence)")
+    ax[0, 0].set_xlabel("Time (s)")
+    fig_path = figures_dir / "connectivity.png"
+    try:
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        figure_paths[f"{metric_name}_{band_name}"] = fig_path
-
-    session_df.to_csv(session_csv, index=False)
-    subject_day_df.to_csv(subject_day_csv, index=False)
-    model_df.to_csv(model_csv, index=False)
-    qc_df.to_csv(qc_csv, index=False)
-
-    print(f"Wrote connectivity session table: {session_csv}")
-    print(f"Wrote connectivity subject-day table: {subject_day_csv}")
-    print(f"Wrote connectivity mixed-model results: {model_csv}")
-    print(f"Wrote connectivity QC log: {qc_csv}")
-    print(f"Saved connectivity figures: {len(figure_paths)}")
-    for key, path in sorted(figure_paths.items()):
-        print(f"- {key}: {path}")
-
-    return {
-        "session_df": session_df,
-        "subject_day_df": subject_day_df,
-        "model_df": model_df,
-        "qc_df": qc_df,
-        "session_csv": session_csv,
-        "subject_day_csv": subject_day_csv,
-        "model_csv": model_csv,
-        "qc_csv": qc_csv,
-        "figure_paths": figure_paths,
-    }
+    except PermissionError:
+        fallback_dir = Path("./figures/connectivity")
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fig_path = fallback_dir / "connectivity.png"
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        print(f"Primary figure path not writable; saved to {fig_path}")
+    plt.close(fig)
