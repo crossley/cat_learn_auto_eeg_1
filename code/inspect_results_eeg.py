@@ -26,9 +26,8 @@ from util_func_mvpa import (
 if __name__ == "__main__":
 
     # util_epo_make_from_bdf()
-    # util_erp_make_figures()
+    util_erp_make_figures()
     # util_connect_compute_visual_motor()
-    util_connect_explore_sensorwide_dynamics()
+    # util_connect_explore_sensorwide_dynamics()
     # util_mvpa_time_resolved()
     # util_mvpa_temporal_generalization(n_workers=4)
-

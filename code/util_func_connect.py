@@ -19,6 +19,8 @@ def util_connect_compute_visual_motor():
 
     figures_dir = Path("../figures/connectivity")
     figures_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path("../output/connectivity")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     mne.set_log_level("ERROR")
 
@@ -277,6 +279,7 @@ def util_connect_compute_visual_motor():
         return
 
     d_connect = d_connect.sort_values(["lock_type", "band", "subject", "day", "lock_time"])
+    d_connect.to_csv(output_dir / "connectivity_profiles_subject_day.csv", index=False)
 
     _save_profile_figure(
         d_connect[d_connect["lock_type"] == "stim"].copy(),
@@ -297,6 +300,8 @@ def util_connect_explore_sensorwide_dynamics():
 
     figures_dir = Path("../figures/connectivity_sensorwide")
     figures_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path("../output/connectivity_sensorwide")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     mne.set_log_level("ERROR")
 
@@ -592,6 +597,7 @@ def util_connect_explore_sensorwide_dynamics():
 
     xy = _channel_xy(info_subset, channel_subset)
     all_days = sorted({k[1] for k in agg.keys()})
+    agg_rows = []
 
     for lock_name in locks:
         for band_name in bands.keys():
@@ -610,6 +616,18 @@ def util_connect_explore_sensorwide_dynamics():
                             s, c = agg[key]
                             mat[i, j] = s / c if c > 0 else np.nan
                             mat[j, i] = mat[i, j]
+                            agg_rows.append(
+                                {
+                                    "lock_type": lock_name,
+                                    "day": day,
+                                    "band": band_name,
+                                    "lock_time": float(t),
+                                    "ch_i": channel_subset[i],
+                                    "ch_j": channel_subset[j],
+                                    "conn_val": float(mat[i, j]),
+                                    "n_session_contrib": int(c),
+                                }
+                            )
                     np.fill_diagonal(mat, 0.0)
                     mats.append(mat)
                 day_data[day] = {
@@ -621,7 +639,36 @@ def util_connect_explore_sensorwide_dynamics():
             _plot_graph_snapshots(day_data, xy, pair_idx, lock_name, band_name)
             _plot_node_strength_topomaps(day_data, info_subset, lock_name, band_name)
 
+    d_edges = pd.DataFrame(agg_rows).sort_values(
+        ["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"]
+    )
+    d_edges.to_csv(output_dir / "sensorwide_edge_timeseries.csv", index=False)
+
+    d_node_strength = (
+        d_edges.melt(
+            id_vars=["lock_type", "day", "band", "lock_time", "conn_val"],
+            value_vars=["ch_i", "ch_j"],
+            value_name="channel",
+            var_name="channel_role",
+        )
+        .drop(columns=["channel_role"])
+        .groupby(["lock_type", "day", "band", "lock_time", "channel"], as_index=False)["conn_val"]
+        .sum()
+        .rename(columns={"conn_val": "node_strength"})
+        .sort_values(["lock_type", "band", "day", "lock_time", "channel"])
+    )
+    d_node_strength.to_csv(output_dir / "sensorwide_node_strength_timeseries.csv", index=False)
+
+    d_channels = pd.DataFrame(
+        {
+            "channel": channel_subset,
+            "x": xy[:, 0],
+            "y": xy[:, 1],
+        }
+    )
+    d_channels.to_csv(output_dir / "sensorwide_channel_layout.csv", index=False)
+
     print(
         f"Sensor-wide dynamics complete. Used sessions: {used_sessions}, "
-        f"skipped sessions: {skipped_sessions}. Output dir: {figures_dir}"
+        f"skipped sessions: {skipped_sessions}. Figure dir: {figures_dir}. Output dir: {output_dir}"
     )
