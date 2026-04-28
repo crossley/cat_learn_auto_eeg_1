@@ -47,5 +47,5 @@ if __name__ == "__main__":
     # save_fig_mvpa_time_resolved()
 
     # MVPA temporal generalization (two-stage)
-    run_mvpa_temporal_generalization(n_workers=4)
-    save_fig_mvpa_temporal_generalization()
+    # run_mvpa_temporal_generalization(n_workers=4)
+    # save_fig_mvpa_temporal_generalization()
