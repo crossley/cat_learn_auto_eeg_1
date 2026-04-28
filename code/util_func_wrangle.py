@@ -16,7 +16,6 @@ def util_wrangle_load_sessions():
     """
 
     beh_dir = Path("../Behavioural")
-    # epo_dir = Path("../task_eeg_preprocessed")
     epo_dir = Path("../EEG_epo")
 
     beh_re = re.compile(r"^sub_(\d+)_day_(\d+)_data\.csv$")

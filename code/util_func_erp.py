@@ -14,7 +14,7 @@ from util_func_wrangle import util_wrangle_load_sessions
 # os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
-def util_erp_make_figures():
+def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
     """
     Build grand-average ERPs and save figures.
     """
@@ -34,14 +34,8 @@ def util_erp_make_figures():
         "fb_all": ["FB/Cor", "FB/Inc"],
     }
 
-    evoked_stim_all_rec = []
-    evoked_stim_cor_rec = []
-    evoked_stim_inc_rec = []
-    evoked_resp_all_rec = []
-    evoked_resp_cor_rec = []
-    evoked_resp_inc_rec = []
-    sessions = util_wrangle_load_sessions()
-    d = pd.DataFrame(sessions)
+    d_grand_path = output_dir / "erp_grand_averages_by_day_lock_condition.csv"
+    d_subject_path = output_dir / "erp_subject_day_stim_all.csv"
 
     def _make_response_locked_evoked(epochs_stim, rt_sec, t_before=0.6):
         """Build response-locked evoked with x-axis as time before response (0 -> t_before)."""
@@ -138,95 +132,239 @@ def util_erp_make_figures():
             )
         return pd.concat(rows, ignore_index=True)
 
-    for sbj in d["subject"].unique():
-        ds = d[d["subject"] == sbj]
-        for day in ds["day"].unique():
-            dsd = ds[ds["day"] == day]
-            beh_df = dsd["beh_df"].iloc[0].copy()
-            epochs = dsd["epochs"].iloc[0]
-            beh_df = beh_df.sort_values("trial").reset_index(drop=True)
-            rt_sec = beh_df["rt"].astype(float).to_numpy() / 1000.0
-            fb = beh_df["fb"].astype(str).str.lower().to_numpy()
+    def _long_to_evoked_map(df, lock_type, condition):
+        d_sel = df[(df["lock_type"] == lock_type) & (df["condition"] == condition)].copy()
+        if d_sel.empty:
+            return {}
+        ch_names = sorted(d_sel["channel"].unique().tolist())
+        times = np.sort(d_sel["time_s"].unique().astype(float))
+        if len(times) < 2:
+            return {}
+        sfreq = 1.0 / float(np.median(np.diff(times)))
+        info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types="eeg")
+        info.set_montage(mne.channels.make_standard_montage("biosemi64"), on_missing="ignore")
+        evoked_map = {}
+        for day in sorted(d_sel["day"].unique().astype(int)):
+            d_day = d_sel[d_sel["day"] == day]
+            mat = np.full((len(ch_names), len(times)), np.nan, dtype=float)
+            for i_ch, ch in enumerate(ch_names):
+                d_ch = d_day[d_day["channel"] == ch].sort_values("time_s")
+                if len(d_ch) == 0:
+                    continue
+                t_ch = d_ch["time_s"].to_numpy(dtype=float)
+                y_ch = d_ch["amplitude_v"].to_numpy(dtype=float)
+                mat[i_ch, :] = np.interp(times, t_ch, y_ch)
+            mat = np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
+            evoked_map[day] = mne.EvokedArray(mat, info=info.copy(), tmin=float(times[0]), nave=1)
+        return evoked_map
 
-            epochs_stim_all = epochs[event_map["stim_all"]]
-            n = min(len(epochs_stim_all), len(beh_df))
-            if n == 0:
-                continue
-            epochs_stim_all = epochs_stim_all[:n]
-            rt_use = rt_sec[:n]
-            fb_use = fb[:n]
-            idx_cor = np.where(fb_use == "correct")[0]
-            idx_inc = np.where(fb_use == "incorrect")[0]
+    if run_compute:
+        evoked_stim_all_rec = []
+        evoked_stim_cor_rec = []
+        evoked_stim_inc_rec = []
+        evoked_resp_all_rec = []
+        evoked_resp_cor_rec = []
+        evoked_resp_inc_rec = []
+        sessions = util_wrangle_load_sessions()
+        d = pd.DataFrame(sessions)
 
-            evoked_stim_all = epochs_stim_all.average()
-            evoked_stim_all_rec.append(
+        for sbj in d["subject"].unique():
+            ds = d[d["subject"] == sbj]
+            for day in ds["day"].unique():
+                dsd = ds[ds["day"] == day]
+                beh_df = dsd["beh_df"].iloc[0].copy()
+                epochs = dsd["epochs"].iloc[0]
+                beh_df = beh_df.sort_values("trial").reset_index(drop=True)
+                rt_sec = beh_df["rt"].astype(float).to_numpy() / 1000.0
+                fb = beh_df["fb"].astype(str).str.lower().to_numpy()
+
+                epochs_stim_all = epochs[event_map["stim_all"]]
+                n = min(len(epochs_stim_all), len(beh_df))
+                if n == 0:
+                    continue
+                epochs_stim_all = epochs_stim_all[:n]
+                rt_use = rt_sec[:n]
+                fb_use = fb[:n]
+                idx_cor = np.where(fb_use == "correct")[0]
+                idx_inc = np.where(fb_use == "incorrect")[0]
+
+                evoked_stim_all = epochs_stim_all.average()
+                evoked_stim_all_rec.append(
+                    {
+                        "subject": sbj,
+                        "day": day,
+                        "evoked_stim_all": evoked_stim_all,
+                    }
+                )
+                if len(idx_cor) > 0:
+                    evoked_stim_cor_rec.append(
+                        {
+                            "subject": sbj,
+                            "day": day,
+                            "evoked_stim_cor": epochs_stim_all[idx_cor].average(),
+                        }
+                    )
+                if len(idx_inc) > 0:
+                    evoked_stim_inc_rec.append(
+                        {
+                            "subject": sbj,
+                            "day": day,
+                            "evoked_stim_inc": epochs_stim_all[idx_inc].average(),
+                        }
+                    )
+
+                evoked_resp_all = _make_response_locked_evoked(epochs_stim_all, rt_use, t_before=0.6)
+                evoked_resp_all_rec.append(
+                    {
+                        "subject": sbj,
+                        "day": day,
+                        "evoked_resp_all": evoked_resp_all,
+                    }
+                )
+                if len(idx_cor) > 0:
+                    evoked_resp_cor_rec.append(
+                        {
+                            "subject": sbj,
+                            "day": day,
+                            "evoked_resp_cor": _make_response_locked_evoked(
+                                epochs_stim_all[idx_cor], rt_use[idx_cor], t_before=0.6
+                            ),
+                        }
+                    )
+                if len(idx_inc) > 0:
+                    evoked_resp_inc_rec.append(
+                        {
+                            "subject": sbj,
+                            "day": day,
+                            "evoked_resp_inc": _make_response_locked_evoked(
+                                epochs_stim_all[idx_inc], rt_use[idx_inc], t_before=0.6
+                            ),
+                        }
+                    )
+
+        evoked_stim_all_rec = pd.DataFrame(evoked_stim_all_rec)
+        evoked_stim_cor_rec = pd.DataFrame(evoked_stim_cor_rec)
+        evoked_stim_inc_rec = pd.DataFrame(evoked_stim_inc_rec)
+        evoked_resp_all_rec = pd.DataFrame(evoked_resp_all_rec)
+        evoked_resp_cor_rec = pd.DataFrame(evoked_resp_cor_rec)
+        evoked_resp_inc_rec = pd.DataFrame(evoked_resp_inc_rec)
+
+        evoked_stim_all_mean = {}
+        for day, g in evoked_stim_all_rec.groupby("day"):
+            evoked_stim_all_mean[day] = mne.grand_average(g["evoked_stim_all"].tolist())
+
+        evoked_stim_cor_mean = {}
+        for day, g in evoked_stim_cor_rec.groupby("day"):
+            evoked_stim_cor_mean[day] = mne.grand_average(g["evoked_stim_cor"].tolist())
+        evoked_stim_inc_mean = {}
+        for day, g in evoked_stim_inc_rec.groupby("day"):
+            evoked_stim_inc_mean[day] = mne.grand_average(g["evoked_stim_inc"].tolist())
+
+
+        evoked_resp_all_mean = {}
+        for day, g in evoked_resp_all_rec.groupby("day"):
+            evoked_resp_all_mean[day] = mne.grand_average(g["evoked_resp_all"].tolist())
+
+        evoked_resp_cor_mean = {}
+        for day, g in evoked_resp_cor_rec.groupby("day"):
+            evoked_resp_cor_mean[day] = mne.grand_average(g["evoked_resp_cor"].tolist())
+        evoked_resp_inc_mean = {}
+        for day, g in evoked_resp_inc_rec.groupby("day"):
+            evoked_resp_inc_mean[day] = mne.grand_average(g["evoked_resp_inc"].tolist())
+        d_grand = pd.concat(
+            [
+                _evoked_map_to_long(evoked_stim_all_mean, "stim", "all"),
+                _evoked_map_to_long(evoked_stim_cor_mean, "stim", "correct"),
+                _evoked_map_to_long(evoked_stim_inc_mean, "stim", "incorrect"),
+                _evoked_map_to_long(evoked_resp_all_mean, "response", "all"),
+                _evoked_map_to_long(evoked_resp_cor_mean, "response", "correct"),
+                _evoked_map_to_long(evoked_resp_inc_mean, "response", "incorrect"),
+            ],
+            ignore_index=True,
+        ).sort_values(["lock_type", "condition", "day", "channel", "time_s"])
+        d_grand.to_csv(d_grand_path, index=False)
+
+        subject_rows = []
+        for s in sorted(evoked_stim_all_rec["subject"].unique()):
+            d_sub_s = _evoked_map_to_long(
                 {
-                    "subject": sbj,
-                    "day": day,
-                    "evoked_stim_all": evoked_stim_all,
-                }
+                    int(row["day"]): row["evoked_stim_all"]
+                    for _, row in evoked_stim_all_rec[evoked_stim_all_rec["subject"] == s].iterrows()
+                },
+                "stim",
+                "all",
             )
-            if len(idx_cor) > 0:
-                evoked_stim_cor_rec.append(
-                    {
-                        "subject": sbj,
-                        "day": day,
-                        "evoked_stim_cor": epochs_stim_all[idx_cor].average(),
-                    }
-                )
-            if len(idx_inc) > 0:
-                evoked_stim_inc_rec.append(
-                    {
-                        "subject": sbj,
-                        "day": day,
-                        "evoked_stim_inc": epochs_stim_all[idx_inc].average(),
-                    }
-                )
-
-            evoked_resp_all = _make_response_locked_evoked(epochs_stim_all, rt_use, t_before=0.6)
-            evoked_resp_all_rec.append(
-                {
-                    "subject": sbj,
-                    "day": day,
-                    "evoked_resp_all": evoked_resp_all,
-                }
+            if not d_sub_s.empty:
+                subject_rows.append(d_sub_s.assign(subject=int(s)))
+        if len(subject_rows) == 0:
+            d_subject = pd.DataFrame(
+                columns=["subject", "day", "lock_type", "condition", "channel", "time_s", "amplitude_v"]
             )
-            if len(idx_cor) > 0:
-                evoked_resp_cor_rec.append(
-                    {
-                        "subject": sbj,
-                        "day": day,
-                        "evoked_resp_cor": _make_response_locked_evoked(
-                            epochs_stim_all[idx_cor], rt_use[idx_cor], t_before=0.6
-                        ),
-                    }
-                )
-            if len(idx_inc) > 0:
-                evoked_resp_inc_rec.append(
-                    {
-                        "subject": sbj,
-                        "day": day,
-                        "evoked_resp_inc": _make_response_locked_evoked(
-                            epochs_stim_all[idx_inc], rt_use[idx_inc], t_before=0.6
-                        ),
-                    }
-                )
+        else:
+            d_subject = pd.concat(subject_rows, ignore_index=True).sort_values(
+                ["subject", "day", "channel", "time_s"]
+            )
+        d_subject.to_csv(d_subject_path, index=False)
 
-    evoked_stim_all_rec = pd.DataFrame(evoked_stim_all_rec)
-    evoked_stim_cor_rec = pd.DataFrame(evoked_stim_cor_rec)
-    evoked_stim_inc_rec = pd.DataFrame(evoked_stim_inc_rec)
-    evoked_resp_all_rec = pd.DataFrame(evoked_resp_all_rec)
-    evoked_resp_cor_rec = pd.DataFrame(evoked_resp_cor_rec)
-    evoked_resp_inc_rec = pd.DataFrame(evoked_resp_inc_rec)
+    # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
+    if not d_grand_path.exists() or not d_subject_path.exists():
+        raise FileNotFoundError(f"Missing ERP output tables in {output_dir}. Run with run_compute=True first.")
+    if not save_figures:
+        return
 
-    for s in evoked_stim_all_rec["subject"].unique():
-        ds = evoked_stim_all_rec[evoked_stim_all_rec["subject"] == s]
-        days_sorted = sorted(ds["day"].unique())
+    d_grand_plot = pd.read_csv(d_grand_path)
+    d_subject_plot = pd.read_csv(d_subject_path)
+
+    evoked_stim_all_plot = _long_to_evoked_map(d_grand_plot, "stim", "all")
+    _plot_day_grid(
+        evoked_stim_all_plot,
+        title="Grand Average ERP: stim_all",
+        fig_name="erp_stim_all.png",
+    )
+    _plot_day_condition_grid(
+        {
+            (day, "correct"): ev
+            for day, ev in _long_to_evoked_map(d_grand_plot, "stim", "correct").items()
+        }
+        | {
+            (day, "incorrect"): ev
+            for day, ev in _long_to_evoked_map(d_grand_plot, "stim", "incorrect").items()
+        },
+        title="Grand Average ERP: stim locked by feedback correctness",
+        fig_name="erp_stim_correct_vs_incorrect.png",
+    )
+
+    _plot_day_grid(
+        _long_to_evoked_map(d_grand_plot, "response", "all"),
+        title="Grand Average ERP: response locked (time before response)",
+        fig_name="erp_response_all.png",
+    )
+    _plot_day_condition_grid(
+        {
+            (day, "correct"): ev
+            for day, ev in _long_to_evoked_map(d_grand_plot, "response", "correct").items()
+        }
+        | {
+            (day, "incorrect"): ev
+            for day, ev in _long_to_evoked_map(d_grand_plot, "response", "incorrect").items()
+        },
+        title="Grand Average ERP: response locked by feedback correctness",
+        fig_name="erp_response_correct_vs_incorrect.png",
+    )
+
+    # Subject-wise stim_all figure from on-disk subject/day table.
+    for s in sorted(d_subject_plot["subject"].unique().astype(int)):
+        d_sub = d_subject_plot[d_subject_plot["subject"] == s].copy()
+        d_sub["lock_type"] = "stim"
+        d_sub["condition"] = "all"
+        evoked_sub = _long_to_evoked_map(d_sub, "stim", "all")
+        days_sorted = sorted(evoked_sub.keys())
+        if len(days_sorted) == 0:
+            continue
         fig, axes = plt.subplots(1, len(days_sorted), figsize=(5 * len(days_sorted), 4), squeeze=False)
         for i, day in enumerate(days_sorted):
             ax = axes[0, i]
-            evoked = ds.loc[ds["day"] == day, "evoked_stim_all"].iloc[0]
-            evoked.plot(
+            evoked_sub[day].plot(
                 axes=ax,
                 show=False,
                 spatial_colors=True,
@@ -237,71 +375,12 @@ def util_erp_make_figures():
         fig.savefig(figures_dir / f"erp_stim_all_sub_{s}.png")
         plt.close(fig)
 
-    evoked_stim_all_mean = {}
-    for day, g in evoked_stim_all_rec.groupby("day"):
-        evoked_stim_all_mean[day] = mne.grand_average(g["evoked_stim_all"].tolist())
 
-    _plot_day_grid(
-        evoked_stim_all_mean,
-        title="Grand Average ERP: stim_all",
-        fig_name="erp_stim_all.png",
-    )
+def run_erp():
+    """Run ERP analysis."""
+    return util_erp_make_figures(save_figures=False, run_compute=True)
 
-    evoked_stim_cor_mean = {}
-    for day, g in evoked_stim_cor_rec.groupby("day"):
-        evoked_stim_cor_mean[day] = mne.grand_average(g["evoked_stim_cor"].tolist())
-    evoked_stim_inc_mean = {}
-    for day, g in evoked_stim_inc_rec.groupby("day"):
-        evoked_stim_inc_mean[day] = mne.grand_average(g["evoked_stim_inc"].tolist())
 
-    evoked_stim_by_day_cond = {}
-    for day in sorted(set(evoked_stim_all_mean.keys())):
-        if day in evoked_stim_cor_mean:
-            evoked_stim_by_day_cond[(day, "correct")] = evoked_stim_cor_mean[day]
-        if day in evoked_stim_inc_mean:
-            evoked_stim_by_day_cond[(day, "incorrect")] = evoked_stim_inc_mean[day]
-    _plot_day_condition_grid(
-        evoked_stim_by_day_cond,
-        title="Grand Average ERP: stim locked by feedback correctness",
-        fig_name="erp_stim_correct_vs_incorrect.png",
-    )
-
-    evoked_resp_all_mean = {}
-    for day, g in evoked_resp_all_rec.groupby("day"):
-        evoked_resp_all_mean[day] = mne.grand_average(g["evoked_resp_all"].tolist())
-    _plot_day_grid(
-        evoked_resp_all_mean,
-        title="Grand Average ERP: response locked (time before response)",
-        fig_name="erp_response_all.png",
-    )
-
-    evoked_resp_cor_mean = {}
-    for day, g in evoked_resp_cor_rec.groupby("day"):
-        evoked_resp_cor_mean[day] = mne.grand_average(g["evoked_resp_cor"].tolist())
-    evoked_resp_inc_mean = {}
-    for day, g in evoked_resp_inc_rec.groupby("day"):
-        evoked_resp_inc_mean[day] = mne.grand_average(g["evoked_resp_inc"].tolist())
-    evoked_resp_by_day_cond = {}
-    for day in sorted(set(evoked_resp_all_mean.keys())):
-        if day in evoked_resp_cor_mean:
-            evoked_resp_by_day_cond[(day, "correct")] = evoked_resp_cor_mean[day]
-        if day in evoked_resp_inc_mean:
-            evoked_resp_by_day_cond[(day, "incorrect")] = evoked_resp_inc_mean[day]
-    _plot_day_condition_grid(
-        evoked_resp_by_day_cond,
-        title="Grand Average ERP: response locked by feedback correctness",
-        fig_name="erp_response_correct_vs_incorrect.png",
-    )
-
-    d_out = pd.concat(
-        [
-            _evoked_map_to_long(evoked_stim_all_mean, "stim", "all"),
-            _evoked_map_to_long(evoked_stim_cor_mean, "stim", "correct"),
-            _evoked_map_to_long(evoked_stim_inc_mean, "stim", "incorrect"),
-            _evoked_map_to_long(evoked_resp_all_mean, "response", "all"),
-            _evoked_map_to_long(evoked_resp_cor_mean, "response", "correct"),
-            _evoked_map_to_long(evoked_resp_inc_mean, "response", "incorrect"),
-        ],
-        ignore_index=True,
-    ).sort_values(["lock_type", "condition", "day", "channel", "time_s"])
-    d_out.to_csv(output_dir / "erp_grand_averages_by_day_lock_condition.csv", index=False)
+def save_fig_erp():
+    """Generate ERP figures."""
+    return util_erp_make_figures(save_figures=True, run_compute=False)

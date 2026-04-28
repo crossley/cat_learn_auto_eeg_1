@@ -14,8 +14,8 @@ from util_func_wrangle import util_wrangle_load_sessions
 # os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
-def util_connect_compute_visual_motor():
-    """Compute stim-locked and response-locked abs(ImCoh) profiles across bands."""
+def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bool = True):
+    """Compute and/or plot stim-locked and response-locked abs(ImCoh) profiles across bands."""
 
     figures_dir = Path("../figures/connectivity")
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -127,176 +127,184 @@ def util_connect_compute_visual_motor():
             print(f"Primary figure path not writable; saved to {fig_path}")
         plt.close(fig)
 
-    sessions = util_wrangle_load_sessions()
-    d = pd.DataFrame(sessions)
-    d_connect_rec = []
-    for sbj in d["subject"].unique():
-        ds = d[d["subject"] == sbj]
-        for day in ds["day"].unique():
-            dsd = ds[ds["day"] == day]
-            epochs = dsd["epochs"].iloc[0]
-            epochs = epochs[["Stim/A", "Stim/B"]]
-            epochs = epochs.load_data()
-            epochs.pick(roi_visual + roi_motor)
-            rt_sec = (
-                dsd["beh_df"].iloc[0]
-                .sort_values("trial")["rt"]
-                .astype(float)
-                .to_numpy()
-                / 1000.0
-            )
+    d_connect_path = output_dir / "connectivity_profiles_subject_day.csv"
+    if run_compute:
+        sessions = util_wrangle_load_sessions()
+        d = pd.DataFrame(sessions)
+        d_connect_rec = []
+        for sbj in d["subject"].unique():
+            ds = d[d["subject"] == sbj]
+            for day in ds["day"].unique():
+                dsd = ds[ds["day"] == day]
+                epochs = dsd["epochs"].iloc[0]
+                epochs = epochs[["Stim/A", "Stim/B"]]
+                epochs = epochs.load_data()
+                epochs.pick(roi_visual + roi_motor)
+                rt_sec = (
+                    dsd["beh_df"].iloc[0]
+                    .sort_values("trial")["rt"]
+                    .astype(float)
+                    .to_numpy()
+                    / 1000.0
+                )
 
-            vis_idx = [epochs.ch_names.index(ch) for ch in roi_visual]
-            mot_idx = [epochs.ch_names.index(ch) for ch in roi_motor]
+                vis_idx = [epochs.ch_names.index(ch) for ch in roi_visual]
+                mot_idx = [epochs.ch_names.index(ch) for ch in roi_motor]
 
-            indices = (
-                np.repeat(vis_idx, len(mot_idx)),
-                np.tile(mot_idx, len(vis_idx)),
-            )
+                indices = (
+                    np.repeat(vis_idx, len(mot_idx)),
+                    np.tile(mot_idx, len(vis_idx)),
+                )
 
-            times = epochs.times
+                times = epochs.times
 
-            safe_tmin = max(analysis_tmin, float(times[0]) + edge_buffer_sec)
-            safe_tmax = min(analysis_tmax, float(times[-1]) - edge_buffer_sec)
-            stim_start_times = np.arange(
-                max(stim_plot_tmin, safe_tmin),
-                min(stim_plot_tmax, safe_tmax) - window_sec + 1e-12,
-                step_sec,
-            )
-            resp_start_times = np.arange(
-                resp_plot_tmin,
-                resp_plot_tmax - window_sec + 1e-12,
-                step_sec,
-            )
+                safe_tmin = max(analysis_tmin, float(times[0]) + edge_buffer_sec)
+                safe_tmax = min(analysis_tmax, float(times[-1]) - edge_buffer_sec)
+                stim_start_times = np.arange(
+                    max(stim_plot_tmin, safe_tmin),
+                    min(stim_plot_tmax, safe_tmax) - window_sec + 1e-12,
+                    step_sec,
+                )
+                resp_start_times = np.arange(
+                    resp_plot_tmin,
+                    resp_plot_tmax - window_sec + 1e-12,
+                    step_sec,
+                )
 
-            if len(stim_start_times) == 0 and len(resp_start_times) == 0:
-                continue
-
-            for band_name, (fmin, fmax) in bands.items():
-                epochs_band = epochs.copy()
-                if fmin is not None and fmax is not None:
-                    epochs_band = epochs_band.filter(
-                        l_freq=fmin,
-                        h_freq=fmax,
-                        method="fir",
-                        fir_design="firwin",
-                        phase="zero-double",
-                        verbose="ERROR",
-                    )
-                epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
-                data = epochs_band.get_data()
-                n_trials = min(data.shape[0], len(rt_sec))
-                if n_trials == 0:
+                if len(stim_start_times) == 0 and len(resp_start_times) == 0:
                     continue
-                data = data[:n_trials, :, :]
-                rt_sec_use = rt_sec[:n_trials]
 
-                for t_start in stim_start_times:
-                    t_end = t_start + window_sec
-                    i0 = int(np.searchsorted(times, t_start, side="left"))
-                    i1 = int(np.searchsorted(times, t_end, side="left"))
-                    if i1 - i0 < 2:
+                for band_name, (fmin, fmax) in bands.items():
+                    epochs_band = epochs.copy()
+                    if fmin is not None and fmax is not None:
+                        epochs_band = epochs_band.filter(
+                            l_freq=fmin,
+                            h_freq=fmax,
+                            method="fir",
+                            fir_design="firwin",
+                            phase="zero-double",
+                            verbose="ERROR",
+                        )
+                    epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
+                    data = epochs_band.get_data()
+                    n_trials = min(data.shape[0], len(rt_sec))
+                    if n_trials == 0:
                         continue
+                    data = data[:n_trials, :, :]
+                    rt_sec_use = rt_sec[:n_trials]
 
-                    win = data[:, :, i0:i1]
-                    pair_vals = []
-                    for i_vis, i_mot in zip(indices[0], indices[1]):
-                        x = win[:, i_vis, :].reshape(-1)
-                        y = win[:, i_mot, :].reshape(-1)
-                        val = _compute_abs_imcoh(x, y)
-                        if np.isfinite(val):
-                            pair_vals.append(val)
-
-                    if len(pair_vals) == 0:
-                        continue
-
-                    d_connect_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "lock_type": "stim",
-                            "band": band_name,
-                            "time_window": f"{t_start:.3f}-{t_end:.3f}",
-                            "window_start": float(t_start),
-                            "lock_time": float(t_start),
-                            "conn_val": float(np.nanmean(pair_vals)),
-                        }
-                    )
-
-                for tau_start in resp_start_times:
-                    tau_end = tau_start + window_sec
-                    pair_vals = []
-                    for i_vis, i_mot in zip(indices[0], indices[1]):
-                        x_chunks = []
-                        y_chunks = []
-                        for i_trial in range(n_trials):
-                            rt = rt_sec_use[i_trial]
-                            if (not np.isfinite(rt)) or (rt <= 0):
-                                continue
-
-                            seg_tmin = rt - tau_end
-                            seg_tmax = rt - tau_start
-                            if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
-                                continue
-
-                            i0 = int(np.searchsorted(times, seg_tmin, side="left"))
-                            i1 = int(np.searchsorted(times, seg_tmax, side="left"))
-                            if i1 - i0 < 2:
-                                continue
-
-                            x_chunks.append(data[i_trial, i_vis, i0:i1])
-                            y_chunks.append(data[i_trial, i_mot, i0:i1])
-
-                        if not x_chunks:
+                    for t_start in stim_start_times:
+                        t_end = t_start + window_sec
+                        i0 = int(np.searchsorted(times, t_start, side="left"))
+                        i1 = int(np.searchsorted(times, t_end, side="left"))
+                        if i1 - i0 < 2:
                             continue
 
-                        x = np.concatenate(x_chunks)
-                        y = np.concatenate(y_chunks)
-                        val = _compute_abs_imcoh(x, y)
-                        if np.isfinite(val):
-                            pair_vals.append(val)
+                        win = data[:, :, i0:i1]
+                        pair_vals = []
+                        for i_vis, i_mot in zip(indices[0], indices[1]):
+                            x = win[:, i_vis, :].reshape(-1)
+                            y = win[:, i_mot, :].reshape(-1)
+                            val = _compute_abs_imcoh(x, y)
+                            if np.isfinite(val):
+                                pair_vals.append(val)
 
-                    if len(pair_vals) == 0:
-                        continue
+                        if len(pair_vals) == 0:
+                            continue
 
-                    d_connect_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "lock_type": "response",
-                            "band": band_name,
-                            "time_window": f"{tau_start:.3f}-{tau_end:.3f}",
-                            "window_start": float(tau_start),
-                            "lock_time": float(tau_start),
-                            "conn_val": float(np.nanmean(pair_vals)),
-                        }
-                    )
+                        d_connect_rec.append(
+                            {
+                                "subject": sbj,
+                                "day": day,
+                                "lock_type": "stim",
+                                "band": band_name,
+                                "time_window": f"{t_start:.3f}-{t_end:.3f}",
+                                "window_start": float(t_start),
+                                "lock_time": float(t_start),
+                                "conn_val": float(np.nanmean(pair_vals)),
+                            }
+                        )
 
-    d_connect = pd.DataFrame(d_connect_rec)
+                    for tau_start in resp_start_times:
+                        tau_end = tau_start + window_sec
+                        pair_vals = []
+                        for i_vis, i_mot in zip(indices[0], indices[1]):
+                            x_chunks = []
+                            y_chunks = []
+                            for i_trial in range(n_trials):
+                                rt = rt_sec_use[i_trial]
+                                if (not np.isfinite(rt)) or (rt <= 0):
+                                    continue
 
-    if d_connect.empty:
-        print("No connectivity values computed. Check epoch time span and window settings.")
+                                seg_tmin = rt - tau_end
+                                seg_tmax = rt - tau_start
+                                if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
+                                    continue
+
+                                i0 = int(np.searchsorted(times, seg_tmin, side="left"))
+                                i1 = int(np.searchsorted(times, seg_tmax, side="left"))
+                                if i1 - i0 < 2:
+                                    continue
+
+                                x_chunks.append(data[i_trial, i_vis, i0:i1])
+                                y_chunks.append(data[i_trial, i_mot, i0:i1])
+
+                            if not x_chunks:
+                                continue
+
+                            x = np.concatenate(x_chunks)
+                            y = np.concatenate(y_chunks)
+                            val = _compute_abs_imcoh(x, y)
+                            if np.isfinite(val):
+                                pair_vals.append(val)
+
+                        if len(pair_vals) == 0:
+                            continue
+
+                        d_connect_rec.append(
+                            {
+                                "subject": sbj,
+                                "day": day,
+                                "lock_type": "response",
+                                "band": band_name,
+                                "time_window": f"{tau_start:.3f}-{tau_end:.3f}",
+                                "window_start": float(tau_start),
+                                "lock_time": float(tau_start),
+                                "conn_val": float(np.nanmean(pair_vals)),
+                            }
+                        )
+
+        d_connect = pd.DataFrame(d_connect_rec)
+
+        if d_connect.empty:
+            print("No connectivity values computed. Check epoch time span and window settings.")
+            return
+
+        d_connect = d_connect.sort_values(["lock_type", "band", "subject", "day", "lock_time"])
+        d_connect.to_csv(d_connect_path, index=False)
+
+    if not d_connect_path.exists():
+        raise FileNotFoundError(f"Missing output table: {d_connect_path}")
+    if not save_figures:
         return
-
-    d_connect = d_connect.sort_values(["lock_type", "band", "subject", "day", "lock_time"])
-    d_connect.to_csv(output_dir / "connectivity_profiles_subject_day.csv", index=False)
+    d_connect_plot = pd.read_csv(d_connect_path)
 
     _save_profile_figure(
-        d_connect[d_connect["lock_type"] == "stim"].copy(),
+        d_connect_plot[d_connect_plot["lock_type"] == "stim"].copy(),
         fig_name="connectivity_stim_locked.png",
         suptitle="Stim-locked abs(ImCoh), peak-normalized",
         x_label="Time from stimulus onset (s)",
     )
     _save_profile_figure(
-        d_connect[d_connect["lock_type"] == "response"].copy(),
+        d_connect_plot[d_connect_plot["lock_type"] == "response"].copy(),
         fig_name="connectivity_response_locked.png",
         suptitle="Response-locked abs(ImCoh), peak-normalized",
         x_label="Time before response (s)",
     )
 
 
-def util_connect_explore_sensorwide_dynamics():
-    """Explore 16-channel sensor-space connectivity dynamics for stim and response locks."""
+def util_connect_explore_sensorwide_dynamics(save_figures: bool = True, run_compute: bool = True):
+    """Compute and/or plot 16-channel sensor-space connectivity dynamics."""
 
     figures_dir = Path("../figures/connectivity_sensorwide")
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -474,201 +482,245 @@ def util_connect_explore_sensorwide_dynamics():
         fig.tight_layout()
         _safe_fig_save(fig, f"topomap_{lock_name}_{band_name}.png")
 
-    sessions = util_wrangle_load_sessions()
-    d = pd.DataFrame(sessions)
-    if d.empty:
-        print("No sessions found.")
-        return
-
     n_channels = len(channel_subset)
     pair_idx = [(i, j) for i in range(n_channels) for j in range(i + 1, n_channels)]
+    edges_path = output_dir / "sensorwide_edge_timeseries.csv"
+    node_path = output_dir / "sensorwide_node_strength_timeseries.csv"
+    channels_path = output_dir / "sensorwide_channel_layout.csv"
 
-    # key -> [sum, count]
-    agg = {}
-    info_subset = None
-    skipped_sessions = 0
     used_sessions = 0
+    skipped_sessions = 0
+    if run_compute:
+        sessions = util_wrangle_load_sessions()
+        d = pd.DataFrame(sessions)
+        if d.empty:
+            print("No sessions found.")
+            return
 
-    for sbj in d["subject"].unique():
-        ds = d[d["subject"] == sbj]
-        for day in ds["day"].unique():
-            dsd = ds[ds["day"] == day]
-            epochs = dsd["epochs"].iloc[0]
-            epochs = epochs[["Stim/A", "Stim/B"]]
-            epochs = epochs.load_data()
-            if not all(ch in epochs.ch_names for ch in channel_subset):
-                skipped_sessions += 1
-                continue
-            epochs.pick(channel_subset)
-            if info_subset is None:
-                info_subset = epochs.info.copy()
+        # key -> [sum, count]
+        agg = {}
+        info_subset = None
 
-            rt_sec = (
-                dsd["beh_df"].iloc[0]
-                .sort_values("trial")["rt"]
-                .astype(float)
-                .to_numpy()
-                / 1000.0
+        for sbj in d["subject"].unique():
+            ds = d[d["subject"] == sbj]
+            for day in ds["day"].unique():
+                dsd = ds[ds["day"] == day]
+                epochs = dsd["epochs"].iloc[0]
+                epochs = epochs[["Stim/A", "Stim/B"]]
+                epochs = epochs.load_data()
+                if not all(ch in epochs.ch_names for ch in channel_subset):
+                    skipped_sessions += 1
+                    continue
+                epochs.pick(channel_subset)
+                if info_subset is None:
+                    info_subset = epochs.info.copy()
+
+                rt_sec = (
+                    dsd["beh_df"].iloc[0]
+                    .sort_values("trial")["rt"]
+                    .astype(float)
+                    .to_numpy()
+                    / 1000.0
+                )
+
+                times = epochs.times
+                stim_starts = np.arange(stim_tmin, stim_tmax - window_sec + 1e-12, step_sec)
+                resp_starts = np.arange(resp_tmin, resp_tmax - window_sec + 1e-12, step_sec)
+
+                if (len(stim_starts) == 0) and (len(resp_starts) == 0):
+                    continue
+
+                for band_name, (fmin, fmax) in bands.items():
+                    epochs_band = epochs.copy().filter(
+                        l_freq=fmin,
+                        h_freq=fmax,
+                        method="fir",
+                        fir_design="firwin",
+                        phase="zero-double",
+                        verbose="ERROR",
+                    )
+                    epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
+                    data = epochs_band.get_data()
+                    n_trials = min(data.shape[0], len(rt_sec))
+                    if n_trials == 0:
+                        continue
+                    data = data[:n_trials, :, :]
+                    rt_use = rt_sec[:n_trials]
+
+                    # Stim-locked windows
+                    for t_start in stim_starts:
+                        t_end = t_start + window_sec
+                        i0 = int(np.searchsorted(times, t_start, side="left"))
+                        i1 = int(np.searchsorted(times, t_end, side="left"))
+                        if i1 - i0 < 2:
+                            continue
+                        win = data[:, :, i0:i1]
+                        lock_time = float(t_start)
+                        for i, j in pair_idx:
+                            val = _compute_abs_imcoh(win[:, i, :].reshape(-1), win[:, j, :].reshape(-1))
+                            if not np.isfinite(val):
+                                continue
+                            key = ("stim", int(day), band_name, lock_time, i, j)
+                            if key not in agg:
+                                agg[key] = [0.0, 0]
+                            agg[key][0] += val
+                            agg[key][1] += 1
+
+                    # Response-locked windows (0 at response, increasing rightward means further pre-response)
+                    for tau_start in resp_starts:
+                        tau_end = tau_start + window_sec
+                        lock_time = float(tau_start)
+                        for i, j in pair_idx:
+                            x_chunks = []
+                            y_chunks = []
+                            for i_trial in range(n_trials):
+                                rt = rt_use[i_trial]
+                                if (not np.isfinite(rt)) or (rt <= 0):
+                                    continue
+                                seg_tmin = rt - tau_end
+                                seg_tmax = rt - tau_start
+                                if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
+                                    continue
+                                i0 = int(np.searchsorted(times, seg_tmin, side="left"))
+                                i1 = int(np.searchsorted(times, seg_tmax, side="left"))
+                                if i1 - i0 < 2:
+                                    continue
+                                x_chunks.append(data[i_trial, i, i0:i1])
+                                y_chunks.append(data[i_trial, j, i0:i1])
+                            if not x_chunks:
+                                continue
+                            val = _compute_abs_imcoh(np.concatenate(x_chunks), np.concatenate(y_chunks))
+                            if not np.isfinite(val):
+                                continue
+                            key = ("response", int(day), band_name, lock_time, i, j)
+                            if key not in agg:
+                                agg[key] = [0.0, 0]
+                            agg[key][0] += val
+                            agg[key][1] += 1
+
+                    used_sessions += 1
+
+        if not agg:
+            print("No sensor-wide connectivity values computed.")
+            return
+        if info_subset is None:
+            print("No channel info available for plotting.")
+            return
+
+        agg_rows = []
+        for lock_name, day, band_name, t, i, j in sorted(agg.keys()):
+            s, c = agg[(lock_name, day, band_name, t, i, j)]
+            agg_rows.append(
+                {
+                    "lock_type": lock_name,
+                    "day": int(day),
+                    "band": band_name,
+                    "lock_time": float(t),
+                    "ch_i": channel_subset[i],
+                    "ch_j": channel_subset[j],
+                    "conn_val": float(s / c) if c > 0 else np.nan,
+                    "n_session_contrib": int(c),
+                }
             )
 
-            times = epochs.times
-            stim_starts = np.arange(stim_tmin, stim_tmax - window_sec + 1e-12, step_sec)
-            resp_starts = np.arange(resp_tmin, resp_tmax - window_sec + 1e-12, step_sec)
+        d_edges = pd.DataFrame(agg_rows).sort_values(
+            ["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"]
+        )
+        d_edges.to_csv(edges_path, index=False)
 
-            if (len(stim_starts) == 0) and (len(resp_starts) == 0):
-                continue
+        d_node_strength = (
+            d_edges.melt(
+                id_vars=["lock_type", "day", "band", "lock_time", "conn_val"],
+                value_vars=["ch_i", "ch_j"],
+                value_name="channel",
+                var_name="channel_role",
+            )
+            .drop(columns=["channel_role"])
+            .groupby(["lock_type", "day", "band", "lock_time", "channel"], as_index=False)["conn_val"]
+            .sum()
+            .rename(columns={"conn_val": "node_strength"})
+            .sort_values(["lock_type", "band", "day", "lock_time", "channel"])
+        )
+        d_node_strength.to_csv(node_path, index=False)
 
-            for band_name, (fmin, fmax) in bands.items():
-                epochs_band = epochs.copy().filter(
-                    l_freq=fmin,
-                    h_freq=fmax,
-                    method="fir",
-                    fir_design="firwin",
-                    phase="zero-double",
-                    verbose="ERROR",
-                )
-                epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
-                data = epochs_band.get_data()
-                n_trials = min(data.shape[0], len(rt_sec))
-                if n_trials == 0:
-                    continue
-                data = data[:n_trials, :, :]
-                rt_use = rt_sec[:n_trials]
+        xy = _channel_xy(info_subset, channel_subset)
+        d_channels = pd.DataFrame(
+            {
+                "channel": channel_subset,
+                "x": xy[:, 0],
+                "y": xy[:, 1],
+            }
+        )
+        d_channels.to_csv(channels_path, index=False)
 
-                # Stim-locked windows
-                for t_start in stim_starts:
-                    t_end = t_start + window_sec
-                    i0 = int(np.searchsorted(times, t_start, side="left"))
-                    i1 = int(np.searchsorted(times, t_end, side="left"))
-                    if i1 - i0 < 2:
-                        continue
-                    win = data[:, :, i0:i1]
-                    lock_time = float(t_start)
-                    for i, j in pair_idx:
-                        val = _compute_abs_imcoh(win[:, i, :].reshape(-1), win[:, j, :].reshape(-1))
-                        if not np.isfinite(val):
-                            continue
-                        key = ("stim", int(day), band_name, lock_time, i, j)
-                        if key not in agg:
-                            agg[key] = [0.0, 0]
-                        agg[key][0] += val
-                        agg[key][1] += 1
-
-                # Response-locked windows (0 at response, increasing rightward means further pre-response)
-                for tau_start in resp_starts:
-                    tau_end = tau_start + window_sec
-                    lock_time = float(tau_start)
-                    for i, j in pair_idx:
-                        x_chunks = []
-                        y_chunks = []
-                        for i_trial in range(n_trials):
-                            rt = rt_use[i_trial]
-                            if (not np.isfinite(rt)) or (rt <= 0):
-                                continue
-                            seg_tmin = rt - tau_end
-                            seg_tmax = rt - tau_start
-                            if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
-                                continue
-                            i0 = int(np.searchsorted(times, seg_tmin, side="left"))
-                            i1 = int(np.searchsorted(times, seg_tmax, side="left"))
-                            if i1 - i0 < 2:
-                                continue
-                            x_chunks.append(data[i_trial, i, i0:i1])
-                            y_chunks.append(data[i_trial, j, i0:i1])
-                        if not x_chunks:
-                            continue
-                        val = _compute_abs_imcoh(np.concatenate(x_chunks), np.concatenate(y_chunks))
-                        if not np.isfinite(val):
-                            continue
-                        key = ("response", int(day), band_name, lock_time, i, j)
-                        if key not in agg:
-                            agg[key] = [0.0, 0]
-                        agg[key][0] += val
-                        agg[key][1] += 1
-
-            used_sessions += 1
-
-    if not agg:
-        print("No sensor-wide connectivity values computed.")
-        return
-    if info_subset is None:
-        print("No channel info available for plotting.")
+    # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
+    if not edges_path.exists() or not channels_path.exists():
+        raise FileNotFoundError(
+            f"Missing sensorwide output tables in {output_dir}. Run with run_compute=True first."
+        )
+    if not save_figures:
         return
 
-    xy = _channel_xy(info_subset, channel_subset)
-    all_days = sorted({k[1] for k in agg.keys()})
-    agg_rows = []
+    d_edges_plot = pd.read_csv(edges_path)
+    d_channels_plot = pd.read_csv(channels_path)
+    ch_to_idx = {ch: i for i, ch in enumerate(channel_subset)}
+    xy_plot = np.c_[
+        d_channels_plot.set_index("channel").loc[channel_subset, "x"].to_numpy(),
+        d_channels_plot.set_index("channel").loc[channel_subset, "y"].to_numpy(),
+    ]
+    all_days = sorted(d_edges_plot["day"].dropna().unique().astype(int).tolist())
 
     for lock_name in locks:
         for band_name in bands.keys():
             day_data = {}
+            d_lb = d_edges_plot[
+                (d_edges_plot["lock_type"] == lock_name) & (d_edges_plot["band"] == band_name)
+            ]
             for day in all_days:
-                times_this = sorted({
-                    k[3] for k in agg.keys()
-                    if (k[0] == lock_name and k[1] == day and k[2] == band_name)
-                })
+                d_day = d_lb[d_lb["day"] == day]
+                times_this = sorted(d_day["lock_time"].dropna().unique().tolist())
                 mats = []
                 for t in times_this:
                     mat = np.full((n_channels, n_channels), np.nan, dtype=float)
-                    for i, j in pair_idx:
-                        key = (lock_name, day, band_name, t, i, j)
-                        if key in agg:
-                            s, c = agg[key]
-                            mat[i, j] = s / c if c > 0 else np.nan
-                            mat[j, i] = mat[i, j]
-                            agg_rows.append(
-                                {
-                                    "lock_type": lock_name,
-                                    "day": day,
-                                    "band": band_name,
-                                    "lock_time": float(t),
-                                    "ch_i": channel_subset[i],
-                                    "ch_j": channel_subset[j],
-                                    "conn_val": float(mat[i, j]),
-                                    "n_session_contrib": int(c),
-                                }
-                            )
+                    d_t = d_day[d_day["lock_time"] == t]
+                    for _, row in d_t.iterrows():
+                        i = ch_to_idx.get(row["ch_i"])
+                        j = ch_to_idx.get(row["ch_j"])
+                        if i is None or j is None:
+                            continue
+                        mat[i, j] = float(row["conn_val"])
+                        mat[j, i] = float(row["conn_val"])
                     np.fill_diagonal(mat, 0.0)
                     mats.append(mat)
-                day_data[day] = {
-                    "times": np.array(times_this, dtype=float),
-                    "mats": mats,
-                }
+                day_data[day] = {"times": np.array(times_this, dtype=float), "mats": mats}
 
             _plot_edge_time_carpet(day_data, pair_idx, lock_name, band_name)
-            _plot_graph_snapshots(day_data, xy, pair_idx, lock_name, band_name)
-            _plot_node_strength_topomaps(day_data, info_subset, lock_name, band_name)
-
-    d_edges = pd.DataFrame(agg_rows).sort_values(
-        ["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"]
-    )
-    d_edges.to_csv(output_dir / "sensorwide_edge_timeseries.csv", index=False)
-
-    d_node_strength = (
-        d_edges.melt(
-            id_vars=["lock_type", "day", "band", "lock_time", "conn_val"],
-            value_vars=["ch_i", "ch_j"],
-            value_name="channel",
-            var_name="channel_role",
-        )
-        .drop(columns=["channel_role"])
-        .groupby(["lock_type", "day", "band", "lock_time", "channel"], as_index=False)["conn_val"]
-        .sum()
-        .rename(columns={"conn_val": "node_strength"})
-        .sort_values(["lock_type", "band", "day", "lock_time", "channel"])
-    )
-    d_node_strength.to_csv(output_dir / "sensorwide_node_strength_timeseries.csv", index=False)
-
-    d_channels = pd.DataFrame(
-        {
-            "channel": channel_subset,
-            "x": xy[:, 0],
-            "y": xy[:, 1],
-        }
-    )
-    d_channels.to_csv(output_dir / "sensorwide_channel_layout.csv", index=False)
+            _plot_graph_snapshots(day_data, xy_plot, pair_idx, lock_name, band_name)
+            info_plot = mne.create_info(ch_names=channel_subset, sfreq=256.0, ch_types="eeg")
+            info_plot.set_montage(mne.channels.make_standard_montage("biosemi64"), on_missing="ignore")
+            _plot_node_strength_topomaps(day_data, info_plot, lock_name, band_name)
 
     print(
         f"Sensor-wide dynamics complete. Used sessions: {used_sessions}, "
         f"skipped sessions: {skipped_sessions}. Figure dir: {figures_dir}. Output dir: {output_dir}"
     )
+
+
+def run_connect_visual_motor():
+    """Run visual-motor connectivity analysis."""
+    return util_connect_compute_visual_motor(save_figures=False, run_compute=True)
+
+
+def save_fig_connect_visual_motor():
+    """Generate visual-motor connectivity figures."""
+    return util_connect_compute_visual_motor(save_figures=True, run_compute=False)
+
+
+def run_connect_sensorwide_dynamics():
+    """Run sensor-wide connectivity dynamics analysis."""
+    return util_connect_explore_sensorwide_dynamics(save_figures=False, run_compute=True)
+
+
+def save_fig_connect_sensorwide_dynamics():
+    """Generate sensor-wide connectivity dynamics figures."""
+    return util_connect_explore_sensorwide_dynamics(save_figures=True, run_compute=False)

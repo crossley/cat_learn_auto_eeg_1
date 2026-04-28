@@ -67,14 +67,13 @@ def _decode_timecourse(X, y, n_splits=5, random_state=42):
 
 
 def util_mvpa_time_resolved(
-    epo_dir: Path | str = Path("../task_eeg_preprocessed"),
     output_dir: Path | str = _OUTPUT_ROOT / "mvpa",
     figures_dir: Path | str = _FIGURES_ROOT / "mvpa",
     min_epochs: int = 20,
     random_state: int = 42,
+    save_figures: bool = True,
 ):
     """Compute per-session time-resolved MVPA and day-effect statistics."""
-    epo_dir = Path(epo_dir)
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +100,7 @@ def util_mvpa_time_resolved(
 
     time_sec = None
 
-    sessions = util_wrangle_load_sessions(epo_dir=epo_dir, preload=False)
+    sessions = util_wrangle_load_sessions()
     for item in sessions:
         session_file = item["epo_file"]
         subject = item["subject"]
@@ -310,11 +309,38 @@ def util_mvpa_time_resolved(
         day_effect_df.loc[valid, "p_fdr"] = p_corr
         day_effect_df.loc[valid, "significant_fdr"] = rej
 
+    session_df.to_csv(session_csv, index=False)
+    subject_day_df.to_csv(subject_day_csv, index=False)
+    day_means_df.to_csv(day_means_csv, index=False)
+    day_effect_df.to_csv(day_effect_csv, index=False)
+    qc_df.to_csv(qc_csv, index=False)
+
+    # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
+    day_means_plot_df = pd.read_csv(day_means_csv)
+    day_effect_plot_df = pd.read_csv(day_effect_csv)
+
+    if not save_figures:
+        print("Skipped MVPA figure generation (save_figures=False).")
+        return {
+            "session_df": session_df,
+            "subject_day_df": subject_day_df,
+            "day_means_df": day_means_df,
+            "day_effect_df": day_effect_df,
+            "qc_df": qc_df,
+            "time_sec": np.array(sorted(session_df["time_sec"].unique())),
+            "session_csv": session_csv,
+            "subject_day_csv": subject_day_csv,
+            "day_means_csv": day_means_csv,
+            "day_effect_csv": day_effect_csv,
+            "qc_csv": qc_csv,
+            "figure_paths": {},
+        }
+
     # Figure 1: one panel per day with mean+-SEM AUC over time
-    days = sorted(day_means_df["day"].unique())
+    days = sorted(day_means_plot_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 3.8), sharey=True, squeeze=False)
     for ax, day in zip(axes.ravel(), days):
-        g = day_means_df[day_means_df["day"] == day].sort_values("time_sec")
+        g = day_means_plot_df[day_means_plot_df["day"] == day].sort_values("time_sec")
         x = g["time_sec"].to_numpy()
         y = g["auc_mean"].to_numpy()
         s = g["auc_sem"].to_numpy()
@@ -332,7 +358,7 @@ def util_mvpa_time_resolved(
     plt.close(fig)
 
     # Figure 2: day-effect slope over time with FDR markers
-    g = day_effect_df.sort_values("time_sec")
+    g = day_effect_plot_df.sort_values("time_sec")
     x = g["time_sec"].to_numpy()
     y = g["day_coef"].to_numpy()
     sig = g["significant_fdr"].to_numpy(dtype=bool)
@@ -351,12 +377,6 @@ def util_mvpa_time_resolved(
     fig.tight_layout()
     fig.savefig(fig_day_slope, dpi=150, bbox_inches="tight")
     plt.close(fig)
-
-    session_df.to_csv(session_csv, index=False)
-    subject_day_df.to_csv(subject_day_csv, index=False)
-    day_means_df.to_csv(day_means_csv, index=False)
-    day_effect_df.to_csv(day_effect_csv, index=False)
-    qc_df.to_csv(qc_csv, index=False)
 
     print(f"Wrote MVPA session table: {session_csv}")
     print(f"Wrote MVPA subject-day table: {subject_day_csv}")
@@ -524,16 +544,15 @@ def _process_within_day_session(
 
 
 def util_mvpa_temporal_generalization(
-    epo_dir: Path | str = Path("../task_eeg_preprocessed"),
     output_dir: Path | str = _OUTPUT_ROOT / "mvpa_tg",
     figures_dir: Path | str = _FIGURES_ROOT / "mvpa_tg",
     min_epochs: int = 20,
     random_state: int = 42,
     progress_every: int = 5,
     n_workers: int = 1,
+    save_figures: bool = True,
 ):
     """Compute within-day and cross-day temporal generalization decoding."""
-    epo_dir = Path(epo_dir)
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -558,7 +577,7 @@ def util_mvpa_temporal_generalization(
 
     rng_master = np.random.default_rng(random_state)
 
-    session_items = util_wrangle_load_sessions(epo_dir=epo_dir, preload=False)
+    session_items = util_wrangle_load_sessions()
 
     n_workers = max(1, int(n_workers))
     print(
@@ -818,6 +837,23 @@ def util_mvpa_temporal_generalization(
     cross_day_mean_df.to_csv(cross_day_mean_csv, index=False)
     qc_df.to_csv(qc_csv, index=False)
 
+    if not save_figures:
+        print("Skipped TG figure generation (save_figures=False).")
+        return {
+            "within_subject_df": within_subject_df,
+            "within_day_mean_df": within_day_mean_df,
+            "cross_subject_df": cross_subject_df,
+            "cross_day_mean_df": cross_day_mean_df,
+            "qc_df": qc_df,
+            "time_sec": np.array(time_template, dtype=float),
+            "within_subject_csv": within_subject_csv,
+            "within_day_mean_csv": within_day_mean_csv,
+            "cross_subject_csv": cross_subject_csv,
+            "cross_day_mean_csv": cross_day_mean_csv,
+            "qc_csv": qc_csv,
+            "figure_paths": {},
+        }
+
     # Plot imports are intentionally lazy to avoid startup stalls from
     # font-cache initialization before compute begins.
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
@@ -827,13 +863,17 @@ def util_mvpa_temporal_generalization(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
+    within_day_plot_df = pd.read_csv(within_day_mean_csv)
+    cross_day_plot_df = pd.read_csv(cross_day_mean_csv)
+
     # Figure: within-day heatmaps (one panel per day).
-    days = sorted(within_day_mean_df["day"].unique())
+    days = sorted(within_day_plot_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(4.6 * len(days), 4), squeeze=False)
-    vmin = float(within_day_mean_df["auc_mean"].min())
-    vmax = float(within_day_mean_df["auc_mean"].max())
+    vmin = float(within_day_plot_df["auc_mean"].min())
+    vmax = float(within_day_plot_df["auc_mean"].max())
     for ax, day in zip(axes.ravel(), days):
-        g = within_day_mean_df[within_day_mean_df["day"] == day]
+        g = within_day_plot_df[within_day_plot_df["day"] == day]
         pivot = g.pivot(index="train_time_sec", columns="test_time_sec", values="auc_mean")
         mat = pivot.to_numpy()
         im = ax.imshow(
@@ -865,8 +905,8 @@ def util_mvpa_temporal_generalization(
     fig, ax = plt.subplots(figsize=(5.2, 4.6))
     day_grid = sorted({1, 2, 3, 4, 5})
     mat = np.full((len(day_grid), len(day_grid)), np.nan)
-    if not cross_day_mean_df.empty:
-        for _, r in cross_day_mean_df.iterrows():
+    if not cross_day_plot_df.empty:
+        for _, r in cross_day_plot_df.iterrows():
             i = day_grid.index(int(r["train_day"]))
             j = day_grid.index(int(r["test_day"]))
             mat[i, j] = float(r["auc_mean"])
@@ -918,3 +958,155 @@ def util_mvpa_temporal_generalization(
             "cross_day_transfer": fig_cross,
         },
     }
+
+
+def run_mvpa_time_resolved(**kwargs):
+    """Run time-resolved MVPA analysis."""
+    return util_mvpa_time_resolved(save_figures=False, **kwargs)
+
+
+def save_fig_mvpa_time_resolved(**kwargs):
+    """Generate time-resolved MVPA figures."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa"))
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    day_means_csv = output_dir / "mvpa_day_means_timecourse.csv"
+    day_effect_csv = output_dir / "mvpa_day_effect_per_time.csv"
+    if (not day_means_csv.exists()) or (not day_effect_csv.exists()):
+        raise FileNotFoundError(f"Missing MVPA outputs in {output_dir}. Run run_mvpa_time_resolved() first.")
+
+    day_means_df = pd.read_csv(day_means_csv)
+    day_effect_df = pd.read_csv(day_effect_csv)
+    fig_day_panels = figures_dir / "mvpa_auc_by_day_panels.png"
+    fig_day_slope = figures_dir / "mvpa_day_slope_timecourse.png"
+
+    days = sorted(day_means_df["day"].unique())
+    fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 3.8), sharey=True, squeeze=False)
+    for ax, day in zip(axes.ravel(), days):
+        g = day_means_df[day_means_df["day"] == day].sort_values("time_sec")
+        x = g["time_sec"].to_numpy()
+        y = g["auc_mean"].to_numpy()
+        s = g["auc_sem"].to_numpy()
+        ax.plot(x, y, color="tab:blue", linewidth=2)
+        ax.fill_between(x, y - s, y + s, color="tab:blue", alpha=0.2, linewidth=0)
+        ax.axhline(0.5, color="k", linestyle="--", linewidth=1)
+        ax.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+        ax.set_title(f"Day {day}")
+        ax.set_xlabel("Time (s)")
+        ax.grid(alpha=0.25)
+    axes.ravel()[0].set_ylabel("ROC-AUC")
+    fig.suptitle("Time-resolved Category Decoding (Stim/A vs Stim/B)")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(fig_day_panels, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    g = day_effect_df.sort_values("time_sec")
+    x = g["time_sec"].to_numpy()
+    y = g["day_coef"].to_numpy()
+    sig = g["significant_fdr"].to_numpy(dtype=bool)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(x, y, color="tab:green", linewidth=2, label="Day slope (AUC ~ day)")
+    ax.axhline(0.0, color="k", linestyle="--", linewidth=1)
+    ax.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+    if np.any(sig):
+        ax.scatter(x[sig], y[sig], color="red", s=16, label="FDR < 0.05", zorder=3)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Day coefficient")
+    ax.set_title("Day Effect on Decoding Over Time")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(fig_day_slope, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return {"figure_paths": {"day_panels": fig_day_panels, "day_slope": fig_day_slope}}
+
+
+def run_mvpa_temporal_generalization(**kwargs):
+    """Run temporal-generalization MVPA analysis."""
+    return util_mvpa_temporal_generalization(save_figures=False, **kwargs)
+
+
+def save_fig_mvpa_temporal_generalization(**kwargs):
+    """Generate temporal-generalization MVPA figures."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa_tg"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa_tg"))
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    within_day_mean_csv = output_dir / "tg_within_day_day_mean.csv"
+    cross_day_mean_csv = output_dir / "tg_cross_day_day_mean.csv"
+    if (not within_day_mean_csv.exists()) or (not cross_day_mean_csv.exists()):
+        raise FileNotFoundError(
+            f"Missing TG outputs in {output_dir}. Run run_mvpa_temporal_generalization() first."
+        )
+    within_day_mean_df = pd.read_csv(within_day_mean_csv)
+    cross_day_mean_df = pd.read_csv(cross_day_mean_csv)
+
+    fig_within = figures_dir / "tg_within_day_heatmaps.png"
+    fig_cross = figures_dir / "tg_cross_day_transfer_5x4.png"
+
+    days = sorted(within_day_mean_df["day"].unique())
+    fig, axes = plt.subplots(1, len(days), figsize=(4.6 * len(days), 4), squeeze=False)
+    vmin = float(within_day_mean_df["auc_mean"].min())
+    vmax = float(within_day_mean_df["auc_mean"].max())
+    for ax, day in zip(axes.ravel(), days):
+        g = within_day_mean_df[within_day_mean_df["day"] == day]
+        pivot = g.pivot(index="train_time_sec", columns="test_time_sec", values="auc_mean")
+        mat = pivot.to_numpy()
+        im = ax.imshow(
+            mat,
+            origin="lower",
+            aspect="auto",
+            extent=[
+                float(pivot.columns.min()),
+                float(pivot.columns.max()),
+                float(pivot.index.min()),
+                float(pivot.index.max()),
+            ],
+            vmin=vmin,
+            vmax=vmax,
+            cmap="viridis",
+        )
+        ax.axvline(0.0, color="white", linestyle=":", linewidth=1)
+        ax.axhline(0.0, color="white", linestyle=":", linewidth=1)
+        ax.set_title(f"Day {day}")
+        ax.set_xlabel("Test Time (s)")
+        ax.set_ylabel("Train Time (s)")
+    fig.suptitle("Within-Day Temporal Generalization (AUC)")
+    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, label="AUC")
+    fig.subplots_adjust(top=0.85, wspace=0.28)
+    fig.savefig(fig_within, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(5.2, 4.6))
+    day_grid = sorted({1, 2, 3, 4, 5})
+    mat = np.full((len(day_grid), len(day_grid)), np.nan)
+    if not cross_day_mean_df.empty:
+        for _, r in cross_day_mean_df.iterrows():
+            i = day_grid.index(int(r["train_day"]))
+            j = day_grid.index(int(r["test_day"]))
+            mat[i, j] = float(r["auc_mean"])
+    masked = np.ma.masked_invalid(mat)
+    im = ax.imshow(masked, cmap="magma", aspect="equal")
+    ax.set_xticks(range(len(day_grid)))
+    ax.set_yticks(range(len(day_grid)))
+    ax.set_xticklabels([f"D{d}" for d in day_grid])
+    ax.set_yticklabels([f"D{d}" for d in day_grid])
+    ax.set_xlabel("Test Day")
+    ax.set_ylabel("Train Day")
+    ax.set_title("Cross-Day Transfer (Diagonal Mean AUC)")
+    for i in range(len(day_grid)):
+        for j in range(len(day_grid)):
+            if np.isfinite(mat[i, j]):
+                ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
+            elif i == j:
+                ax.text(j, i, "—", ha="center", va="center", color="black")
+    fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
+    fig.tight_layout()
+    fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return {"figure_paths": {"within_day_heatmaps": fig_within, "cross_day_transfer": fig_cross}}
