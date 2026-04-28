@@ -5,6 +5,9 @@ from pathlib import Path
 import os
 import time
 import warnings
+import json
+import hashlib
+from multiprocessing import cpu_count
 
 import matplotlib
 
@@ -26,11 +29,33 @@ os.environ["NUMBA_DISABLE_JIT"] = "1"
 import mne
 from mne.decoding import GeneralizingEstimator, cross_val_multiscore
 from util_func_wrangle import util_wrangle_load_sessions
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:  # pragma: no cover
+    threadpool_limits = None
 
 _CODE_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _CODE_DIR.parent
 _OUTPUT_ROOT = _PROJECT_DIR / "output"
 _FIGURES_ROOT = _PROJECT_DIR / "figures"
+
+
+def _apply_single_thread_env_defaults():
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+
+def _default_n_workers():
+    logical = max(1, int(cpu_count() or 1))
+    physical_est = max(1, logical // 2)
+    return max(1, physical_est - 2)
+
+
+def _session_cache_key(session_item: dict):
+    token = f"{session_item['subject']}_{session_item['day']}_{session_item['epo_file']}"
+    return hashlib.md5(token.encode("utf-8")).hexdigest()[:12]
 
 
 def _decode_timecourse(X, y, n_splits=5, random_state=42):
@@ -447,25 +472,29 @@ def _prepare_stim_data(epochs):
     return X, y, t
 
 
-def _balanced_day_subset(X, y, n_per_class: int, rng: np.random.Generator):
-    idx0 = np.where(y == 0)[0]
-    idx1 = np.where(y == 1)[0]
-    pick0 = rng.choice(idx0, size=n_per_class, replace=False)
-    pick1 = rng.choice(idx1, size=n_per_class, replace=False)
-    idx = np.concatenate([pick0, pick1])
-    rng.shuffle(idx)
-    return X[idx], y[idx]
-
-
-def _process_within_day_session(
-    session_item: dict,
-    min_epochs: int,
-    random_state: int,
-):
+def _prepare_session_cache(session_item: dict, cache_dir: Path):
     session_file = session_item["epo_file"]
     subject = int(session_item["subject"])
     day = int(session_item["day"])
     epochs = session_item["epochs"]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"stim_cache_{_session_cache_key(session_item)}.npz"
+
+    if cache_path.exists():
+        with np.load(cache_path, allow_pickle=False) as z:
+            t = z["t"]
+            y = z["y"]
+        return {
+            "ok": True,
+            "session_file": session_file,
+            "subject": subject,
+            "day": day,
+            "cache_path": str(cache_path),
+            "n_trials": int(len(y)),
+            "n_a": int(np.sum(y == 0)),
+            "n_b": int(np.sum(y == 1)),
+            "n_times": int(len(t)),
+        }
 
     try:
         X, y, t = _prepare_stim_data(epochs)
@@ -483,6 +512,45 @@ def _process_within_day_session(
                 "detail": msg,
             },
         }
+
+    np.savez_compressed(cache_path, X=X, y=y, t=t)
+    return {
+        "ok": True,
+        "session_file": session_file,
+        "subject": subject,
+        "day": day,
+        "cache_path": str(cache_path),
+        "n_trials": int(len(y)),
+        "n_a": int(np.sum(y == 0)),
+        "n_b": int(np.sum(y == 1)),
+        "n_times": int(len(t)),
+    }
+
+
+def _balanced_day_subset(X, y, n_per_class: int, rng: np.random.Generator):
+    idx0 = np.where(y == 0)[0]
+    idx1 = np.where(y == 1)[0]
+    pick0 = rng.choice(idx0, size=n_per_class, replace=False)
+    pick1 = rng.choice(idx1, size=n_per_class, replace=False)
+    idx = np.concatenate([pick0, pick1])
+    rng.shuffle(idx)
+    return X[idx], y[idx]
+
+
+def _process_within_day_session(
+    session_meta: dict,
+    min_epochs: int,
+    random_state: int,
+):
+    session_file = session_meta["session_file"]
+    subject = int(session_meta["subject"])
+    day = int(session_meta["day"])
+    cache_path = session_meta["cache_path"]
+
+    with np.load(cache_path, allow_pickle=False) as z:
+        X = z["X"]
+        y = z["y"]
+        t = z["t"]
 
     if len(y) < min_epochs:
         return {
@@ -536,10 +604,90 @@ def _process_within_day_session(
         "session_file": session_file,
         "subject": subject,
         "day": day,
+        "cache_path": cache_path,
         "X": X,
         "y": y,
         "t": t,
         "mat": mat,
+    }
+
+
+def _process_cross_day_pair(
+    pair_item: dict,
+    random_state: int,
+):
+    subject = int(pair_item["subject"])
+    d_train = int(pair_item["train_day"])
+    d_test = int(pair_item["test_day"])
+    train_session_file = pair_item["train_session_file"]
+    test_session_file = pair_item["test_session_file"]
+    train_cache_path = pair_item["train_cache_path"]
+    test_cache_path = pair_item["test_cache_path"]
+    pair_seed = int(pair_item["pair_seed"])
+
+    with np.load(train_cache_path, allow_pickle=False) as z:
+        X_train_all = z["X"]
+        y_train_all = z["y"]
+    with np.load(test_cache_path, allow_pickle=False) as z:
+        X_test_all = z["X"]
+        y_test_all = z["y"]
+
+    n_per_class = int(
+        min(
+            np.sum(y_train_all == 0),
+            np.sum(y_train_all == 1),
+            np.sum(y_test_all == 0),
+            np.sum(y_test_all == 1),
+        )
+    )
+    if n_per_class < 5:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{train_session_file}->{test_session_file}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "cross_day_balance",
+                "reason": "insufficient_balanced_trials",
+                "detail": f"n_per_class={n_per_class}",
+            },
+        }
+
+    rng_pair = np.random.default_rng(pair_seed)
+    X_train, y_train = _balanced_day_subset(X_train_all, y_train_all, n_per_class=n_per_class, rng=rng_pair)
+    X_test, y_test = _balanced_day_subset(X_test_all, y_test_all, n_per_class=n_per_class, rng=rng_pair)
+
+    clf = _build_clf(random_state=random_state)
+    ge = GeneralizingEstimator(clf, scoring="roc_auc", n_jobs=1, verbose=False)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SklearnConvergenceWarning)
+            ge.fit(X_train, y_train)
+            mat_transfer = ge.score(X_test, y_test)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{train_session_file}->{test_session_file}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "cross_day_tg",
+                "reason": "compute_error",
+                "detail": str(exc),
+            },
+        }
+
+    return {
+        "ok": True,
+        "row": {
+            "subject": subject,
+            "train_day": d_train,
+            "test_day": d_test,
+            "n_per_class": int(n_per_class),
+            "n_train_trials_used": int(len(y_train)),
+            "n_test_trials_used": int(len(y_test)),
+            "diag_mean_auc": float(np.nanmean(np.diag(mat_transfer))),
+        },
     }
 
 
@@ -549,8 +697,10 @@ def util_mvpa_temporal_generalization(
     min_epochs: int = 20,
     random_state: int = 42,
     progress_every: int = 5,
-    n_workers: int = 1,
+    n_workers: int | None = None,
     save_figures: bool = True,
+    run_within_day: bool = True,
+    run_cross_day: bool = True,
 ):
     """Compute within-day and cross-day temporal generalization decoding."""
     output_dir = Path(output_dir)
@@ -558,18 +708,47 @@ def util_mvpa_temporal_generalization(
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
     mne.set_log_level("ERROR")
+    _apply_single_thread_env_defaults()
 
     within_subject_csv = output_dir / "tg_within_day_subject_level.csv"
     within_day_mean_csv = output_dir / "tg_within_day_day_mean.csv"
     cross_subject_csv = output_dir / "tg_cross_day_subject_level.csv"
     cross_day_mean_csv = output_dir / "tg_cross_day_day_mean.csv"
     qc_csv = output_dir / "tg_qc_log.csv"
+    progress_json = output_dir / "tg_progress.json"
     fig_within = figures_dir / "tg_within_day_heatmaps.png"
     fig_cross = figures_dir / "tg_cross_day_transfer_5x4.png"
 
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
     qc_rows = []
     t0 = time.time()
+    wrote_within_subject = False
+    wrote_cross_subject = False
+    wrote_qc = False
+
+    def _append_csv(df: pd.DataFrame, path: Path, wrote_flag: bool):
+        if df.empty:
+            return wrote_flag
+        df.to_csv(path, mode="a", header=not wrote_flag, index=False)
+        return True
+
+    def _write_progress(stage: str, within_done: int, within_total: int, cross_done: int, cross_total: int):
+        elapsed = time.time() - t0
+        rate = (cross_done / elapsed * 60.0) if elapsed > 0 else 0.0
+        eta_min = ((cross_total - cross_done) / (rate / 60.0) / 60.0) if rate > 0 and cross_total > 0 else None
+        payload = {
+            "stage": stage,
+            "elapsed_sec": elapsed,
+            "within_done": int(within_done),
+            "within_total": int(within_total),
+            "cross_done": int(cross_done),
+            "cross_total": int(cross_total),
+            "cross_pairs_per_min": float(rate),
+            "eta_min": None if eta_min is None else float(eta_min),
+            "updated_unix": time.time(),
+        }
+        with open(progress_json, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
 
     day_data = {}
     within_mats = []
@@ -578,38 +757,79 @@ def util_mvpa_temporal_generalization(
     rng_master = np.random.default_rng(random_state)
 
     session_items = util_wrangle_load_sessions()
+    cache_dir = output_dir / "cache_stim_arrays"
+    cache_results = [_prepare_session_cache(item, cache_dir=cache_dir) for item in session_items]
+    prepared_items = []
+    for result in cache_results:
+        if not result["ok"]:
+            qc_rows.append(result["qc"])
+        else:
+            prepared_items.append(result)
+    if qc_rows:
+        wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
+        qc_rows = []
 
+    if n_workers is None:
+        n_workers = _default_n_workers()
     n_workers = max(1, int(n_workers))
-    print(
-        f"[TG] Starting within-day TG on {len(session_items)} sessions "
-        f"(n_workers={n_workers})...",
-        flush=True,
-    )
-    if len(session_items) == 0:
-        within_results = []
-    elif n_workers == 1:
-        within_results = [
-            _process_within_day_session(
-                session_item=item,
-                min_epochs=min_epochs,
-                random_state=random_state,
-            )
-            for item in session_items
-        ]
-    else:
-        within_results = Parallel(n_jobs=n_workers, prefer="threads", verbose=0)(
-            delayed(_process_within_day_session)(
-                session_item=item,
-                min_epochs=min_epochs,
-                random_state=random_state,
-            )
-            for item in session_items
+    within_results = []
+    if run_within_day:
+        print(
+            f"[TG] Starting within-day TG on {len(prepared_items)} prepared sessions "
+            f"(n_workers={n_workers})...",
+            flush=True,
         )
+        _write_progress("within_day_running", 0, len(prepared_items), 0, 0)
+        if len(prepared_items) == 0:
+            within_results = []
+        elif n_workers == 1:
+            if threadpool_limits is None:
+                within_results = [
+                    _process_within_day_session(
+                        session_meta=item,
+                        min_epochs=min_epochs,
+                        random_state=random_state,
+                    )
+                    for item in prepared_items
+                ]
+            else:
+                with threadpool_limits(limits=1):
+                    within_results = [
+                        _process_within_day_session(
+                            session_meta=item,
+                            min_epochs=min_epochs,
+                            random_state=random_state,
+                        )
+                        for item in prepared_items
+                    ]
+        else:
+            if threadpool_limits is None:
+                within_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                    delayed(_process_within_day_session)(
+                        session_meta=item,
+                        min_epochs=min_epochs,
+                        random_state=random_state,
+                    )
+                    for item in prepared_items
+                )
+            else:
+                with threadpool_limits(limits=1):
+                    within_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                        delayed(_process_within_day_session)(
+                            session_meta=item,
+                            min_epochs=min_epochs,
+                            random_state=random_state,
+                        )
+                        for item in prepared_items
+                    )
 
     n_done = 0
     for result in within_results:
         if not result["ok"]:
             qc_rows.append(result["qc"])
+            if len(qc_rows) >= max(progress_every, 1):
+                wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
+                qc_rows = []
             continue
 
         subject = int(result["subject"])
@@ -646,196 +866,219 @@ def util_mvpa_temporal_generalization(
                 "n_b": int(np.sum(y == 1)),
             }
         )
-        day_data[(subject, day)] = {"X": X, "y": y, "session_file": session_file}
+        day_data[(subject, day)] = {
+            "cache_path": result["cache_path"],
+            "session_file": session_file,
+        }
+        # Incrementally append within-day subject-level rows.
+        n_t_local = len(t)
+        rows_local = []
+        for i in range(n_t_local):
+            for j in range(n_t_local):
+                rows_local.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "session_file": session_file,
+                        "n_trials": int(len(y)),
+                        "n_a": int(np.sum(y == 0)),
+                        "n_b": int(np.sum(y == 1)),
+                        "train_time_sec": float(t[i]),
+                        "test_time_sec": float(t[j]),
+                        "auc": float(mat[i, j]),
+                    }
+                )
+        wrote_within_subject = _append_csv(pd.DataFrame(rows_local), within_subject_csv, wrote_within_subject)
         n_done += 1
+        _write_progress("within_day_running", n_done, len(prepared_items), 0, 0)
         if (n_done % max(progress_every, 1)) == 0:
             elapsed = time.time() - t0
             print(
-                f"[TG] within-day complete {n_done}/{len(session_items)} sessions "
+                f"[TG] within-day complete {n_done}/{len(prepared_items)} sessions "
                 f"(elapsed {elapsed/60:.1f} min)",
                 flush=True,
             )
 
-    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
+    if qc_rows:
+        wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
+        qc_rows = []
+    qc_df = pd.read_csv(qc_csv) if qc_csv.exists() else pd.DataFrame(columns=qc_columns)
 
-    if not within_mats:
+    if run_within_day and not within_mats:
         pd.DataFrame().to_csv(within_subject_csv, index=False)
         pd.DataFrame().to_csv(within_day_mean_csv, index=False)
-        pd.DataFrame().to_csv(cross_subject_csv, index=False)
-        pd.DataFrame().to_csv(cross_day_mean_csv, index=False)
+        if run_cross_day:
+            pd.DataFrame().to_csv(cross_subject_csv, index=False)
+            pd.DataFrame().to_csv(cross_day_mean_csv, index=False)
         qc_df.to_csv(qc_csv, index=False)
         raise RuntimeError("No valid within-day TG matrices were computed.")
 
-    # Flatten within-day subject-level matrices.
-    within_rows = []
-    n_t = len(time_template)
-    for item in within_mats:
-        mat = item["mat"]
-        for i in range(n_t):
-            for j in range(n_t):
-                within_rows.append(
-                    {
-                        "subject": item["subject"],
-                        "day": item["day"],
-                        "session_file": item["session_file"],
-                        "n_trials": item["n_trials"],
-                        "n_a": item["n_a"],
-                        "n_b": item["n_b"],
-                        "train_time_sec": float(time_template[i]),
-                        "test_time_sec": float(time_template[j]),
-                        "auc": float(mat[i, j]),
-                    }
-                )
-    within_subject_df = pd.DataFrame(within_rows)
-
-    within_day_mean_df = (
-        within_subject_df.groupby(["day", "train_time_sec", "test_time_sec"], as_index=False)
-        .agg(
-            auc_mean=("auc", "mean"),
-            auc_sem=(
-                "auc",
-                lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
-            ),
-            n_subjects=("subject", "nunique"),
-        )
-        .sort_values(["day", "train_time_sec", "test_time_sec"])
-    )
-
-    # Write within-day outputs early so progress is visible while cross-day runs.
-    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
-    within_subject_df.to_csv(within_subject_csv, index=False)
-    within_day_mean_df.to_csv(within_day_mean_csv, index=False)
-    qc_df.to_csv(qc_csv, index=False)
-    print(
-        f"[TG] Wrote within-day outputs. Starting cross-day transfer on "
-        f"{len(sorted({k[0] for k in day_data}))} subjects...",
-        flush=True,
-    )
-
-    # Cross-day transfer (within-subject): train day -> test other day.
-    cross_rows = []
-    subjects = sorted({k[0] for k in day_data})
-    cross_done = 0
-    cross_total = 0
-    for subject in subjects:
-        d = sorted([k[1] for k in day_data if k[0] == subject])
-        cross_total += len(d) * (len(d) - 1)
-
-    for subject in subjects:
-        subject_days = sorted([k[1] for k in day_data if k[0] == subject])
-        if len(subject_days) < 2:
-            continue
-        print(f"[TG] cross-day subject {subject} with days {subject_days}", flush=True)
-        for d_train in subject_days:
-            for d_test in subject_days:
-                if d_test == d_train:
-                    continue
-
-                train_item = day_data[(subject, d_train)]
-                test_item = day_data[(subject, d_test)]
-                X_train_all, y_train_all = train_item["X"], train_item["y"]
-                X_test_all, y_test_all = test_item["X"], test_item["y"]
-
-                n_per_class = int(
-                    min(
-                        np.sum(y_train_all == 0),
-                        np.sum(y_train_all == 1),
-                        np.sum(y_test_all == 0),
-                        np.sum(y_test_all == 1),
-                    )
-                )
-
-                if n_per_class < 5:
-                    qc_rows.append(
+    if run_within_day:
+        # Flatten within-day subject-level matrices (for in-memory return/final means).
+        within_rows = []
+        n_t = len(time_template)
+        for item in within_mats:
+            mat = item["mat"]
+            for i in range(n_t):
+                for j in range(n_t):
+                    within_rows.append(
                         {
-                            "session_file": f"{train_item['session_file']}->{test_item['session_file']}",
-                            "subject": subject,
-                            "day": d_train,
-                            "stage": "cross_day_balance",
-                            "reason": "insufficient_balanced_trials",
-                            "detail": f"n_per_class={n_per_class}",
+                            "subject": item["subject"],
+                            "day": item["day"],
+                            "session_file": item["session_file"],
+                            "n_trials": item["n_trials"],
+                            "n_a": item["n_a"],
+                            "n_b": item["n_b"],
+                            "train_time_sec": float(time_template[i]),
+                            "test_time_sec": float(time_template[j]),
+                            "auc": float(mat[i, j]),
                         }
                     )
-                    continue
-
-                # Deterministic pair-specific RNG for reproducible balancing.
-                pair_seed = int(rng_master.integers(0, 2**31 - 1))
-                rng_pair = np.random.default_rng(pair_seed)
-
-                X_train, y_train = _balanced_day_subset(
-                    X_train_all, y_train_all, n_per_class=n_per_class, rng=rng_pair
-                )
-                X_test, y_test = _balanced_day_subset(
-                    X_test_all, y_test_all, n_per_class=n_per_class, rng=rng_pair
-                )
-
-                clf = _build_clf(random_state=random_state)
-                ge = GeneralizingEstimator(clf, scoring="roc_auc", n_jobs=1, verbose=False)
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", SklearnConvergenceWarning)
-                        ge.fit(X_train, y_train)
-                        mat_transfer = ge.score(X_test, y_test)
-                except Exception as exc:
-                    qc_rows.append(
-                        {
-                            "session_file": f"{train_item['session_file']}->{test_item['session_file']}",
-                            "subject": subject,
-                            "day": d_train,
-                            "stage": "cross_day_tg",
-                            "reason": "compute_error",
-                            "detail": str(exc),
-                        }
-                    )
-                    continue
-
-                diag_mean_auc = float(np.nanmean(np.diag(mat_transfer)))
-                cross_rows.append(
-                    {
-                        "subject": subject,
-                        "train_day": d_train,
-                        "test_day": d_test,
-                        "n_per_class": int(n_per_class),
-                        "n_train_trials_used": int(len(y_train)),
-                        "n_test_trials_used": int(len(y_test)),
-                        "diag_mean_auc": diag_mean_auc,
-                    }
-                )
-                cross_done += 1
-                if (cross_done % max(progress_every * 2, 1)) == 0:
-                    elapsed = time.time() - t0
-                    print(
-                        f"[TG] cross-day complete {cross_done}/{cross_total} pairs "
-                        f"(elapsed {elapsed/60:.1f} min)",
-                        flush=True,
-                    )
-                    pd.DataFrame(cross_rows).to_csv(cross_subject_csv, index=False)
-
-    cross_subject_df = pd.DataFrame(cross_rows)
-    if cross_subject_df.empty:
-        pd.DataFrame().to_csv(cross_day_mean_csv, index=False)
-        cross_day_mean_df = pd.DataFrame()
-    else:
-        cross_day_mean_df = (
-            cross_subject_df.groupby(["train_day", "test_day"], as_index=False)
+        within_subject_df = pd.DataFrame(within_rows)
+        within_day_mean_df = (
+            within_subject_df.groupby(["day", "train_time_sec", "test_time_sec"], as_index=False)
             .agg(
-                auc_mean=("diag_mean_auc", "mean"),
+                auc_mean=("auc", "mean"),
                 auc_sem=(
-                    "diag_mean_auc",
+                    "auc",
                     lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
                 ),
                 n_subjects=("subject", "nunique"),
             )
-            .sort_values(["train_day", "test_day"])
+            .sort_values(["day", "train_time_sec", "test_time_sec"])
+        )
+        within_day_mean_df.to_csv(within_day_mean_csv, index=False)
+    else:
+        within_subject_df = (
+            pd.read_csv(within_subject_csv) if within_subject_csv.exists() else pd.DataFrame()
+        )
+        within_day_mean_df = (
+            pd.read_csv(within_day_mean_csv) if within_day_mean_csv.exists() else pd.DataFrame()
         )
 
-    # Save tables.
-    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
-    within_subject_df.to_csv(within_subject_csv, index=False)
-    within_day_mean_df.to_csv(within_day_mean_csv, index=False)
-    cross_subject_df.to_csv(cross_subject_csv, index=False)
-    cross_day_mean_df.to_csv(cross_day_mean_csv, index=False)
-    qc_df.to_csv(qc_csv, index=False)
+    if run_cross_day:
+        print(
+            f"[TG] Starting cross-day transfer on {len(sorted({k[0] for k in day_data}))} subjects...",
+            flush=True,
+        )
+
+    # Cross-day transfer (within-subject): train day -> test other day.
+    cross_rows = []
+    cross_total = 0
+    pair_items = []
+    if run_cross_day:
+        subjects = sorted({k[0] for k in day_data})
+        for subject in subjects:
+            subject_days = sorted([k[1] for k in day_data if k[0] == subject])
+            if len(subject_days) < 2:
+                continue
+            print(f"[TG] cross-day subject {subject} with days {subject_days}", flush=True)
+            for d_train in subject_days:
+                for d_test in subject_days:
+                    if d_test == d_train:
+                        continue
+                    train_item = day_data[(subject, d_train)]
+                    test_item = day_data[(subject, d_test)]
+                    pair_items.append(
+                        {
+                            "subject": subject,
+                            "train_day": d_train,
+                            "test_day": d_test,
+                            "train_cache_path": train_item["cache_path"],
+                            "test_cache_path": test_item["cache_path"],
+                            "train_session_file": train_item["session_file"],
+                            "test_session_file": test_item["session_file"],
+                            "pair_seed": int(rng_master.integers(0, 2**31 - 1)),
+                        }
+                    )
+        cross_total = len(pair_items)
+
+    if run_cross_day and cross_total > 0:
+        if n_workers == 1:
+            if threadpool_limits is None:
+                cross_results = [
+                    _process_cross_day_pair(pair_item=item, random_state=random_state)
+                    for item in pair_items
+                ]
+            else:
+                with threadpool_limits(limits=1):
+                    cross_results = [
+                        _process_cross_day_pair(pair_item=item, random_state=random_state)
+                        for item in pair_items
+                    ]
+        else:
+            if threadpool_limits is None:
+                cross_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                    delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
+                    for item in pair_items
+                )
+            else:
+                with threadpool_limits(limits=1):
+                    cross_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                        delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
+                        for item in pair_items
+                    )
+    elif run_cross_day:
+        cross_results = []
+    else:
+        cross_results = []
+
+    cross_done = 0
+    for result in cross_results:
+        if result["ok"]:
+            cross_rows.append(result["row"])
+            cross_done += 1
+            wrote_cross_subject = _append_csv(pd.DataFrame([result["row"]]), cross_subject_csv, wrote_cross_subject)
+        else:
+            qc_rows.append(result["qc"])
+            if len(qc_rows) >= max(progress_every, 1):
+                wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
+                qc_rows = []
+        _write_progress("cross_day_running", n_done, len(prepared_items), cross_done, cross_total)
+        if (cross_done % max(progress_every * 2, 1)) == 0 and cross_done > 0:
+            elapsed = time.time() - t0
+            print(
+                f"[TG] cross-day complete {cross_done}/{cross_total} pairs "
+                f"(elapsed {elapsed/60:.1f} min)",
+                flush=True,
+            )
+    if qc_rows:
+        wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
+        qc_rows = []
+
+    if run_cross_day:
+        cross_subject_df = pd.DataFrame(cross_rows)
+        if cross_subject_df.empty:
+            pd.DataFrame().to_csv(cross_day_mean_csv, index=False)
+            cross_day_mean_df = pd.DataFrame()
+        else:
+            cross_day_mean_df = (
+                cross_subject_df.groupby(["train_day", "test_day"], as_index=False)
+                .agg(
+                    auc_mean=("diag_mean_auc", "mean"),
+                    auc_sem=(
+                        "diag_mean_auc",
+                        lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+                    ),
+                    n_subjects=("subject", "nunique"),
+                )
+                .sort_values(["train_day", "test_day"])
+            )
+    else:
+        cross_subject_df = pd.read_csv(cross_subject_csv) if cross_subject_csv.exists() else pd.DataFrame()
+        cross_day_mean_df = pd.read_csv(cross_day_mean_csv) if cross_day_mean_csv.exists() else pd.DataFrame()
+
+    # Save final derived tables.
+    if run_within_day and not within_subject_csv.exists():
+        within_subject_df.to_csv(within_subject_csv, index=False)
+    if run_cross_day and not cross_subject_csv.exists():
+        cross_subject_df.to_csv(cross_subject_csv, index=False)
+    if run_within_day:
+        within_day_mean_df.to_csv(within_day_mean_csv, index=False)
+    if run_cross_day:
+        cross_day_mean_df.to_csv(cross_day_mean_csv, index=False)
+    qc_df = pd.read_csv(qc_csv) if qc_csv.exists() else pd.DataFrame(columns=qc_columns)
+    _write_progress("completed", n_done, len(prepared_items), cross_done, cross_total)
 
     if not save_figures:
         print("Skipped TG figure generation (save_figures=False).")
@@ -864,71 +1107,73 @@ def util_mvpa_temporal_generalization(
     import matplotlib.pyplot as plt
 
     # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
-    within_day_plot_df = pd.read_csv(within_day_mean_csv)
-    cross_day_plot_df = pd.read_csv(cross_day_mean_csv)
+    within_day_plot_df = pd.read_csv(within_day_mean_csv) if within_day_mean_csv.exists() else pd.DataFrame()
+    cross_day_plot_df = pd.read_csv(cross_day_mean_csv) if cross_day_mean_csv.exists() else pd.DataFrame()
 
     # Figure: within-day heatmaps (one panel per day).
-    days = sorted(within_day_plot_df["day"].unique())
-    fig, axes = plt.subplots(1, len(days), figsize=(4.6 * len(days), 4), squeeze=False)
-    vmin = float(within_day_plot_df["auc_mean"].min())
-    vmax = float(within_day_plot_df["auc_mean"].max())
-    for ax, day in zip(axes.ravel(), days):
-        g = within_day_plot_df[within_day_plot_df["day"] == day]
-        pivot = g.pivot(index="train_time_sec", columns="test_time_sec", values="auc_mean")
-        mat = pivot.to_numpy()
-        im = ax.imshow(
-            mat,
-            origin="lower",
-            aspect="auto",
-            extent=[
-                float(pivot.columns.min()),
-                float(pivot.columns.max()),
-                float(pivot.index.min()),
-                float(pivot.index.max()),
-            ],
-            vmin=vmin,
-            vmax=vmax,
-            cmap="viridis",
-        )
-        ax.axvline(0.0, color="white", linestyle=":", linewidth=1)
-        ax.axhline(0.0, color="white", linestyle=":", linewidth=1)
-        ax.set_title(f"Day {day}")
-        ax.set_xlabel("Test Time (s)")
-        ax.set_ylabel("Train Time (s)")
-    fig.suptitle("Within-Day Temporal Generalization (AUC)")
-    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, label="AUC")
-    fig.subplots_adjust(top=0.85, wspace=0.28)
-    fig.savefig(fig_within, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    if run_within_day and (not within_day_plot_df.empty):
+        days = sorted(within_day_plot_df["day"].unique())
+        fig, axes = plt.subplots(1, len(days), figsize=(4.6 * len(days), 4), squeeze=False)
+        vmin = float(within_day_plot_df["auc_mean"].min())
+        vmax = float(within_day_plot_df["auc_mean"].max())
+        for ax, day in zip(axes.ravel(), days):
+            g = within_day_plot_df[within_day_plot_df["day"] == day]
+            pivot = g.pivot(index="train_time_sec", columns="test_time_sec", values="auc_mean")
+            mat = pivot.to_numpy()
+            im = ax.imshow(
+                mat,
+                origin="lower",
+                aspect="auto",
+                extent=[
+                    float(pivot.columns.min()),
+                    float(pivot.columns.max()),
+                    float(pivot.index.min()),
+                    float(pivot.index.max()),
+                ],
+                vmin=vmin,
+                vmax=vmax,
+                cmap="viridis",
+            )
+            ax.axvline(0.0, color="white", linestyle=":", linewidth=1)
+            ax.axhline(0.0, color="white", linestyle=":", linewidth=1)
+            ax.set_title(f"Day {day}")
+            ax.set_xlabel("Test Time (s)")
+            ax.set_ylabel("Train Time (s)")
+        fig.suptitle("Within-Day Temporal Generalization (AUC)")
+        fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, label="AUC")
+        fig.subplots_adjust(top=0.85, wspace=0.28)
+        fig.savefig(fig_within, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     # Figure: cross-day transfer heatmap (off-diagonal day transfer).
-    fig, ax = plt.subplots(figsize=(5.2, 4.6))
-    day_grid = sorted({1, 2, 3, 4, 5})
-    mat = np.full((len(day_grid), len(day_grid)), np.nan)
-    if not cross_day_plot_df.empty:
-        for _, r in cross_day_plot_df.iterrows():
-            i = day_grid.index(int(r["train_day"]))
-            j = day_grid.index(int(r["test_day"]))
-            mat[i, j] = float(r["auc_mean"])
-    masked = np.ma.masked_invalid(mat)
-    im = ax.imshow(masked, cmap="magma", aspect="equal")
-    ax.set_xticks(range(len(day_grid)))
-    ax.set_yticks(range(len(day_grid)))
-    ax.set_xticklabels([f"D{d}" for d in day_grid])
-    ax.set_yticklabels([f"D{d}" for d in day_grid])
-    ax.set_xlabel("Test Day")
-    ax.set_ylabel("Train Day")
-    ax.set_title("Cross-Day Transfer (Diagonal Mean AUC)")
-    for i in range(len(day_grid)):
-        for j in range(len(day_grid)):
-            if np.isfinite(mat[i, j]):
-                ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
-            elif i == j:
-                ax.text(j, i, "—", ha="center", va="center", color="black")
-    fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
-    fig.tight_layout()
-    fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    if run_cross_day:
+        fig, ax = plt.subplots(figsize=(5.2, 4.6))
+        day_grid = sorted({1, 2, 3, 4, 5})
+        mat = np.full((len(day_grid), len(day_grid)), np.nan)
+        if not cross_day_plot_df.empty:
+            for _, r in cross_day_plot_df.iterrows():
+                i = day_grid.index(int(r["train_day"]))
+                j = day_grid.index(int(r["test_day"]))
+                mat[i, j] = float(r["auc_mean"])
+        masked = np.ma.masked_invalid(mat)
+        im = ax.imshow(masked, cmap="magma", aspect="equal")
+        ax.set_xticks(range(len(day_grid)))
+        ax.set_yticks(range(len(day_grid)))
+        ax.set_xticklabels([f"D{d}" for d in day_grid])
+        ax.set_yticklabels([f"D{d}" for d in day_grid])
+        ax.set_xlabel("Test Day")
+        ax.set_ylabel("Train Day")
+        ax.set_title("Cross-Day Transfer (Diagonal Mean AUC)")
+        for i in range(len(day_grid)):
+            for j in range(len(day_grid)):
+                if np.isfinite(mat[i, j]):
+                    ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
+                elif i == j:
+                    ax.text(j, i, "—", ha="center", va="center", color="black")
+        fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
+        fig.tight_layout()
+        fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     print(f"Wrote TG within-day subject table: {within_subject_csv}")
     print(f"Wrote TG within-day day-mean table: {within_day_mean_csv}")
@@ -1043,11 +1288,32 @@ def save_fig_mvpa_temporal_generalization(**kwargs):
         raise FileNotFoundError(
             f"Missing TG outputs in {output_dir}. Run run_mvpa_temporal_generalization() first."
         )
-    within_day_mean_df = pd.read_csv(within_day_mean_csv)
-    cross_day_mean_df = pd.read_csv(cross_day_mean_csv)
+    out_within = save_fig_mvpa_temporal_generalization_within_day(
+        output_dir=output_dir, figures_dir=figures_dir
+    )
+    out_cross = save_fig_mvpa_temporal_generalization_cross_day(
+        output_dir=output_dir, figures_dir=figures_dir
+    )
+    return {
+        "figure_paths": {
+            "within_day_heatmaps": out_within["figure_path"],
+            "cross_day_transfer": out_cross["figure_path"],
+        }
+    }
 
+
+def save_fig_mvpa_temporal_generalization_within_day(**kwargs):
+    """Generate only time x time TG (within-day) figure from saved outputs."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa_tg"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa_tg"))
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    within_day_mean_csv = output_dir / "tg_within_day_day_mean.csv"
+    if not within_day_mean_csv.exists():
+        raise FileNotFoundError(
+            f"Missing TG within-day output in {output_dir}. Run run_mvpa_temporal_generalization() first."
+        )
+    within_day_mean_df = pd.read_csv(within_day_mean_csv)
     fig_within = figures_dir / "tg_within_day_heatmaps.png"
-    fig_cross = figures_dir / "tg_cross_day_transfer_5x4.png"
 
     days = sorted(within_day_mean_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(4.6 * len(days), 4), squeeze=False)
@@ -1081,6 +1347,21 @@ def save_fig_mvpa_temporal_generalization(**kwargs):
     fig.subplots_adjust(top=0.85, wspace=0.28)
     fig.savefig(fig_within, dpi=150, bbox_inches="tight")
     plt.close(fig)
+    return {"figure_path": fig_within}
+
+
+def save_fig_mvpa_temporal_generalization_cross_day(**kwargs):
+    """Generate only day x day TG transfer figure from saved outputs."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa_tg"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa_tg"))
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    cross_day_mean_csv = output_dir / "tg_cross_day_day_mean.csv"
+    if not cross_day_mean_csv.exists():
+        raise FileNotFoundError(
+            f"Missing TG cross-day output in {output_dir}. Run run_mvpa_temporal_generalization() first."
+        )
+    cross_day_mean_df = pd.read_csv(cross_day_mean_csv)
+    fig_cross = figures_dir / "tg_cross_day_transfer_5x4.png"
 
     fig, ax = plt.subplots(figsize=(5.2, 4.6))
     day_grid = sorted({1, 2, 3, 4, 5})
@@ -1109,4 +1390,24 @@ def save_fig_mvpa_temporal_generalization(**kwargs):
     fig.tight_layout()
     fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    return {"figure_paths": {"within_day_heatmaps": fig_within, "cross_day_transfer": fig_cross}}
+    return {"figure_path": fig_cross}
+
+
+def run_mvpa_temporal_generalization_within_day(**kwargs):
+    """Run only within-day time x time temporal-generalization analysis."""
+    return util_mvpa_temporal_generalization(
+        save_figures=False,
+        run_within_day=True,
+        run_cross_day=False,
+        **kwargs,
+    )
+
+
+def run_mvpa_temporal_generalization_cross_day(**kwargs):
+    """Run only cross-day day x day temporal-generalization transfer analysis."""
+    return util_mvpa_temporal_generalization(
+        save_figures=False,
+        run_within_day=True,
+        run_cross_day=True,
+        **kwargs,
+    )
