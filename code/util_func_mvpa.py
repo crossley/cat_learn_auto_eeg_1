@@ -468,8 +468,9 @@ def _prepare_stim_data(epochs):
     X = stim_epochs.get_data()[keep]
     y = y[keep]
     t = stim_epochs.times.copy()
+    ch_names = np.array(stim_epochs.ch_names, dtype=str)
 
-    return X, y, t
+    return X, y, t, ch_names
 
 
 def _prepare_session_cache(session_item: dict, cache_dir: Path):
@@ -482,22 +483,26 @@ def _prepare_session_cache(session_item: dict, cache_dir: Path):
 
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:
-            t = z["t"]
-            y = z["y"]
-        return {
-            "ok": True,
-            "session_file": session_file,
-            "subject": subject,
-            "day": day,
-            "cache_path": str(cache_path),
-            "n_trials": int(len(y)),
-            "n_a": int(np.sum(y == 0)),
-            "n_b": int(np.sum(y == 1)),
-            "n_times": int(len(t)),
-        }
+            has_channel_metadata = "ch_names" in z.files
+            if has_channel_metadata:
+                t = z["t"]
+                y = z["y"]
+                ch_names = z["ch_names"]
+                return {
+                    "ok": True,
+                    "session_file": session_file,
+                    "subject": subject,
+                    "day": day,
+                    "cache_path": str(cache_path),
+                    "n_trials": int(len(y)),
+                    "n_a": int(np.sum(y == 0)),
+                    "n_b": int(np.sum(y == 1)),
+                    "n_times": int(len(t)),
+                    "ch_names": ch_names.tolist(),
+                }
 
     try:
-        X, y, t = _prepare_stim_data(epochs)
+        X, y, t, ch_names = _prepare_stim_data(epochs)
     except Exception as exc:
         msg = str(exc)
         reason = msg.split(":")[0] if ":" in msg else "prep_error"
@@ -513,7 +518,7 @@ def _prepare_session_cache(session_item: dict, cache_dir: Path):
             },
         }
 
-    np.savez_compressed(cache_path, X=X, y=y, t=t)
+    np.savez_compressed(cache_path, X=X, y=y, t=t, ch_names=ch_names)
     return {
         "ok": True,
         "session_file": session_file,
@@ -524,6 +529,7 @@ def _prepare_session_cache(session_item: dict, cache_dir: Path):
         "n_a": int(np.sum(y == 0)),
         "n_b": int(np.sum(y == 1)),
         "n_times": int(len(t)),
+        "ch_names": ch_names.tolist(),
     }
 
 
@@ -628,9 +634,24 @@ def _process_cross_day_pair(
     with np.load(train_cache_path, allow_pickle=False) as z:
         X_train_all = z["X"]
         y_train_all = z["y"]
+        ch_train = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
     with np.load(test_cache_path, allow_pickle=False) as z:
         X_test_all = z["X"]
         y_test_all = z["y"]
+        ch_test = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
+
+    if len(ch_train) == 0 or len(ch_test) == 0 or ch_train.tolist() != ch_test.tolist():
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{train_session_file}->{test_session_file}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "cross_day_channels",
+                "reason": "channel_mismatch",
+                "detail": f"train_n={len(ch_train)}, test_n={len(ch_test)}",
+            },
+        }
 
     n_per_class = int(
         min(
@@ -1537,6 +1558,7 @@ def _process_haufe_session_item(task: dict):
             X = z["X"]
             y = z["y"]
             t = z["t"]
+            cache_ch_names = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
     except Exception as exc:
         return {
             "ok": False,
@@ -1547,6 +1569,18 @@ def _process_haufe_session_item(task: dict):
                 "stage": "load",
                 "reason": "load_error",
                 "detail": str(exc),
+            },
+        }
+    if len(cache_ch_names) == 0 or cache_ch_names.tolist() != meta["ch_names"]:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "cache_channels",
+                "reason": "channel_mismatch",
+                "detail": f"cache_n={len(cache_ch_names)}, epochs_n={len(meta['ch_names'])}",
             },
         }
     if len(y) < min_epochs:
@@ -1611,9 +1645,11 @@ def _process_haufe_cross_pair_item(task: dict):
             X_train_all = z["X"]
             y_train_all = z["y"]
             t = z["t"]
+            ch_train = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
         with np.load(te_item["cache_path"], allow_pickle=False) as z:
             X_test_all = z["X"]
             y_test_all = z["y"]
+            ch_test = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
     except Exception as exc:
         return {
             "ok": False,
@@ -1624,6 +1660,18 @@ def _process_haufe_cross_pair_item(task: dict):
                 "stage": "load",
                 "reason": "load_error",
                 "detail": str(exc),
+            },
+        }
+    if len(ch_train) == 0 or len(ch_test) == 0 or ch_train.tolist() != ch_test.tolist():
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{tr_item['session_file']}->{te_item['session_file']}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "cross_day_channels",
+                "reason": "channel_mismatch",
+                "detail": f"train_n={len(ch_train)}, test_n={len(ch_test)}",
             },
         }
     n_per_class = int(
@@ -1672,7 +1720,7 @@ def run_mvpa_haufe_patterns(
     n_workers: int | None = None,
     compute_mode: str = "time_resolved",
 ):
-    """Compute time-resolved Haufe activation patterns from cached stim arrays."""
+    """Compute time-resolved Haufe activation patterns from stimulus arrays."""
     output_dir = Path(output_dir)
     cache_dir = Path(cache_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1713,9 +1761,14 @@ def run_mvpa_haufe_patterns(
             "updated_at_unix": float(time.time()),
         }
         progress_json.write_text(json.dumps(payload, indent=2))
+
     sessions = util_wrangle_load_sessions()
     tasks = []
     for item in sessions:
+        cache_result = _prepare_session_cache(item, cache_dir=cache_dir)
+        if not cache_result["ok"]:
+            qc_rows.append(cache_result["qc"])
+            continue
         lean_item = {
             "subject": int(item["subject"]),
             "day": int(item["day"]),
@@ -1795,7 +1848,7 @@ def run_mvpa_haufe_patterns(
         _write_progress("completed_empty", done, len(tasks))
         raise RuntimeError(
             f"No valid Haufe patterns computed. Cache dir checked: {cache_dir}. "
-            "Run TG first to populate cache_stim_arrays or pass cache_dir explicitly."
+            "Check epoch availability and Haufe QC output."
         )
 
     day_mean_df = (
@@ -1997,21 +2050,24 @@ def run_mvpa_haufe_tg_cross_day(
     sessions = util_wrangle_load_sessions()
     day_data = {}
     for item in sessions:
+        cache_result = _prepare_session_cache(item, cache_dir=cache_dir)
+        if not cache_result["ok"]:
+            qc_rows.append(cache_result["qc"])
+            continue
         cache_path = cache_dir / f"stim_cache_{_session_cache_key(item)}.npz"
-        if cache_path.exists():
-            try:
-                meta = _extract_stim_channel_meta(item["epochs"])
-                ch_names = meta["ch_names"]
-                pos = meta["pos"]
-            except Exception:
-                ch_names = []
-                pos = np.empty((0, 3), dtype=float)
-            day_data[(int(item["subject"]), int(item["day"]))] = {
-                "cache_path": str(cache_path),
-                "session_file": item["epo_file"],
-                "ch_names": ch_names,
-                "pos": pos,
-            }
+        try:
+            meta = _extract_stim_channel_meta(item["epochs"])
+            ch_names = meta["ch_names"]
+            pos = meta["pos"]
+        except Exception:
+            ch_names = []
+            pos = np.empty((0, 3), dtype=float)
+        day_data[(int(item["subject"]), int(item["day"]))] = {
+            "cache_path": str(cache_path),
+            "session_file": item["epo_file"],
+            "ch_names": ch_names,
+            "pos": pos,
+        }
 
     pair_tasks = []
     subjects = sorted({k[0] for k in day_data})
@@ -2093,7 +2149,7 @@ def run_mvpa_haufe_tg_cross_day(
         _write_progress("completed_empty", done, len(pair_tasks))
         raise RuntimeError(
             f"No valid cross-day Haufe patterns computed. Cache dir checked: {cache_dir}. "
-            "Run TG first to populate cache_stim_arrays or pass cache_dir explicitly."
+            "Check epoch availability and Haufe QC output."
         )
 
     day_mean_df = (

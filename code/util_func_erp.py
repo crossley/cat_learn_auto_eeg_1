@@ -3,18 +3,99 @@
 
 from pathlib import Path
 import os
+import json
+import time
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import mne
-from util_func_wrangle import util_wrangle_load_sessions
+from joblib import Parallel, delayed
+from util_func_wrangle import util_wrangle_align_beh_to_epochs, util_wrangle_load_sessions
 
 # os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 
-def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
+def _default_erp_n_workers():
+    logical = os.cpu_count() or 1
+    return min(8, max(1, (logical // 2) - 2))
+
+
+def _make_response_locked_evoked(epochs_stim, rt_sec, t_before=0.6):
+    """Build response-locked evoked with x-axis as time before response (0 -> t_before)."""
+    data = epochs_stim.get_data()
+    times = epochs_stim.times
+    info = epochs_stim.info.copy()
+    sfreq = info["sfreq"]
+    tau = np.arange(0.0, t_before + (1.0 / sfreq) / 2.0, 1.0 / sfreq)
+
+    n_trials, n_ch, _ = data.shape
+    aligned = np.full((n_trials, n_ch, len(tau)), np.nan, dtype=float)
+    for i_trial in range(n_trials):
+        rt = rt_sec[i_trial]
+        if (not np.isfinite(rt)) or (rt <= 0):
+            continue
+        sample_t = rt - tau
+        valid = (sample_t >= times[0]) & (sample_t <= times[-1])
+        if not np.any(valid):
+            continue
+        for i_ch in range(n_ch):
+            aligned[i_trial, i_ch, valid] = np.interp(sample_t[valid], times, data[i_trial, i_ch, :])
+
+    with np.errstate(invalid="ignore"):
+        mean_data = np.nanmean(aligned, axis=0)
+    # Some response-locked bins can have no valid contributing trials; keep plotting robust.
+    mean_data = np.nan_to_num(mean_data, nan=0.0, posinf=0.0, neginf=0.0)
+    return mne.EvokedArray(mean_data, info=info, tmin=0.0, nave=n_trials)
+
+
+def _process_erp_session(session_item):
+    event_names = ["Stim/A", "Stim/B"]
+    subject = session_item["subject"]
+    day = session_item["day"]
+    beh_df = session_item["beh_df"].copy()
+    if "epo_path" in session_item:
+        epochs = mne.read_epochs(session_item["epo_path"], preload=False, verbose="ERROR")
+    else:
+        epochs = session_item["epochs"]
+    epochs_stim_all, beh_aligned = util_wrangle_align_beh_to_epochs(
+        beh_df,
+        epochs,
+        event_names=event_names,
+    )
+    if len(epochs_stim_all) == 0:
+        return None
+
+    rt_use = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
+    fb_use = beh_aligned["fb"].astype(str).str.lower().to_numpy()
+    idx_cor = np.where(fb_use == "correct")[0]
+    idx_inc = np.where(fb_use == "incorrect")[0]
+
+    result = {
+        "subject": subject,
+        "day": day,
+        "evoked_stim_all": epochs_stim_all.average(),
+        "evoked_resp_all": _make_response_locked_evoked(epochs_stim_all, rt_use, t_before=0.6),
+    }
+    if len(idx_cor) > 0:
+        result["evoked_stim_cor"] = epochs_stim_all[idx_cor].average()
+        result["evoked_resp_cor"] = _make_response_locked_evoked(
+            epochs_stim_all[idx_cor],
+            rt_use[idx_cor],
+            t_before=0.6,
+        )
+    if len(idx_inc) > 0:
+        result["evoked_stim_inc"] = epochs_stim_all[idx_inc].average()
+        result["evoked_resp_inc"] = _make_response_locked_evoked(
+            epochs_stim_all[idx_inc],
+            rt_use[idx_inc],
+            t_before=0.6,
+        )
+    return result
+
+
+def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n_workers: int | None = None):
     """
     Build grand-average ERPs and save figures.
     """
@@ -36,33 +117,18 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
 
     d_grand_path = output_dir / "erp_grand_averages_by_day_lock_condition.csv"
     d_subject_path = output_dir / "erp_subject_day_stim_all.csv"
+    progress_json = output_dir / "erp_progress.json"
+    t0 = time.time()
 
-    def _make_response_locked_evoked(epochs_stim, rt_sec, t_before=0.6):
-        """Build response-locked evoked with x-axis as time before response (0 -> t_before)."""
-        data = epochs_stim.get_data()
-        times = epochs_stim.times
-        info = epochs_stim.info.copy()
-        sfreq = info["sfreq"]
-        tau = np.arange(0.0, t_before + (1.0 / sfreq) / 2.0, 1.0 / sfreq)
-
-        n_trials, n_ch, _ = data.shape
-        aligned = np.full((n_trials, n_ch, len(tau)), np.nan, dtype=float)
-        for i_trial in range(n_trials):
-            rt = rt_sec[i_trial]
-            if (not np.isfinite(rt)) or (rt <= 0):
-                continue
-            sample_t = rt - tau
-            valid = (sample_t >= times[0]) & (sample_t <= times[-1])
-            if not np.any(valid):
-                continue
-            for i_ch in range(n_ch):
-                aligned[i_trial, i_ch, valid] = np.interp(sample_t[valid], times, data[i_trial, i_ch, :])
-
-        with np.errstate(invalid="ignore"):
-            mean_data = np.nanmean(aligned, axis=0)
-        # Some response-locked bins can have no valid contributing trials; keep plotting robust.
-        mean_data = np.nan_to_num(mean_data, nan=0.0, posinf=0.0, neginf=0.0)
-        return mne.EvokedArray(mean_data, info=info, tmin=0.0, nave=n_trials)
+    def _write_progress(stage: str, done: int = 0, total: int = 0):
+        payload = {
+            "stage": stage,
+            "done": int(done),
+            "total": int(total),
+            "elapsed_sec": float(time.time() - t0),
+            "updated_at_unix": float(time.time()),
+        }
+        progress_json.write_text(json.dumps(payload, indent=2))
 
     def _plot_day_grid(evoked_map, title, fig_name):
         days_sorted = sorted(evoked_map.keys())
@@ -166,81 +232,90 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
         evoked_resp_cor_rec = []
         evoked_resp_inc_rec = []
         sessions = util_wrangle_load_sessions()
-        d = pd.DataFrame(sessions)
+        worker_items = [
+            {
+                "subject": item["subject"],
+                "day": item["day"],
+                "beh_df": item["beh_df"],
+                "epo_path": str(Path("../EEG_epo") / item["epo_file"]),
+            }
+            for item in sessions
+        ]
+        if n_workers is None:
+            n_workers = _default_erp_n_workers()
+        n_workers = max(1, int(n_workers))
+        _write_progress("running", 0, len(worker_items))
+        if n_workers == 1:
+            session_results = []
+            for i, item in enumerate(worker_items, start=1):
+                session_results.append(_process_erp_session(item))
+                _write_progress("running", i, len(worker_items))
+        else:
+            try:
+                result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                    delayed(_process_erp_session)(item) for item in worker_items
+                )
+                session_results = []
+                for i, result in enumerate(result_iter, start=1):
+                    session_results.append(result)
+                    _write_progress("running", i, len(worker_items))
+            except PermissionError:
+                session_results = []
+                for i, item in enumerate(worker_items, start=1):
+                    session_results.append(_process_erp_session(item))
+                    _write_progress("running", i, len(worker_items))
 
-        for sbj in d["subject"].unique():
-            ds = d[d["subject"] == sbj]
-            for day in ds["day"].unique():
-                dsd = ds[ds["day"] == day]
-                beh_df = dsd["beh_df"].iloc[0].copy()
-                epochs = dsd["epochs"].iloc[0]
-                beh_df = beh_df.sort_values("trial").reset_index(drop=True)
-                rt_sec = beh_df["rt"].astype(float).to_numpy() / 1000.0
-                fb = beh_df["fb"].astype(str).str.lower().to_numpy()
-
-                epochs_stim_all = epochs[event_map["stim_all"]]
-                n = min(len(epochs_stim_all), len(beh_df))
-                if n == 0:
-                    continue
-                epochs_stim_all = epochs_stim_all[:n]
-                rt_use = rt_sec[:n]
-                fb_use = fb[:n]
-                idx_cor = np.where(fb_use == "correct")[0]
-                idx_inc = np.where(fb_use == "incorrect")[0]
-
-                evoked_stim_all = epochs_stim_all.average()
-                evoked_stim_all_rec.append(
+        for result in session_results:
+            if result is None:
+                continue
+            subject = result["subject"]
+            day = result["day"]
+            evoked_stim_all_rec.append(
+                {
+                    "subject": subject,
+                    "day": day,
+                    "evoked_stim_all": result["evoked_stim_all"],
+                }
+            )
+            evoked_resp_all_rec.append(
+                {
+                    "subject": subject,
+                    "day": day,
+                    "evoked_resp_all": result["evoked_resp_all"],
+                }
+            )
+            if "evoked_stim_cor" in result:
+                evoked_stim_cor_rec.append(
                     {
-                        "subject": sbj,
+                        "subject": subject,
                         "day": day,
-                        "evoked_stim_all": evoked_stim_all,
+                        "evoked_stim_cor": result["evoked_stim_cor"],
                     }
                 )
-                if len(idx_cor) > 0:
-                    evoked_stim_cor_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "evoked_stim_cor": epochs_stim_all[idx_cor].average(),
-                        }
-                    )
-                if len(idx_inc) > 0:
-                    evoked_stim_inc_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "evoked_stim_inc": epochs_stim_all[idx_inc].average(),
-                        }
-                    )
-
-                evoked_resp_all = _make_response_locked_evoked(epochs_stim_all, rt_use, t_before=0.6)
-                evoked_resp_all_rec.append(
+            if "evoked_stim_inc" in result:
+                evoked_stim_inc_rec.append(
                     {
-                        "subject": sbj,
+                        "subject": subject,
                         "day": day,
-                        "evoked_resp_all": evoked_resp_all,
+                        "evoked_stim_inc": result["evoked_stim_inc"],
                     }
                 )
-                if len(idx_cor) > 0:
-                    evoked_resp_cor_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "evoked_resp_cor": _make_response_locked_evoked(
-                                epochs_stim_all[idx_cor], rt_use[idx_cor], t_before=0.6
-                            ),
-                        }
-                    )
-                if len(idx_inc) > 0:
-                    evoked_resp_inc_rec.append(
-                        {
-                            "subject": sbj,
-                            "day": day,
-                            "evoked_resp_inc": _make_response_locked_evoked(
-                                epochs_stim_all[idx_inc], rt_use[idx_inc], t_before=0.6
-                            ),
-                        }
-                    )
+            if "evoked_resp_cor" in result:
+                evoked_resp_cor_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_resp_cor": result["evoked_resp_cor"],
+                    }
+                )
+            if "evoked_resp_inc" in result:
+                evoked_resp_inc_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_resp_inc": result["evoked_resp_inc"],
+                    }
+                )
 
         evoked_stim_all_rec = pd.DataFrame(evoked_stim_all_rec)
         evoked_stim_cor_rec = pd.DataFrame(evoked_stim_cor_rec)
@@ -305,6 +380,7 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
                 ["subject", "day", "channel", "time_s"]
             )
         d_subject.to_csv(d_subject_path, index=False)
+        _write_progress("completed", len(worker_items), len(worker_items))
 
     # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
     if not d_grand_path.exists() or not d_subject_path.exists():
@@ -376,9 +452,9 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True):
         plt.close(fig)
 
 
-def run_erp():
+def run_erp(**kwargs):
     """Run ERP analysis."""
-    return util_erp_make_figures(save_figures=False, run_compute=True)
+    return util_erp_make_figures(save_figures=False, run_compute=True, **kwargs)
 
 
 def save_fig_erp():

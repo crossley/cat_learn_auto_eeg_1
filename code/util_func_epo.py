@@ -5,6 +5,7 @@ import re
 import os
 import mne
 import numpy as np
+import pandas as pd
 from joblib import Parallel, delayed
 from pyprep.prep_pipeline import PrepPipeline
 from autoreject import AutoReject
@@ -93,6 +94,20 @@ def process_single_subject(raw_path, epo_dir):
         reject_by_annotation=True,
         verbose="ERROR",
     )
+    code_to_name = {code: name for name, code in event_id.items()}
+    stim_codes = {event_id["Stim/A"], event_id["Stim/B"]}
+    trial_index = -1
+    metadata_rows = []
+    for code in epochs.events[:, 2]:
+        if int(code) in stim_codes:
+            trial_index += 1
+        metadata_rows.append(
+            {
+                "event_label": code_to_name.get(int(code), ""),
+                "beh_trial_index": int(trial_index),
+            }
+        )
+    epochs.metadata = pd.DataFrame(metadata_rows)
 
     ar = AutoReject(
         cv=3,
