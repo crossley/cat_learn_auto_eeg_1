@@ -25,6 +25,12 @@ from util_func_mvpa import (
     run_mvpa_temporal_generalization_cross_day,
     save_fig_mvpa_temporal_generalization_within_day,
     save_fig_mvpa_temporal_generalization_cross_day,
+    run_mvpa_haufe_time_resolved,
+    save_fig_mvpa_haufe_time_resolved,
+    run_mvpa_haufe_tg_within_day,
+    save_fig_mvpa_haufe_tg_within_day,
+    run_mvpa_haufe_tg_cross_day,
+    save_fig_mvpa_haufe_tg_cross_day,
 )
 
 
@@ -51,9 +57,21 @@ if __name__ == "__main__":
     # save_fig_mvpa_time_resolved()
 
     # MVPA temporal generalization: time x time
-    run_mvpa_temporal_generalization_within_day(n_workers=n_workers)
-    save_fig_mvpa_temporal_generalization_within_day()
+    # run_mvpa_temporal_generalization_within_day(n_workers=n_workers)
+    # save_fig_mvpa_temporal_generalization_within_day()
 
     # MVPA temporal generalization: day x day
     # run_mvpa_temporal_generalization_cross_day(n_workers=n_workers)
     # save_fig_mvpa_temporal_generalization_cross_day()
+
+    # MVPA Haufe: time-resolved aligned
+    run_mvpa_haufe_time_resolved()
+    save_fig_mvpa_haufe_time_resolved()
+
+    # MVPA Haufe: TG within-day aligned
+    run_mvpa_haufe_tg_within_day()
+    save_fig_mvpa_haufe_tg_within_day()
+
+    # MVPA Haufe: TG cross-day aligned
+    run_mvpa_haufe_tg_cross_day()
+    save_fig_mvpa_haufe_tg_cross_day()

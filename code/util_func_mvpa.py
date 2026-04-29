@@ -1411,3 +1411,697 @@ def run_mvpa_temporal_generalization_cross_day(**kwargs):
         run_cross_day=True,
         **kwargs,
     )
+
+
+def _extract_stim_channel_meta(epochs):
+    stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
+    if len(stim_events) < 2:
+        raise ValueError(f"missing_stim_labels:{','.join(stim_events)}")
+    stim_epochs = epochs[stim_events].copy()
+    stim_epochs.load_data()
+    stim_epochs.pick_types(eeg=True, exclude="bads")
+    if len(stim_epochs.ch_names) == 0:
+        raise RuntimeError("no_eeg_channels_after_pick")
+    stim_epochs.resample(128, npad="auto")
+    info = stim_epochs.info.copy()
+    ch_names = list(stim_epochs.ch_names)
+    times = stim_epochs.times.copy()
+    pos = np.array([info["chs"][info.ch_names.index(ch)]["loc"][:3] for ch in ch_names], dtype=float)
+    return {
+        "ch_names": ch_names,
+        "times": times,
+        "pos": pos,
+    }
+
+
+def _compute_haufe_patterns_from_xy(X, y, random_state: int):
+    n_times = X.shape[2]
+    n_ch = X.shape[1]
+    patterns = np.full((n_ch, n_times), np.nan, dtype=float)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    for ti in range(n_times):
+        Xt = X[:, :, ti]
+        fold_patterns = []
+        for tr, _ in cv.split(Xt, y):
+            Xt_tr = Xt[tr]
+            y_tr = y[tr]
+            clf = _build_clf(random_state=random_state)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SklearnConvergenceWarning)
+                    clf.fit(Xt_tr, y_tr)
+            except Exception:
+                continue
+            scaler = clf.named_steps["scaler"]
+            logreg = clf.named_steps["logreg"]
+            w_scaled = logreg.coef_.ravel().astype(float)
+            scale = np.asarray(scaler.scale_, dtype=float)
+            scale[scale == 0] = 1.0
+            w_sensor = w_scaled / scale
+            if Xt_tr.shape[0] < 2:
+                continue
+            cov_x = np.cov(Xt_tr, rowvar=False, ddof=1)
+            fold_patterns.append(cov_x @ w_sensor)
+        if fold_patterns:
+            patterns[:, ti] = np.nanmean(np.vstack(fold_patterns), axis=0)
+    return patterns
+
+
+def _process_haufe_session_item(task: dict):
+    item = task["session_item"]
+    cache_dir = Path(task["cache_dir"])
+    min_epochs = int(task["min_epochs"])
+    random_state = int(task["random_state"])
+    session_file = item["epo_file"]
+    subject = int(item["subject"])
+    day = int(item["day"])
+    cache_path = cache_dir / f"stim_cache_{_session_cache_key(item)}.npz"
+    if not cache_path.exists():
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "cache",
+                "reason": "missing_cache",
+                "detail": str(cache_path),
+            },
+        }
+    try:
+        meta = {
+            "ch_names": list(task["ch_names"]),
+            "pos": np.array(task["pos"], dtype=float),
+        }
+        with np.load(cache_path, allow_pickle=False) as z:
+            X = z["X"]
+            y = z["y"]
+            t = z["t"]
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "load",
+                "reason": "load_error",
+                "detail": str(exc),
+            },
+        }
+    if len(y) < min_epochs:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "epoch_count",
+                "reason": "insufficient_epochs",
+                "detail": f"n_trials={len(y)} < min_epochs={min_epochs}",
+            },
+        }
+    n_a = int(np.sum(y == 0))
+    n_b = int(np.sum(y == 1))
+    if min(n_a, n_b) < 5:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "class_balance",
+                "reason": "insufficient_class_trials",
+                "detail": f"n_a={n_a}, n_b={n_b}",
+            },
+        }
+    patterns = _compute_haufe_patterns_from_xy(X, y, random_state=random_state)
+    return {
+        "ok": True,
+        "subject": subject,
+        "day": day,
+        "session_file": session_file,
+        "ch_names": meta["ch_names"],
+        "pos": meta["pos"],
+        "t": t,
+        "patterns": patterns,
+        "n_trials": int(len(y)),
+        "n_a": n_a,
+        "n_b": n_b,
+    }
+
+
+def _process_haufe_cross_pair_item(task: dict):
+    subject = int(task["subject"])
+    d_train = int(task["train_day"])
+    d_test = int(task["test_day"])
+    tr_item = task["train_item"]
+    te_item = task["test_item"]
+    min_epochs = int(task["min_epochs"])
+    random_state = int(task["random_state"])
+    try:
+        meta = {
+            "ch_names": list(task["ch_names"]),
+            "pos": np.array(task["pos"], dtype=float),
+        }
+        with np.load(tr_item["cache_path"], allow_pickle=False) as z:
+            X_train_all = z["X"]
+            y_train_all = z["y"]
+            t = z["t"]
+        with np.load(te_item["cache_path"], allow_pickle=False) as z:
+            X_test_all = z["X"]
+            y_test_all = z["y"]
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{tr_item['session_file']}->{te_item['session_file']}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "load",
+                "reason": "load_error",
+                "detail": str(exc),
+            },
+        }
+    n_per_class = int(
+        min(
+            np.sum(y_train_all == 0),
+            np.sum(y_train_all == 1),
+            np.sum(y_test_all == 0),
+            np.sum(y_test_all == 1),
+        )
+    )
+    if (len(y_train_all) < min_epochs) or (n_per_class < 5):
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": f"{tr_item['session_file']}->{te_item['session_file']}",
+                "subject": subject,
+                "day": d_train,
+                "stage": "cross_day_balance",
+                "reason": "insufficient_trials",
+                "detail": f"len_train={len(y_train_all)}, n_per_class={n_per_class}",
+            },
+        }
+    rng_pair = np.random.default_rng(int(task["pair_seed"]))
+    X_train, y_train = _balanced_day_subset(X_train_all, y_train_all, n_per_class=n_per_class, rng=rng_pair)
+    patterns = _compute_haufe_patterns_from_xy(X_train, y_train, random_state=random_state)
+    return {
+        "ok": True,
+        "subject": subject,
+        "train_day": d_train,
+        "test_day": d_test,
+        "train_session_file": tr_item["session_file"],
+        "test_session_file": te_item["session_file"],
+        "ch_names": meta["ch_names"],
+        "pos": meta["pos"],
+        "t": t,
+        "patterns": patterns,
+        "n_per_class": int(n_per_class),
+    }
+
+
+def run_mvpa_haufe_patterns(
+    output_dir: Path | str = _OUTPUT_ROOT / "mvpa_haufe",
+    cache_dir: Path | str = _OUTPUT_ROOT / "mvpa_tg" / "cache_stim_arrays",
+    min_epochs: int = 20,
+    random_state: int = 42,
+    n_workers: int | None = None,
+):
+    """Compute time-resolved Haufe activation patterns from cached stim arrays."""
+    output_dir = Path(output_dir)
+    cache_dir = Path(cache_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mne.set_log_level("ERROR")
+    warnings.filterwarnings(
+        "ignore",
+        message=".*'penalty' was deprecated.*",
+        category=FutureWarning,
+        module=r"sklearn\.linear_model\._logistic",
+    )
+
+    session_csv = output_dir / "haufe_session_channel_time.csv"
+    day_mean_csv = output_dir / "haufe_day_mean_channel_time.csv"
+    day_abs_mean_csv = output_dir / "haufe_day_abs_mean_channel_time.csv"
+    channel_pos_csv = output_dir / "haufe_channel_positions.csv"
+    qc_csv = output_dir / "haufe_qc_log.csv"
+    progress_json = output_dir / "haufe_progress.json"
+
+    _apply_single_thread_env_defaults()
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+
+    qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
+    qc_rows = []
+    rows = []
+    channel_pos = {}
+    t0 = time.time()
+
+    def _write_progress(stage: str, done: int, total: int):
+        payload = {
+            "stage": stage,
+            "total": int(total),
+            "done": int(done),
+            "elapsed_sec": float(time.time() - t0),
+            "updated_at_unix": float(time.time()),
+        }
+        progress_json.write_text(json.dumps(payload, indent=2))
+    sessions = util_wrangle_load_sessions()
+    tasks = []
+    for item in sessions:
+        lean_item = {
+            "subject": int(item["subject"]),
+            "day": int(item["day"]),
+            "epo_file": item["epo_file"],
+        }
+        try:
+            meta = _extract_stim_channel_meta(item["epochs"])
+            ch_names = meta["ch_names"]
+            pos = meta["pos"]
+        except Exception:
+            ch_names = []
+            pos = np.empty((0, 3), dtype=float)
+        tasks.append(
+            {
+                "session_item": lean_item,
+                "cache_dir": str(cache_dir),
+                "min_epochs": int(min_epochs),
+                "random_state": int(random_state),
+                "ch_names": ch_names,
+                "pos": pos,
+            }
+        )
+    _write_progress("running", 0, len(tasks))
+    if n_workers == 1:
+        results = [_process_haufe_session_item(t) for t in tasks]
+    else:
+        if threadpool_limits is None:
+            results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                delayed(_process_haufe_session_item)(t) for t in tasks
+            )
+        else:
+            with threadpool_limits(limits=1):
+                results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                    delayed(_process_haufe_session_item)(t) for t in tasks
+                )
+
+    done = 0
+    for result in results:
+        done += 1
+        if not result["ok"]:
+            qc_rows.append(result["qc"])
+            _write_progress("running", done, len(tasks))
+            continue
+        ch_names = result["ch_names"]
+        pos = result["pos"]
+        for i, ch in enumerate(ch_names):
+            if ch not in channel_pos:
+                channel_pos[ch] = pos[i]
+        t = result["t"]
+        patterns = result["patterns"]
+        for ci, ch in enumerate(ch_names):
+            for ti, tsec in enumerate(t):
+                rows.append(
+                    {
+                        "subject": int(result["subject"]),
+                        "day": int(result["day"]),
+                        "session_file": result["session_file"],
+                        "channel": ch,
+                        "time_sec": float(tsec),
+                        "pattern": float(patterns[ci, ti]),
+                        "abs_pattern": float(np.abs(patterns[ci, ti])),
+                        "n_trials": int(result["n_trials"]),
+                        "n_a": int(result["n_a"]),
+                        "n_b": int(result["n_b"]),
+                    }
+                )
+        _write_progress("running", done, len(tasks))
+
+    session_df = pd.DataFrame(rows)
+    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
+    if session_df.empty:
+        session_df.to_csv(session_csv, index=False)
+        pd.DataFrame().to_csv(day_mean_csv, index=False)
+        pd.DataFrame().to_csv(day_abs_mean_csv, index=False)
+        qc_df.to_csv(qc_csv, index=False)
+        _write_progress("completed_empty", done, len(tasks))
+        raise RuntimeError("No valid Haufe patterns computed.")
+
+    day_mean_df = (
+        session_df.groupby(["day", "channel", "time_sec"], as_index=False)
+        .agg(
+            pattern_mean=("pattern", "mean"),
+            pattern_sem=("pattern", lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan),
+            n_subjects=("subject", "nunique"),
+        )
+        .sort_values(["day", "channel", "time_sec"])
+    )
+    day_abs_mean_df = (
+        session_df.groupby(["day", "channel", "time_sec"], as_index=False)
+        .agg(
+            abs_pattern_mean=("abs_pattern", "mean"),
+            abs_pattern_sem=(
+                "abs_pattern",
+                lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+            ),
+            n_subjects=("subject", "nunique"),
+        )
+        .sort_values(["day", "channel", "time_sec"])
+    )
+    pos_df = pd.DataFrame(
+        [{"channel": ch, "x": xyz[0], "y": xyz[1], "z": xyz[2]} for ch, xyz in sorted(channel_pos.items())]
+    )
+
+    session_df.to_csv(session_csv, index=False)
+    day_mean_df.to_csv(day_mean_csv, index=False)
+    day_abs_mean_df.to_csv(day_abs_mean_csv, index=False)
+    pos_df.to_csv(channel_pos_csv, index=False)
+    qc_df.to_csv(qc_csv, index=False)
+    _write_progress("completed", done, len(tasks))
+    return {
+        "session_csv": session_csv,
+        "day_mean_csv": day_mean_csv,
+        "day_abs_mean_csv": day_abs_mean_csv,
+        "channel_pos_csv": channel_pos_csv,
+        "qc_csv": qc_csv,
+    }
+
+
+def save_fig_mvpa_haufe_patterns(
+    output_dir: Path | str = _OUTPUT_ROOT / "mvpa_haufe",
+    figures_dir: Path | str = _FIGURES_ROOT / "mvpa_haufe",
+    time_points: tuple[float, ...] = (0.10, 0.15, 0.20, 0.30),
+):
+    """Generate day-panel topomaps for signed and abs Haufe patterns from saved outputs."""
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    day_mean_csv = output_dir / "haufe_day_mean_channel_time.csv"
+    day_abs_mean_csv = output_dir / "haufe_day_abs_mean_channel_time.csv"
+    channel_pos_csv = output_dir / "haufe_channel_positions.csv"
+    if (not day_mean_csv.exists()) or (not day_abs_mean_csv.exists()) or (not channel_pos_csv.exists()):
+        raise FileNotFoundError(f"Missing Haufe outputs in {output_dir}. Run run_mvpa_haufe_patterns() first.")
+
+    day_mean_df = pd.read_csv(day_mean_csv)
+    day_abs_mean_df = pd.read_csv(day_abs_mean_csv)
+    pos_df = pd.read_csv(channel_pos_csv)
+    ch_names = pos_df["channel"].tolist()
+    ch_pos = {r["channel"]: np.array([r["x"], r["y"], r["z"]], dtype=float) for _, r in pos_df.iterrows()}
+    info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
+    info.set_montage(montage, on_missing="ignore")
+
+    days = sorted(day_mean_df["day"].unique())
+    times_all = sorted(day_mean_df["time_sec"].unique())
+    picked_times = []
+    for tp in time_points:
+        idx = int(np.argmin(np.abs(np.array(times_all) - tp)))
+        picked_times.append(float(times_all[idx]))
+
+    def _plot_grid(df, value_col, title, fig_path, cmap):
+        n_rows = len(days)
+        n_cols = len(picked_times)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.8 * n_cols, 2.6 * n_rows), squeeze=False)
+        vmin = float(df[value_col].min())
+        vmax = float(df[value_col].max())
+        if vmin == vmax:
+            vmax = vmin + 1e-12
+        for ri, day in enumerate(days):
+            for ci, tp in enumerate(picked_times):
+                ax = axes[ri, ci]
+                g = df[(df["day"] == day) & (np.isclose(df["time_sec"], tp))]
+                vals = (
+                    g.set_index("channel")
+                    .reindex(ch_names)[value_col]
+                    .to_numpy(dtype=float)
+                )
+                im, _ = mne.viz.plot_topomap(
+                    vals,
+                    info,
+                    axes=ax,
+                    show=False,
+                    contours=0,
+                    cmap=cmap,
+                    vlim=(vmin, vmax),
+                    sphere=(0.0, 0.0, 0.0, 0.095),
+                )
+                if ri == 0:
+                    ax.set_title(f"t={tp:.3f}s")
+                if ci == 0:
+                    ax.set_ylabel(f"Day {day}")
+        fig.suptitle(title)
+        fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.9)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    fig_signed = figures_dir / "haufe_topomap_signed_by_day.png"
+    fig_abs = figures_dir / "haufe_topomap_abs_by_day.png"
+    _plot_grid(
+        day_mean_df,
+        "pattern_mean",
+        "Haufe Activation Patterns (Signed)",
+        fig_signed,
+        "RdBu_r",
+    )
+    _plot_grid(
+        day_abs_mean_df,
+        "abs_pattern_mean",
+        "Haufe Activation Patterns (Absolute)",
+        fig_abs,
+        "magma",
+    )
+    return {"figure_paths": {"signed": fig_signed, "abs": fig_abs}}
+
+
+def run_mvpa_haufe_time_resolved(**kwargs):
+    """Haufe patterns aligned to time-resolved MVPA."""
+    kwargs.setdefault("output_dir", _OUTPUT_ROOT / "mvpa_haufe_time_resolved")
+    return run_mvpa_haufe_patterns(**kwargs)
+
+
+def save_fig_mvpa_haufe_time_resolved(**kwargs):
+    """Figures for Haufe patterns aligned to time-resolved MVPA."""
+    kwargs.setdefault("output_dir", _OUTPUT_ROOT / "mvpa_haufe_time_resolved")
+    kwargs.setdefault("figures_dir", _FIGURES_ROOT / "mvpa_haufe_time_resolved")
+    return save_fig_mvpa_haufe_patterns(**kwargs)
+
+
+def run_mvpa_haufe_tg_within_day(**kwargs):
+    """Haufe train-time patterns aligned to within-day TG."""
+    kwargs.setdefault("output_dir", _OUTPUT_ROOT / "mvpa_haufe_tg_within_day")
+    return run_mvpa_haufe_patterns(**kwargs)
+
+
+def save_fig_mvpa_haufe_tg_within_day(**kwargs):
+    """Figures for Haufe train-time patterns aligned to within-day TG."""
+    kwargs.setdefault("output_dir", _OUTPUT_ROOT / "mvpa_haufe_tg_within_day")
+    kwargs.setdefault("figures_dir", _FIGURES_ROOT / "mvpa_haufe_tg_within_day")
+    return save_fig_mvpa_haufe_patterns(**kwargs)
+
+
+def run_mvpa_haufe_tg_cross_day(
+    output_dir: Path | str = _OUTPUT_ROOT / "mvpa_haufe_tg_cross_day",
+    cache_dir: Path | str = _OUTPUT_ROOT / "mvpa_tg" / "cache_stim_arrays",
+    min_epochs: int = 20,
+    random_state: int = 42,
+    n_workers: int | None = None,
+):
+    """Haufe train-time patterns aligned to cross-day TG (day x day)."""
+    output_dir = Path(output_dir)
+    cache_dir = Path(cache_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    session_csv = output_dir / "haufe_crossday_pair_channel_time.csv"
+    day_mean_csv = output_dir / "haufe_crossday_train_day_mean_channel_time.csv"
+    day_abs_mean_csv = output_dir / "haufe_crossday_train_day_abs_mean_channel_time.csv"
+    channel_pos_csv = output_dir / "haufe_channel_positions.csv"
+    qc_csv = output_dir / "haufe_qc_log.csv"
+    progress_json = output_dir / "haufe_progress.json"
+
+    _apply_single_thread_env_defaults()
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
+    qc_rows = []
+    rows = []
+    channel_pos = {}
+    rng_master = np.random.default_rng(random_state)
+    t0 = time.time()
+
+    def _write_progress(stage: str, done: int, total: int):
+        payload = {
+            "stage": stage,
+            "total": int(total),
+            "done": int(done),
+            "elapsed_sec": float(time.time() - t0),
+            "updated_at_unix": float(time.time()),
+        }
+        progress_json.write_text(json.dumps(payload, indent=2))
+
+    sessions = util_wrangle_load_sessions()
+    day_data = {}
+    for item in sessions:
+        cache_path = cache_dir / f"stim_cache_{_session_cache_key(item)}.npz"
+        if cache_path.exists():
+            try:
+                meta = _extract_stim_channel_meta(item["epochs"])
+                ch_names = meta["ch_names"]
+                pos = meta["pos"]
+            except Exception:
+                ch_names = []
+                pos = np.empty((0, 3), dtype=float)
+            day_data[(int(item["subject"]), int(item["day"]))] = {
+                "cache_path": str(cache_path),
+                "session_file": item["epo_file"],
+                "ch_names": ch_names,
+                "pos": pos,
+            }
+
+    pair_tasks = []
+    subjects = sorted({k[0] for k in day_data})
+    for subject in subjects:
+        subject_days = sorted([d for (s, d) in day_data if s == subject])
+        if len(subject_days) < 2:
+            continue
+        for d_train in subject_days:
+            for d_test in subject_days:
+                if d_test == d_train:
+                    continue
+                pair_tasks.append(
+                    {
+                        "subject": int(subject),
+                        "train_day": int(d_train),
+                        "test_day": int(d_test),
+                        "train_item": day_data[(subject, d_train)],
+                        "test_item": day_data[(subject, d_test)],
+                        "ch_names": day_data[(subject, d_train)]["ch_names"],
+                        "pos": day_data[(subject, d_train)]["pos"],
+                        "pair_seed": int(rng_master.integers(0, 2**31 - 1)),
+                        "min_epochs": int(min_epochs),
+                        "random_state": int(random_state),
+                    }
+                )
+    _write_progress("running", 0, len(pair_tasks))
+    if n_workers == 1:
+        pair_results = [_process_haufe_cross_pair_item(t) for t in pair_tasks]
+    else:
+        if threadpool_limits is None:
+            pair_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                delayed(_process_haufe_cross_pair_item)(t) for t in pair_tasks
+            )
+        else:
+            with threadpool_limits(limits=1):
+                pair_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                    delayed(_process_haufe_cross_pair_item)(t) for t in pair_tasks
+                )
+
+    done = 0
+    for result in pair_results:
+        done += 1
+        if not result["ok"]:
+            qc_rows.append(result["qc"])
+            _write_progress("running", done, len(pair_tasks))
+            continue
+        ch_names = result["ch_names"]
+        pos = result["pos"]
+        for i, ch in enumerate(ch_names):
+            if ch not in channel_pos:
+                channel_pos[ch] = pos[i]
+        t = result["t"]
+        patterns = result["patterns"]
+        for ci, ch in enumerate(ch_names):
+            for ti, tsec in enumerate(t):
+                rows.append(
+                    {
+                        "subject": int(result["subject"]),
+                        "train_day": int(result["train_day"]),
+                        "test_day": int(result["test_day"]),
+                        "train_session_file": result["train_session_file"],
+                        "test_session_file": result["test_session_file"],
+                        "channel": ch,
+                        "time_sec": float(tsec),
+                        "pattern": float(patterns[ci, ti]),
+                        "abs_pattern": float(np.abs(patterns[ci, ti])),
+                        "n_per_class": int(result["n_per_class"]),
+                    }
+                )
+        _write_progress("running", done, len(pair_tasks))
+
+    pair_df = pd.DataFrame(rows)
+    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
+    if pair_df.empty:
+        pair_df.to_csv(session_csv, index=False)
+        pd.DataFrame().to_csv(day_mean_csv, index=False)
+        pd.DataFrame().to_csv(day_abs_mean_csv, index=False)
+        qc_df.to_csv(qc_csv, index=False)
+        _write_progress("completed_empty", done, len(pair_tasks))
+        raise RuntimeError("No valid cross-day Haufe patterns computed.")
+
+    day_mean_df = (
+        pair_df.groupby(["train_day", "channel", "time_sec"], as_index=False)
+        .agg(
+            pattern_mean=("pattern", "mean"),
+            pattern_sem=("pattern", lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan),
+            n_subjects=("subject", "nunique"),
+        )
+        .sort_values(["train_day", "channel", "time_sec"])
+    )
+    day_abs_mean_df = (
+        pair_df.groupby(["train_day", "channel", "time_sec"], as_index=False)
+        .agg(
+            abs_pattern_mean=("abs_pattern", "mean"),
+            abs_pattern_sem=(
+                "abs_pattern",
+                lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+            ),
+            n_subjects=("subject", "nunique"),
+        )
+        .sort_values(["train_day", "channel", "time_sec"])
+    )
+    pos_df = pd.DataFrame(
+        [{"channel": ch, "x": xyz[0], "y": xyz[1], "z": xyz[2]} for ch, xyz in sorted(channel_pos.items())]
+    )
+    pair_df.to_csv(session_csv, index=False)
+    day_mean_df.to_csv(day_mean_csv, index=False)
+    day_abs_mean_df.to_csv(day_abs_mean_csv, index=False)
+    pos_df.to_csv(channel_pos_csv, index=False)
+    qc_df.to_csv(qc_csv, index=False)
+    _write_progress("completed", done, len(pair_tasks))
+    return {
+        "pair_csv": session_csv,
+        "day_mean_csv": day_mean_csv,
+        "day_abs_mean_csv": day_abs_mean_csv,
+        "channel_pos_csv": channel_pos_csv,
+        "qc_csv": qc_csv,
+    }
+
+
+def save_fig_mvpa_haufe_tg_cross_day(**kwargs):
+    """Figures for Haufe patterns aligned to cross-day TG (grouped by train_day)."""
+    kwargs.setdefault("output_dir", _OUTPUT_ROOT / "mvpa_haufe_tg_cross_day")
+    kwargs.setdefault("figures_dir", _FIGURES_ROOT / "mvpa_haufe_tg_cross_day")
+    output_dir = Path(kwargs["output_dir"])
+    day_mean_csv = output_dir / "haufe_crossday_train_day_mean_channel_time.csv"
+    day_abs_mean_csv = output_dir / "haufe_crossday_train_day_abs_mean_channel_time.csv"
+    if (not day_mean_csv.exists()) or (not day_abs_mean_csv.exists()):
+        raise FileNotFoundError(
+            f"Missing cross-day Haufe outputs in {output_dir}. Run run_mvpa_haufe_tg_cross_day() first."
+        )
+
+    tmp_output = output_dir / "_tmp_plot_compat"
+    tmp_output.mkdir(parents=True, exist_ok=True)
+    (pd.read_csv(day_mean_csv)).rename(columns={"train_day": "day"}).to_csv(
+        tmp_output / "haufe_day_mean_channel_time.csv", index=False
+    )
+    (pd.read_csv(day_abs_mean_csv)).rename(columns={"train_day": "day"}).to_csv(
+        tmp_output / "haufe_day_abs_mean_channel_time.csv", index=False
+    )
+    src_pos = output_dir / "haufe_channel_positions.csv"
+    pd.read_csv(src_pos).to_csv(tmp_output / "haufe_channel_positions.csv", index=False)
+    kwargs["output_dir"] = tmp_output
+    out = save_fig_mvpa_haufe_patterns(**kwargs)
+    return out
