@@ -793,65 +793,16 @@ def util_mvpa_temporal_generalization(
     if n_workers is None:
         n_workers = _default_n_workers()
     n_workers = max(1, int(n_workers))
-    within_results = []
-    if run_within_day:
-        print(
-            f"[TG] Starting within-day TG on {len(prepared_items)} prepared sessions "
-            f"(n_workers={n_workers})...",
-            flush=True,
-        )
-        _write_progress("within_day_running", 0, len(prepared_items), 0, 0)
-        if len(prepared_items) == 0:
-            within_results = []
-        elif n_workers == 1:
-            if threadpool_limits is None:
-                within_results = [
-                    _process_within_day_session(
-                        session_meta=item,
-                        min_epochs=min_epochs,
-                        random_state=random_state,
-                    )
-                    for item in prepared_items
-                ]
-            else:
-                with threadpool_limits(limits=1):
-                    within_results = [
-                        _process_within_day_session(
-                            session_meta=item,
-                            min_epochs=min_epochs,
-                            random_state=random_state,
-                        )
-                        for item in prepared_items
-                    ]
-        else:
-            if threadpool_limits is None:
-                within_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-                    delayed(_process_within_day_session)(
-                        session_meta=item,
-                        min_epochs=min_epochs,
-                        random_state=random_state,
-                    )
-                    for item in prepared_items
-                )
-            else:
-                with threadpool_limits(limits=1):
-                    within_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-                        delayed(_process_within_day_session)(
-                            session_meta=item,
-                            min_epochs=min_epochs,
-                            random_state=random_state,
-                        )
-                        for item in prepared_items
-                    )
-
     n_done = 0
-    for result in within_results:
+
+    def _handle_within_result(result):
+        nonlocal n_done, time_template, wrote_within_subject, wrote_qc, qc_rows
         if not result["ok"]:
             qc_rows.append(result["qc"])
             if len(qc_rows) >= max(progress_every, 1):
                 wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
                 qc_rows = []
-            continue
+            return
 
         subject = int(result["subject"])
         day = int(result["day"])
@@ -874,7 +825,7 @@ def util_mvpa_temporal_generalization(
                     "detail": "",
                 }
             )
-            continue
+            return
 
         within_mats.append(
             {
@@ -891,11 +842,9 @@ def util_mvpa_temporal_generalization(
             "cache_path": result["cache_path"],
             "session_file": session_file,
         }
-        # Incrementally append within-day subject-level rows.
-        n_t_local = len(t)
         rows_local = []
-        for i in range(n_t_local):
-            for j in range(n_t_local):
+        for i in range(len(t)):
+            for j in range(len(t)):
                 rows_local.append(
                     {
                         "subject": subject,
@@ -919,6 +868,58 @@ def util_mvpa_temporal_generalization(
                 f"(elapsed {elapsed/60:.1f} min)",
                 flush=True,
             )
+
+    if run_within_day:
+        print(
+            f"[TG] Starting within-day TG on {len(prepared_items)} prepared sessions "
+            f"(n_workers={n_workers})...",
+            flush=True,
+        )
+        _write_progress("within_day_running", 0, len(prepared_items), 0, 0)
+        if n_workers == 1:
+            if threadpool_limits is None:
+                for item in prepared_items:
+                    _handle_within_result(
+                        _process_within_day_session(
+                            session_meta=item,
+                            min_epochs=min_epochs,
+                            random_state=random_state,
+                        )
+                    )
+            else:
+                with threadpool_limits(limits=1):
+                    for item in prepared_items:
+                        _handle_within_result(
+                            _process_within_day_session(
+                                session_meta=item,
+                                min_epochs=min_epochs,
+                                random_state=random_state,
+                            )
+                        )
+        elif len(prepared_items) > 0:
+            if threadpool_limits is None:
+                result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                    delayed(_process_within_day_session)(
+                        session_meta=item,
+                        min_epochs=min_epochs,
+                        random_state=random_state,
+                    )
+                    for item in prepared_items
+                )
+                for result in result_iter:
+                    _handle_within_result(result)
+            else:
+                with threadpool_limits(limits=1):
+                    result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                        delayed(_process_within_day_session)(
+                            session_meta=item,
+                            min_epochs=min_epochs,
+                            random_state=random_state,
+                        )
+                        for item in prepared_items
+                    )
+                    for result in result_iter:
+                        _handle_within_result(result)
 
     if qc_rows:
         wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
@@ -1014,55 +1015,55 @@ def util_mvpa_temporal_generalization(
                     )
         cross_total = len(pair_items)
 
-    if run_cross_day and cross_total > 0:
-        if n_workers == 1:
-            if threadpool_limits is None:
-                cross_results = [
-                    _process_cross_day_pair(pair_item=item, random_state=random_state)
-                    for item in pair_items
-                ]
-            else:
-                with threadpool_limits(limits=1):
-                    cross_results = [
-                        _process_cross_day_pair(pair_item=item, random_state=random_state)
-                        for item in pair_items
-                    ]
-        else:
-            if threadpool_limits is None:
-                cross_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-                    delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
-                    for item in pair_items
-                )
-            else:
-                with threadpool_limits(limits=1):
-                    cross_results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-                        delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
-                        for item in pair_items
-                    )
-    elif run_cross_day:
-        cross_results = []
-    else:
-        cross_results = []
-
     cross_done = 0
-    for result in cross_results:
+    if run_cross_day:
+        _write_progress("cross_day_running", n_done, len(prepared_items), 0, cross_total)
+
+    def _handle_cross_result(result):
+        nonlocal wrote_cross_subject, wrote_qc, cross_done, qc_rows
         if result["ok"]:
             cross_rows.append(result["row"])
-            cross_done += 1
             wrote_cross_subject = _append_csv(pd.DataFrame([result["row"]]), cross_subject_csv, wrote_cross_subject)
         else:
             qc_rows.append(result["qc"])
             if len(qc_rows) >= max(progress_every, 1):
                 wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
                 qc_rows = []
+        cross_done += 1
         _write_progress("cross_day_running", n_done, len(prepared_items), cross_done, cross_total)
-        if (cross_done % max(progress_every * 2, 1)) == 0 and cross_done > 0:
+        if (cross_done % max(progress_every * 2, 1)) == 0:
             elapsed = time.time() - t0
             print(
-                f"[TG] cross-day complete {cross_done}/{cross_total} pairs "
+                f"[TG] cross-day processed {cross_done}/{cross_total} pairs "
                 f"(elapsed {elapsed/60:.1f} min)",
                 flush=True,
             )
+
+    if run_cross_day and cross_total > 0:
+        if n_workers == 1:
+            if threadpool_limits is None:
+                for item in pair_items:
+                    _handle_cross_result(_process_cross_day_pair(pair_item=item, random_state=random_state))
+            else:
+                with threadpool_limits(limits=1):
+                    for item in pair_items:
+                        _handle_cross_result(_process_cross_day_pair(pair_item=item, random_state=random_state))
+        else:
+            if threadpool_limits is None:
+                result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                    delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
+                    for item in pair_items
+                )
+                for result in result_iter:
+                    _handle_cross_result(result)
+            else:
+                with threadpool_limits(limits=1):
+                    result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                        delayed(_process_cross_day_pair)(pair_item=item, random_state=random_state)
+                        for item in pair_items
+                    )
+                    for result in result_iter:
+                        _handle_cross_result(result)
     if qc_rows:
         wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
         qc_rows = []
