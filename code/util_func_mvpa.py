@@ -1411,6 +1411,7 @@ def save_fig_mvpa_time_resolved(**kwargs):
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
+    session_csv = output_dir / "mvpa_session_timecourse.csv"
     day_means_csv = output_dir / "mvpa_day_means_timecourse.csv"
     day_effect_csv = output_dir / "mvpa_day_effect_per_time.csv"
     if (not day_means_csv.exists()) or (not day_effect_csv.exists()):
@@ -1421,22 +1422,41 @@ def save_fig_mvpa_time_resolved(**kwargs):
     fig_day_panels = figures_dir / "mvpa_auc_by_day_panels.png"
     fig_day_slope = figures_dir / "mvpa_day_slope_timecourse.png"
     haufe_day_mean_csv = output_dir / "mvpa_haufe_day_mean_channel_time.csv"
+    haufe_session_csv = output_dir / "mvpa_haufe_session_channel_time.csv"
     haufe_channel_pos_csv = output_dir / "mvpa_haufe_channel_positions.csv"
+    haufe_peak_times_csv = output_dir / "mvpa_haufe_subject_day_peak_times.csv"
+    haufe_stability_subject_csv = output_dir / "mvpa_haufe_peak_stability_subject.csv"
+    haufe_stability_summary_csv = output_dir / "mvpa_haufe_peak_stability_summary.csv"
+    fig_haufe_stability = figures_dir / "mvpa_haufe_peak_stability.png"
 
-    def _detect_peak_times(df):
-        d_avg = (
-            df.groupby("time_sec", as_index=False)["auc_mean"]
-            .mean()
-            .sort_values("time_sec")
-        )
-        peaks = []
-        for lo, hi, label in [(0.0, 0.20, "early"), (0.35, 0.80, "late")]:
-            d_win = d_avg[(d_avg["time_sec"] >= lo) & (d_avg["time_sec"] <= hi)]
-            if d_win.empty:
-                continue
-            row = d_win.loc[d_win["auc_mean"].idxmax()]
-            peaks.append((float(row["time_sec"]), label))
-        return peaks
+    def _detect_subject_day_peak_times():
+        if not session_csv.exists():
+            return pd.DataFrame()
+        d_session = pd.read_csv(session_csv)
+        if d_session.empty:
+            return pd.DataFrame()
+        rows = []
+        for (subject, day), d_sd in d_session.groupby(["subject", "day"]):
+            d_sd = d_sd.sort_values("time_sec")
+            for lo, hi, label in [(0.0, 0.20, "early"), (0.35, 0.80, "late")]:
+                d_win = d_sd[(d_sd["time_sec"] >= lo) & (d_sd["time_sec"] <= hi)]
+                if d_win.empty:
+                    continue
+                row = d_win.loc[d_win["auc"].idxmax()]
+                rows.append(
+                    {
+                        "subject": int(subject),
+                        "day": int(day),
+                        "peak": label,
+                        "peak_time_sec": float(row["time_sec"]),
+                        "peak_auc": float(row["auc"]),
+                        "window_start_sec": float(lo),
+                        "window_end_sec": float(hi),
+                    }
+                )
+        peak_df = pd.DataFrame(rows).sort_values(["day", "peak", "subject"])
+        peak_df.to_csv(haufe_peak_times_csv, index=False)
+        return peak_df
 
     def _make_haufe_info(pos_df):
         ch_names = pos_df["channel"].tolist()
@@ -1449,16 +1469,167 @@ def save_fig_mvpa_time_resolved(**kwargs):
         info.set_montage(montage, on_missing="ignore")
         return info, ch_names
 
+    def _vector_corr(x_vec, y_vec):
+        valid = np.isfinite(x_vec) & np.isfinite(y_vec)
+        if int(np.sum(valid)) < 3:
+            return np.nan
+        x_use = x_vec[valid] - np.nanmean(x_vec[valid])
+        y_use = y_vec[valid] - np.nanmean(y_vec[valid])
+        denom = np.sqrt(np.sum(x_use ** 2) * np.sum(y_use ** 2))
+        if (not np.isfinite(denom)) or denom <= np.finfo(float).eps:
+            return np.nan
+        return float(np.sum(x_use * y_use) / denom)
+
+    def _write_haufe_stability(peak_df):
+        if (not haufe_session_csv.exists()) or peak_df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        d_sub = pd.read_csv(haufe_session_csv)
+        if d_sub.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        rows = []
+        for day in sorted(peak_df["day"].dropna().unique().astype(int)):
+            d_day = d_sub[d_sub["day"] == day].copy()
+            times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
+            if len(times) == 0:
+                continue
+            for peak_label in ["early", "late"]:
+                d_peak_meta = peak_df[(peak_df["day"] == day) & (peak_df["peak"] == peak_label)]
+                if d_peak_meta.empty:
+                    continue
+                vec_rows = []
+                for _, peak_row in d_peak_meta.iterrows():
+                    subject = int(peak_row["subject"])
+                    peak_time = float(peak_row["peak_time_sec"])
+                    t_show = float(times[int(np.argmin(np.abs(times - peak_time)))])
+                    d_peak = d_day[
+                        (d_day["subject"] == subject) & np.isclose(d_day["time_sec"], t_show)
+                    ].copy()
+                    if d_peak.empty:
+                        continue
+                    vals = (
+                        d_peak.set_index("channel")
+                        .reindex(haufe_ch_names)["pattern"]
+                        .to_numpy(dtype=float)
+                    )
+                    vec_rows.append(
+                        {
+                            "subject": subject,
+                            "peak_time_sec": peak_time,
+                            "used_time_sec": t_show,
+                            "values": vals,
+                        }
+                    )
+                if len(vec_rows) < 3:
+                    continue
+                mat = pd.DataFrame(
+                    [r["values"] for r in vec_rows],
+                    index=[r["subject"] for r in vec_rows],
+                    columns=haufe_ch_names,
+                )
+                if mat.shape[0] < 3:
+                    continue
+                values = mat.to_numpy(dtype=float)
+                subjects = mat.index.to_numpy()
+                for i_sub, subject in enumerate(subjects):
+                    x_vec = values[i_sub, :]
+                    loo = np.delete(values, i_sub, axis=0)
+                    with np.errstate(invalid="ignore"):
+                        y_vec = np.nanmean(loo, axis=0)
+                    r_val = _vector_corr(x_vec, y_vec)
+                    rows.append(
+                        {
+                            "subject": int(subject),
+                            "day": int(day),
+                            "peak": peak_label,
+                            "subject_peak_time_sec": float(vec_rows[i_sub]["peak_time_sec"]),
+                            "used_time_sec": float(vec_rows[i_sub]["used_time_sec"]),
+                            "loo_pattern_r": r_val,
+                            "n_channels": int(np.sum(np.isfinite(x_vec) & np.isfinite(y_vec))),
+                        }
+                    )
+        subject_df = pd.DataFrame(rows)
+        if subject_df.empty:
+            subject_df.to_csv(haufe_stability_subject_csv, index=False)
+            pd.DataFrame().to_csv(haufe_stability_summary_csv, index=False)
+            return subject_df, pd.DataFrame()
+        summary_df = (
+            subject_df.groupby(["day", "peak"], as_index=False)
+            .agg(
+                median_peak_time_sec=("subject_peak_time_sec", "median"),
+                q25_peak_time_sec=("subject_peak_time_sec", lambda x: float(np.nanpercentile(x, 25))),
+                q75_peak_time_sec=("subject_peak_time_sec", lambda x: float(np.nanpercentile(x, 75))),
+                median_used_time_sec=("used_time_sec", "median"),
+                median_r=("loo_pattern_r", "median"),
+                q25_r=("loo_pattern_r", lambda x: float(np.nanpercentile(x, 25))),
+                q75_r=("loo_pattern_r", lambda x: float(np.nanpercentile(x, 75))),
+                mean_r=("loo_pattern_r", "mean"),
+                prop_positive=("loo_pattern_r", lambda x: float(np.nanmean(np.asarray(x) > 0))),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values(["day", "peak"])
+        )
+        subject_df.to_csv(haufe_stability_subject_csv, index=False)
+        summary_df.to_csv(haufe_stability_summary_csv, index=False)
+        return subject_df, summary_df
+
+    def _plot_haufe_stability(subject_df):
+        if subject_df.empty:
+            return
+        peak_order = [p for p in ["early", "late"] if p in set(subject_df["peak"])]
+        days_plot = sorted(subject_df["day"].dropna().unique().astype(int).tolist())
+        fig, axes = plt.subplots(1, len(peak_order), figsize=(4.5 * len(peak_order), 4), sharey=True, squeeze=False)
+        rng = np.random.default_rng(42)
+        for ax, peak in zip(axes.ravel(), peak_order):
+            data = []
+            labels = []
+            for day in days_plot:
+                vals = subject_df[
+                    (subject_df["day"] == day) & (subject_df["peak"] == peak)
+                ]["loo_pattern_r"].dropna().to_numpy(dtype=float)
+                data.append(vals)
+                labels.append(f"D{day}")
+            ax.boxplot(data, labels=labels, showfliers=False)
+            for i_day, vals in enumerate(data, start=1):
+                if len(vals) == 0:
+                    continue
+                jitter = rng.normal(0.0, 0.035, size=len(vals))
+                ax.scatter(np.full(len(vals), i_day) + jitter, vals, s=18, alpha=0.55, color="#2f4f4f")
+            ax.axhline(0.0, color="k", linestyle="--", linewidth=1)
+            ax.set_title(f"{peak} peak")
+            ax.set_xlabel("Day")
+            ax.grid(axis="y", alpha=0.25)
+        axes.ravel()[0].set_ylabel("Subject vs leave-one-subject-out group pattern r")
+        fig.suptitle("Haufe Pattern Stability at MVPA Peaks")
+        fig.tight_layout(rect=[0, 0, 1, 0.92])
+        fig.savefig(fig_haufe_stability, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
     haufe_df = pd.DataFrame()
     haufe_info = None
     haufe_ch_names = []
-    peak_times = []
+    peak_df = pd.DataFrame()
+    peak_medians = {}
     if haufe_day_mean_csv.exists() and haufe_channel_pos_csv.exists():
         haufe_df = pd.read_csv(haufe_day_mean_csv)
         pos_df = pd.read_csv(haufe_channel_pos_csv)
         if (not haufe_df.empty) and (not pos_df.empty):
             haufe_info, haufe_ch_names = _make_haufe_info(pos_df)
-            peak_times = _detect_peak_times(day_means_df)
+            peak_df = _detect_subject_day_peak_times()
+            if not peak_df.empty:
+                d_peak_median = (
+                    peak_df.groupby(["day", "peak"], as_index=False)["peak_time_sec"]
+                    .median()
+                    .rename(columns={"peak_time_sec": "median_peak_time_sec"})
+                )
+                peak_medians = {
+                    (int(r["day"]), str(r["peak"])): float(r["median_peak_time_sec"])
+                    for _, r in d_peak_median.iterrows()
+                }
+
+    haufe_stability_subject_df = pd.DataFrame()
+    if (not peak_df.empty) and haufe_ch_names:
+        haufe_stability_subject_df, _ = _write_haufe_stability(peak_df)
+        _plot_haufe_stability(haufe_stability_subject_df)
 
     days = sorted(day_means_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 5.2), sharey=True, squeeze=False)
@@ -1488,9 +1659,34 @@ def save_fig_mvpa_time_resolved(**kwargs):
         ax.set_xlabel("Time (s)")
         ax.set_ylim(y_lower - 0.02, y_upper + y_pad)
         ax.grid(alpha=0.25)
-        for peak_time, peak_label in peak_times:
+        day_peak_times = [
+            (peak_medians[(int(day), peak_label)], peak_label)
+            for peak_label in ["early", "late"]
+            if (int(day), peak_label) in peak_medians
+        ]
+        for peak_time, peak_label in day_peak_times:
             if x_max <= x_min:
                 continue
+            y_peak = float(np.interp(peak_time, x, y))
+            ax.axvline(peak_time, color="#b22222", linestyle=":", linewidth=1.2)
+            ax.scatter(
+                [peak_time],
+                [y_peak],
+                s=36,
+                facecolor="white",
+                edgecolor="#b22222",
+                linewidth=1.2,
+                zorder=4,
+            )
+            ax.text(
+                peak_time,
+                y_upper + (0.05 * y_pad),
+                peak_label,
+                color="#b22222",
+                fontsize=8,
+                ha="center",
+                va="bottom",
+            )
             x_frac = (peak_time - x_min) / (x_max - x_min)
             width = 0.18
             inset = ax.inset_axes(
@@ -1520,7 +1716,7 @@ def save_fig_mvpa_time_resolved(**kwargs):
                 sphere=(0.0, 0.0, 0.0, 0.095),
             )
             topomap_ims.append(im)
-            inset.set_title(f"{peak_label}\n{t_show:.3f}s", fontsize=8)
+            inset.set_title(f"{peak_label}\nmedian {peak_time:.3f}s\nmap {t_show:.3f}s", fontsize=7)
     axes.ravel()[0].set_ylabel("ROC-AUC")
     fig.suptitle("Time-resolved Category Decoding (Stim/A vs Stim/B)")
     if topomap_ims:
@@ -1550,7 +1746,15 @@ def save_fig_mvpa_time_resolved(**kwargs):
     fig.tight_layout()
     fig.savefig(fig_day_slope, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    return {"figure_paths": {"day_panels": fig_day_panels, "day_slope": fig_day_slope}}
+    return {
+        "figure_paths": {
+            "day_panels": fig_day_panels,
+            "day_slope": fig_day_slope,
+            "haufe_stability": fig_haufe_stability,
+        },
+        "haufe_stability_subject_csv": haufe_stability_subject_csv,
+        "haufe_stability_summary_csv": haufe_stability_summary_csv,
+    }
 
 
 def run_mvpa_temporal_generalization(**kwargs):
