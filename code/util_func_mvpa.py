@@ -31,7 +31,7 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 os.environ["NUMBA_DISABLE_JIT"] = "1"
 import mne
 from mne.decoding import GeneralizingEstimator, cross_val_multiscore
-from util_func_wrangle import util_wrangle_load_sessions
+from util_func_wrangle import util_wrangle_align_beh_to_epochs, util_wrangle_load_sessions
 try:
     from threadpoolctl import threadpool_limits
 except Exception:  # pragma: no cover
@@ -1401,6 +1401,377 @@ def util_mvpa_temporal_generalization(
 def run_mvpa_time_resolved(**kwargs):
     """Run time-resolved MVPA analysis."""
     return util_mvpa_time_resolved(save_figures=False, **kwargs)
+
+
+def _process_response_mvpa_session(task: dict):
+    session_file = task["epo_file"]
+    subject = int(task["subject"])
+    day = int(task["day"])
+    beh_df = task["beh_df"]
+    min_epochs = int(task["min_epochs"])
+    random_state = int(task["random_state"])
+
+    try:
+        epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
+        stim_epochs, beh_aligned = util_wrangle_align_beh_to_epochs(
+            beh_df,
+            epochs,
+            event_names=("Stim/A", "Stim/B"),
+        )
+        if len(stim_epochs) == 0:
+            raise RuntimeError("No aligned stimulus epochs.")
+        stim_epochs = stim_epochs.copy()
+        stim_epochs.load_data()
+        stim_epochs.pick_types(eeg=True, exclude="bads")
+        if len(stim_epochs.ch_names) == 0:
+            raise RuntimeError("No EEG channels after pick_types.")
+        stim_epochs.resample(128, npad="auto")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "preprocess",
+                "reason": "prep_error",
+                "detail": str(exc),
+            },
+        }
+
+    if "resp" not in beh_aligned.columns:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "response_label",
+                "reason": "missing_resp_column",
+                "detail": "",
+            },
+        }
+
+    resp = beh_aligned["resp"].astype(str).str.strip().str.upper().to_numpy()
+    y = np.full(len(resp), -1, dtype=int)
+    y[resp == "A"] = 0
+    y[resp == "B"] = 1
+    keep = y >= 0
+    y = y[keep]
+    X = stim_epochs.get_data()[keep]
+
+    n_a = int(np.sum(y == 0))
+    n_b = int(np.sum(y == 1))
+    n_trials = int(len(y))
+    if n_trials < min_epochs:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "epoch_count",
+                "reason": "insufficient_epochs",
+                "detail": f"n_trials={n_trials} < min_epochs={min_epochs}",
+            },
+        }
+    if min(n_a, n_b) < 5:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "class_balance",
+                "reason": "insufficient_response_trials",
+                "detail": f"n_resp_a={n_a}, n_resp_b={n_b}; need >=5 in each class",
+            },
+        }
+
+    auc = _decode_timecourse(X, y, n_splits=5, random_state=random_state)
+    rows = []
+    for ti, auc_val in enumerate(auc):
+        rows.append(
+            {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "time_sec": float(stim_epochs.times[ti]),
+                "auc": float(auc_val),
+                "n_trials": n_trials,
+                "n_resp_a": n_a,
+                "n_resp_b": n_b,
+            }
+        )
+    return {"ok": True, "rows": rows}
+
+
+def util_mvpa_response_time_resolved(
+    output_dir: Path | str = _OUTPUT_ROOT / "mvpa_response",
+    figures_dir: Path | str = _FIGURES_ROOT / "mvpa_response",
+    min_epochs: int = 20,
+    random_state: int = 42,
+    save_figures: bool = True,
+    n_workers: int | None = None,
+):
+    """Compute per-session time-resolved MVPA using subject response as the label."""
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    mne.set_log_level("ERROR")
+    warnings.filterwarnings(
+        "ignore",
+        message=".*'penalty' was deprecated.*",
+        category=FutureWarning,
+        module=r"sklearn\.linear_model\._logistic",
+    )
+
+    session_csv = output_dir / "mvpa_response_session_timecourse.csv"
+    subject_day_csv = output_dir / "mvpa_response_subject_day_timecourse.csv"
+    day_means_csv = output_dir / "mvpa_response_day_means_timecourse.csv"
+    day_effect_csv = output_dir / "mvpa_response_day_effect_per_time.csv"
+    qc_csv = output_dir / "mvpa_response_qc_log.csv"
+    progress_json = output_dir / "mvpa_response_progress.json"
+
+    qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
+    qc_rows = []
+    session_rows = []
+    t0 = time.time()
+
+    def _write_progress(stage: str, done: int, total: int):
+        payload = {
+            "stage": stage,
+            "done": int(done),
+            "total": int(total),
+            "elapsed_sec": float(time.time() - t0),
+            "updated_at_unix": float(time.time()),
+        }
+        progress_json.write_text(json.dumps(payload, indent=2))
+
+    sessions = util_wrangle_load_sessions()
+    tasks = [
+        {
+            "subject": int(item["subject"]),
+            "day": int(item["day"]),
+            "beh_df": item["beh_df"],
+            "epo_file": item["epo_file"],
+            "epo_path": str(Path("../EEG_epo") / item["epo_file"]),
+            "min_epochs": int(min_epochs),
+            "random_state": int(random_state),
+        }
+        for item in sessions
+    ]
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    _write_progress("running", 0, len(tasks))
+
+    def _handle_response_result(result, done):
+        if result["ok"]:
+            session_rows.extend(result["rows"])
+        else:
+            qc_rows.append(result["qc"])
+        _write_progress("running", done, len(tasks))
+        if (done % 5) == 0:
+            elapsed = time.time() - t0
+            print(
+                f"[MVPA response] complete {done}/{len(tasks)} sessions "
+                f"(elapsed {elapsed/60:.1f} min)",
+                flush=True,
+            )
+
+    print(
+        f"[MVPA response] Starting response-label MVPA on {len(tasks)} sessions "
+        f"(n_workers={n_workers})...",
+        flush=True,
+    )
+    if n_workers == 1:
+        for done, task in enumerate(tasks, start=1):
+            _handle_response_result(_process_response_mvpa_session(task), done)
+    elif threadpool_limits is None:
+        result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+            delayed(_process_response_mvpa_session)(task) for task in tasks
+        )
+        for done, result in enumerate(result_iter, start=1):
+            _handle_response_result(result, done)
+    else:
+        with threadpool_limits(limits=1):
+            result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                delayed(_process_response_mvpa_session)(task) for task in tasks
+            )
+            for done, result in enumerate(result_iter, start=1):
+                _handle_response_result(result, done)
+
+    session_df = pd.DataFrame(session_rows)
+    qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
+    if session_df.empty:
+        session_df.to_csv(session_csv, index=False)
+        pd.DataFrame().to_csv(subject_day_csv, index=False)
+        pd.DataFrame().to_csv(day_means_csv, index=False)
+        pd.DataFrame().to_csv(day_effect_csv, index=False)
+        qc_df.to_csv(qc_csv, index=False)
+        raise RuntimeError("Response-label MVPA produced no valid session rows.")
+
+    subject_day_df = (
+        session_df.groupby(["subject", "day", "time_sec"], as_index=False)["auc"]
+        .mean()
+        .sort_values(["subject", "day", "time_sec"])
+    )
+    day_means_df = (
+        subject_day_df.groupby(["day", "time_sec"], as_index=False)
+        .agg(
+            auc_mean=("auc", "mean"),
+            auc_sem=("auc", lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan),
+            n_subjects=("subject", "nunique"),
+        )
+        .sort_values(["day", "time_sec"])
+    )
+
+    effect_rows = []
+    for t, g in subject_day_df.groupby("time_sec"):
+        if g["subject"].nunique() < 2 or g["day"].nunique() < 2:
+            effect_rows.append(
+                {
+                    "time_sec": float(t),
+                    "n_rows": int(len(g)),
+                    "n_subjects": int(g["subject"].nunique()),
+                    "day_coef": np.nan,
+                    "day_se": np.nan,
+                    "day_pvalue": np.nan,
+                    "status": "insufficient_data",
+                    "detail": "Need >=2 subjects and >=2 day values",
+                }
+            )
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            warnings.simplefilter("ignore", UserWarning)
+            try:
+                model = smf.mixedlm("auc ~ day", data=g, groups=g["subject"]).fit(
+                    reml=False,
+                    method="lbfgs",
+                    disp=False,
+                )
+                effect_rows.append(
+                    {
+                        "time_sec": float(t),
+                        "n_rows": int(len(g)),
+                        "n_subjects": int(g["subject"].nunique()),
+                        "day_coef": float(model.params["day"]),
+                        "day_se": float(model.bse["day"]),
+                        "day_pvalue": float(model.pvalues["day"]),
+                        "status": "ok",
+                        "detail": "",
+                    }
+                )
+            except Exception as exc:
+                effect_rows.append(
+                    {
+                        "time_sec": float(t),
+                        "n_rows": int(len(g)),
+                        "n_subjects": int(g["subject"].nunique()),
+                        "day_coef": np.nan,
+                        "day_se": np.nan,
+                        "day_pvalue": np.nan,
+                        "status": "model_error",
+                        "detail": str(exc),
+                    }
+                )
+
+    day_effect_df = pd.DataFrame(effect_rows).sort_values("time_sec")
+    day_effect_df["p_fdr"] = np.nan
+    day_effect_df["significant_fdr"] = False
+    valid = day_effect_df["day_pvalue"].notna()
+    if valid.any():
+        rej, p_corr = fdrcorrection(day_effect_df.loc[valid, "day_pvalue"].values, alpha=0.05)
+        day_effect_df.loc[valid, "p_fdr"] = p_corr
+        day_effect_df.loc[valid, "significant_fdr"] = rej
+
+    session_df.to_csv(session_csv, index=False)
+    subject_day_df.to_csv(subject_day_csv, index=False)
+    day_means_df.to_csv(day_means_csv, index=False)
+    day_effect_df.to_csv(day_effect_csv, index=False)
+    qc_df.to_csv(qc_csv, index=False)
+    _write_progress("completed", len(tasks), len(tasks))
+
+    if save_figures:
+        save_fig_mvpa_response_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
+
+    return {
+        "session_df": session_df,
+        "subject_day_df": subject_day_df,
+        "day_means_df": day_means_df,
+        "day_effect_df": day_effect_df,
+        "qc_df": qc_df,
+        "session_csv": session_csv,
+        "subject_day_csv": subject_day_csv,
+        "day_means_csv": day_means_csv,
+        "day_effect_csv": day_effect_csv,
+        "qc_csv": qc_csv,
+    }
+
+
+def save_fig_mvpa_response_time_resolved(**kwargs):
+    """Generate response-label time-resolved MVPA figures."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa_response"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa_response"))
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    day_means_csv = output_dir / "mvpa_response_day_means_timecourse.csv"
+    day_effect_csv = output_dir / "mvpa_response_day_effect_per_time.csv"
+    if (not day_means_csv.exists()) or (not day_effect_csv.exists()):
+        raise FileNotFoundError(
+            f"Missing response-label MVPA outputs in {output_dir}. Run run_mvpa_response_time_resolved() first."
+        )
+    day_means_df = pd.read_csv(day_means_csv)
+    day_effect_df = pd.read_csv(day_effect_csv)
+    fig_day_panels = figures_dir / "mvpa_response_auc_by_day_panels.png"
+    fig_day_slope = figures_dir / "mvpa_response_day_slope_timecourse.png"
+
+    days = sorted(day_means_df["day"].unique())
+    fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 3.8), sharey=True, squeeze=False)
+    for ax, day in zip(axes.ravel(), days):
+        g = day_means_df[day_means_df["day"] == day].sort_values("time_sec")
+        x = g["time_sec"].to_numpy()
+        y = g["auc_mean"].to_numpy()
+        s = g["auc_sem"].to_numpy()
+        ax.plot(x, y, color="#8c510a", linewidth=2)
+        ax.fill_between(x, y - s, y + s, color="#8c510a", alpha=0.2, linewidth=0)
+        ax.axhline(0.5, color="k", linestyle="--", linewidth=1)
+        ax.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+        ax.set_title(f"Day {day}")
+        ax.set_xlabel("Time (s)")
+        ax.grid(alpha=0.25)
+    axes.ravel()[0].set_ylabel("ROC-AUC")
+    fig.suptitle("Time-resolved Response Decoding (Response A vs Response B)")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(fig_day_panels, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    g = day_effect_df.sort_values("time_sec")
+    x = g["time_sec"].to_numpy()
+    y = g["day_coef"].to_numpy()
+    sig = g["significant_fdr"].to_numpy(dtype=bool)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(x, y, color="#01665e", linewidth=2, label="Day slope (AUC ~ day)")
+    ax.axhline(0.0, color="k", linestyle="--", linewidth=1)
+    ax.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+    if np.any(sig):
+        ax.scatter(x[sig], y[sig], color="red", s=16, label="FDR < 0.05", zorder=3)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Day coefficient")
+    ax.set_title("Day Effect on Response Decoding Over Time")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(fig_day_slope, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return {"figure_paths": {"day_panels": fig_day_panels, "day_slope": fig_day_slope}}
+
+
+def run_mvpa_response_time_resolved(**kwargs):
+    """Run time-resolved MVPA with subject response as the label."""
+    return util_mvpa_response_time_resolved(save_figures=False, **kwargs)
 
 
 def save_fig_mvpa_time_resolved(**kwargs):

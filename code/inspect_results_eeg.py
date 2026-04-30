@@ -32,15 +32,15 @@ if __name__ == "__main__":
 
     # ERP
     # run_erp()
-    save_fig_erp()
+    # save_fig_erp()
 
     # Connectivity: visual-motor
     # run_connect_visual_motor()
-    save_fig_connect_visual_motor()
+    # save_fig_connect_visual_motor()
 
     # Connectivity: sensor-wide dynamics
     # run_connect_sensorwide_dynamics()
-    save_fig_connect_sensorwide_dynamics()
+    # save_fig_connect_sensorwide_dynamics()
 
     # MVPA time-resolved
     run_mvpa_time_resolved()
