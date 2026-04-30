@@ -1757,6 +1757,152 @@ def save_fig_mvpa_time_resolved(**kwargs):
     }
 
 
+def save_movie_mvpa_haufe_time_resolved(**kwargs):
+    """Generate an animation linking time-resolved MVPA to evolving Haufe topomaps."""
+    output_dir = Path(kwargs.pop("output_dir", _OUTPUT_ROOT / "mvpa"))
+    figures_dir = Path(kwargs.pop("figures_dir", _FIGURES_ROOT / "mvpa"))
+    tmin = float(kwargs.pop("tmin", 0.0))
+    tmax = float(kwargs.pop("tmax", 0.80))
+    fps = int(kwargs.pop("fps", 8))
+    frame_step = int(kwargs.pop("frame_step", 1))
+    dpi = int(kwargs.pop("dpi", 120))
+    movie_path = figures_dir / kwargs.pop("movie_name", "mvpa_haufe_timecourse.mp4")
+    gif_path = figures_dir / "mvpa_haufe_timecourse.gif"
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    day_means_csv = output_dir / "mvpa_day_means_timecourse.csv"
+    haufe_day_mean_csv = output_dir / "mvpa_haufe_day_mean_channel_time.csv"
+    haufe_channel_pos_csv = output_dir / "mvpa_haufe_channel_positions.csv"
+    required = [day_means_csv, haufe_day_mean_csv, haufe_channel_pos_csv]
+    missing = [str(p) for p in required if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"Missing inputs for MVPA/Haufe movie: {missing}")
+
+    day_means_df = pd.read_csv(day_means_csv)
+    haufe_df = pd.read_csv(haufe_day_mean_csv)
+    pos_df = pd.read_csv(haufe_channel_pos_csv)
+    if day_means_df.empty or haufe_df.empty or pos_df.empty:
+        raise RuntimeError("MVPA/Haufe movie inputs are empty.")
+
+    ch_names = pos_df["channel"].tolist()
+    ch_pos = {
+        r["channel"]: np.array([r["x"], r["y"], r["z"]], dtype=float)
+        for _, r in pos_df.iterrows()
+    }
+    info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
+    info.set_montage(montage, on_missing="ignore")
+
+    all_times = np.array(sorted(haufe_df["time_sec"].dropna().unique().astype(float)), dtype=float)
+    frame_times = all_times[(all_times >= tmin) & (all_times <= tmax)]
+    frame_times = frame_times[::max(1, frame_step)]
+    if len(frame_times) == 0:
+        raise RuntimeError(f"No Haufe time points found in requested range {tmin}-{tmax}s.")
+
+    days = sorted(day_means_df["day"].dropna().unique().astype(int).tolist())
+    y_upper = float(np.nanmax(day_means_df["auc_mean"] + day_means_df["auc_sem"].fillna(0.0)))
+    y_lower = float(np.nanmin(day_means_df["auc_mean"] - day_means_df["auc_sem"].fillna(0.0)))
+    y_pad = max(0.02, 0.08 * (y_upper - y_lower))
+    lim = float(np.nanmax(np.abs(haufe_df["pattern_mean"].to_numpy(dtype=float))))
+    if not np.isfinite(lim) or lim <= 0:
+        lim = 1e-12
+
+    from matplotlib import animation
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    fig = plt.figure(figsize=(4.2 * len(days), 7.0))
+    gs = fig.add_gridspec(2, len(days), height_ratios=[1.0, 1.35], hspace=0.28, wspace=0.25)
+    topo_axes = [fig.add_subplot(gs[0, i]) for i in range(len(days))]
+    auc_axes = [fig.add_subplot(gs[1, i]) for i in range(len(days))]
+    line_artists = []
+    point_artists = []
+
+    for ax, day in zip(auc_axes, days):
+        g = day_means_df[day_means_df["day"] == day].sort_values("time_sec")
+        x = g["time_sec"].to_numpy(dtype=float)
+        y = g["auc_mean"].to_numpy(dtype=float)
+        s = g["auc_sem"].to_numpy(dtype=float)
+        ax.plot(x, y, color="tab:blue", linewidth=2)
+        ax.fill_between(x, y - s, y + s, color="tab:blue", alpha=0.2, linewidth=0)
+        ax.axhline(0.5, color="k", linestyle="--", linewidth=1)
+        ax.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+        line = ax.axvline(frame_times[0], color="#b22222", linestyle="--", linewidth=1.8)
+        y_now = float(np.interp(frame_times[0], x, y))
+        point = ax.scatter(
+            [frame_times[0]],
+            [y_now],
+            s=40,
+            facecolor="white",
+            edgecolor="#b22222",
+            linewidth=1.3,
+            zorder=4,
+        )
+        line_artists.append((line, x, y))
+        point_artists.append(point)
+        ax.set_title(f"Day {day}")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylim(y_lower - 0.02, y_upper + y_pad)
+        ax.grid(alpha=0.25)
+    auc_axes[0].set_ylabel("ROC-AUC")
+
+    cax = fig.add_axes([0.35, 0.93, 0.30, 0.025])
+    sm = ScalarMappable(norm=Normalize(vmin=-lim, vmax=lim), cmap="RdBu_r")
+    sm.set_array([])
+    fig.colorbar(sm, cax=cax, orientation="horizontal", label="Haufe pattern")
+    time_text = fig.text(0.5, 0.985, "", ha="center", va="top", fontsize=13)
+
+    def _draw_frame(frame_i):
+        t_current = float(frame_times[frame_i])
+        time_text.set_text(f"MVPA/Haufe time = {t_current:.3f} s")
+        for ax_topo, day in zip(topo_axes, days):
+            ax_topo.clear()
+            d_day = haufe_df[haufe_df["day"] == day]
+            times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
+            t_show = float(times[int(np.argmin(np.abs(times - t_current)))])
+            d_topo = d_day[np.isclose(d_day["time_sec"], t_show)]
+            vals = (
+                d_topo.set_index("channel")
+                .reindex(ch_names)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+            mne.viz.plot_topomap(
+                vals,
+                info,
+                axes=ax_topo,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-lim, lim),
+                sphere=(0.0, 0.0, 0.0, 0.095),
+            )
+            ax_topo.set_title(f"Day {day} topomap", fontsize=10)
+        for point, (line, x, y) in zip(point_artists, line_artists):
+            line.set_xdata([t_current, t_current])
+            point.set_offsets([[t_current, float(np.interp(t_current, x, y))]])
+        return []
+
+    anim_obj = animation.FuncAnimation(
+        fig,
+        _draw_frame,
+        frames=len(frame_times),
+        interval=1000 / max(1, fps),
+        blit=False,
+    )
+    try:
+        writer = animation.FFMpegWriter(fps=fps, bitrate=1800)
+        anim_obj.save(movie_path, writer=writer, dpi=dpi)
+        out_path = movie_path
+    except Exception:
+        writer = animation.PillowWriter(fps=fps)
+        anim_obj.save(gif_path, writer=writer, dpi=dpi)
+        out_path = gif_path
+    plt.close(fig)
+    return {"movie_path": out_path, "n_frames": int(len(frame_times))}
+
+
 def run_mvpa_temporal_generalization(**kwargs):
     """Run temporal-generalization MVPA analysis."""
     return util_mvpa_temporal_generalization(save_figures=False, **kwargs)
