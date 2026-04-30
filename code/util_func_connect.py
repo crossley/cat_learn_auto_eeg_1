@@ -214,6 +214,8 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
         if d_lock.empty:
             print(f"No connectivity values computed for {fig_name}.")
             return
+        d_lock = d_lock.copy()
+        d_lock["band"] = d_lock["band"].replace({"all": "broadband_0p5_40"})
 
         d_time = (
             d_lock.groupby(["band", "day", "lock_time"], as_index=False)["conn_val"]
