@@ -7,6 +7,8 @@ import os
 import time
 import numpy as np
 import pandas as pd
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -179,7 +181,7 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
     roi_motor = ["C3", "Cz", "C4"]
 
     bands = {
-        "all": (None, None),
+        "broadband_0p5_40": (None, None),
         "delta": (1.0, 4.0),
         "theta": (4.0, 8.0),
         "alpha": (8.0, 12.0),
@@ -190,9 +192,9 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
     window_sec = 0.12
     step_sec = 0.01
     stim_plot_tmin = 0.00
-    stim_plot_tmax = 0.60
+    stim_plot_tmax = 0.80
     resp_plot_tmin = 0.00
-    resp_plot_tmax = 0.60
+    resp_plot_tmax = 0.80
     analysis_tmin = stim_plot_tmin
     analysis_tmax = max(stim_plot_tmax, resp_plot_tmax)
     edge_buffer_sec = 0.00
@@ -234,6 +236,8 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
         n_cols = 3
         n_rows = int(np.ceil(n_bands / n_cols))
         fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, figsize=(5 * n_cols, 3.5 * n_rows))
+        day_values = sorted(d_time["day"].dropna().unique().astype(int).tolist())
+        palette = dict(zip(day_values, sns.color_palette("cividis", n_colors=len(day_values))))
 
         band_names = list(bands.keys())
         for i_band, band_name in enumerate(band_names):
@@ -251,9 +255,12 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
                 x="lock_time",
                 y="conn_val_norm",
                 hue="day",
+                palette=palette,
+                linewidth=2.0,
                 ax=ax,
                 legend=(i_band == 0),
             )
+            ax.set_xlim(0.0, 0.80)
             ax.set_title(band_name)
             ax.set_ylabel("normalized abs(ImCoh)")
             ax.set_xlabel(x_label)
@@ -492,12 +499,12 @@ def util_connect_explore_sensorwide_dynamics(
     window_sec = 0.12
     step_sec = 0.01
     stim_tmin = 0.00
-    stim_tmax = 0.60
+    stim_tmax = 0.80
     resp_tmin = 0.00
-    resp_tmax = 0.60
+    resp_tmax = 0.80
 
-    snapshot_targets = np.array([0.10, 0.20, 0.30, 0.40, 0.50])
-    top_edge_quantile = 0.90
+    snapshot_targets = np.array([0.10, 0.25, 0.40, 0.55, 0.68])
+    top_n_edges = 5
 
     def _compute_abs_imcoh(x, y):
         sxy = np.mean(x * np.conjugate(y))
@@ -557,6 +564,7 @@ def util_connect_explore_sensorwide_dynamics(
             )
             ax.set_title(f"Day {day}")
             ax.set_ylabel("Edge index")
+            ax.set_xlim(0.0, 0.80)
             fig.colorbar(im, ax=ax, fraction=0.02, pad=0.01)
         axes[-1, 0].set_xlabel(
             "Time from stimulus onset (s)" if lock_name == "stim" else "Time before response (s)"
@@ -593,13 +601,21 @@ def util_connect_explore_sensorwide_dynamics(
                 if finite_vals.size == 0:
                     ax.set_title(f"D{day} t={t_show:.2f}")
                     continue
-                thr = np.quantile(finite_vals, top_edge_quantile)
+                top_order = np.argsort(upper_vals)[::-1]
+                keep_pairs = []
+                for edge_idx in top_order:
+                    if len(keep_pairs) >= top_n_edges:
+                        break
+                    val = upper_vals[edge_idx]
+                    if np.isfinite(val):
+                        keep_pairs.append(pair_idx[edge_idx])
+                keep_pairs = set(keep_pairs)
 
                 head = plt.Circle((0, 0), 1.0, fill=False, color="black", lw=1.0)
                 ax.add_patch(head)
                 for i, j in pair_idx:
                     val = mat[i, j]
-                    if np.isfinite(val) and (val >= thr):
+                    if np.isfinite(val) and ((i, j) in keep_pairs):
                         ax.plot(
                             [xy[i, 0], xy[j, 0]],
                             [xy[i, 1], xy[j, 1]],

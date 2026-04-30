@@ -7,6 +7,8 @@ import json
 import time
 import numpy as np
 import pandas as pd
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -116,7 +118,7 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n
     }
 
     d_grand_path = output_dir / "erp_grand_averages_by_day_lock_condition.csv"
-    d_subject_path = output_dir / "erp_subject_day_stim_all.csv"
+    d_subject_path = output_dir / "erp_subject_day_all.csv"
     progress_json = output_dir / "erp_progress.json"
     t0 = time.time()
 
@@ -361,7 +363,7 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n
 
         subject_rows = []
         for s in sorted(evoked_stim_all_rec["subject"].unique()):
-            d_sub_s = _evoked_map_to_long(
+            d_stim_s = _evoked_map_to_long(
                 {
                     int(row["day"]): row["evoked_stim_all"]
                     for _, row in evoked_stim_all_rec[evoked_stim_all_rec["subject"] == s].iterrows()
@@ -369,6 +371,15 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n
                 "stim",
                 "all",
             )
+            d_resp_s = _evoked_map_to_long(
+                {
+                    int(row["day"]): row["evoked_resp_all"]
+                    for _, row in evoked_resp_all_rec[evoked_resp_all_rec["subject"] == s].iterrows()
+                },
+                "response",
+                "all",
+            )
+            d_sub_s = pd.concat([d_stim_s, d_resp_s], ignore_index=True)
             if not d_sub_s.empty:
                 subject_rows.append(d_sub_s.assign(subject=int(s)))
         if len(subject_rows) == 0:
@@ -383,6 +394,10 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n
         _write_progress("completed", len(worker_items), len(worker_items))
 
     # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
+    old_subject_path = output_dir / "erp_subject_day_stim_all.csv"
+    if old_subject_path.exists() and not d_subject_path.exists():
+        d_old_subject = pd.read_csv(old_subject_path)
+        d_old_subject.to_csv(d_subject_path, index=False)
     if not d_grand_path.exists() or not d_subject_path.exists():
         raise FileNotFoundError(f"Missing ERP output tables in {output_dir}. Run with run_compute=True first.")
     if not save_figures:
@@ -428,29 +443,30 @@ def util_erp_make_figures(save_figures: bool = True, run_compute: bool = True, n
         fig_name="erp_response_correct_vs_incorrect.png",
     )
 
-    # Subject-wise stim_all figure from on-disk subject/day table.
+    # Subject-wise stim_all and response_all figures from on-disk subject/day table.
     for s in sorted(d_subject_plot["subject"].unique().astype(int)):
         d_sub = d_subject_plot[d_subject_plot["subject"] == s].copy()
-        d_sub["lock_type"] = "stim"
-        d_sub["condition"] = "all"
-        evoked_sub = _long_to_evoked_map(d_sub, "stim", "all")
-        days_sorted = sorted(evoked_sub.keys())
-        if len(days_sorted) == 0:
-            continue
-        fig, axes = plt.subplots(1, len(days_sorted), figsize=(5 * len(days_sorted), 4), squeeze=False)
-        for i, day in enumerate(days_sorted):
-            ax = axes[0, i]
-            evoked_sub[day].plot(
-                axes=ax,
-                show=False,
-                spatial_colors=True,
-                titles=f"Day {day}",
-            )
-            ax.set_title(f"Day {day}")
-        fig.suptitle(f"ERP: stim_all -- subject {s}")
-        fig.savefig(figures_dir / f"erp_stim_all_sub_{s}.png")
-        plt.close(fig)
-
+        for lock_type, fig_prefix, title_lock in [
+            ("stim", "erp_stim_all_sub", "stim_all"),
+            ("response", "erp_response_all_sub", "response_all"),
+        ]:
+            evoked_sub = _long_to_evoked_map(d_sub, lock_type, "all")
+            days_sorted = sorted(evoked_sub.keys())
+            if len(days_sorted) == 0:
+                continue
+            fig, axes = plt.subplots(1, len(days_sorted), figsize=(5 * len(days_sorted), 4), squeeze=False)
+            for i, day in enumerate(days_sorted):
+                ax = axes[0, i]
+                evoked_sub[day].plot(
+                    axes=ax,
+                    show=False,
+                    spatial_colors=True,
+                    titles=f"Day {day}",
+                )
+                ax.set_title(f"Day {day}")
+            fig.suptitle(f"ERP: {title_lock} -- subject {s}")
+            fig.savefig(figures_dir / f"{fig_prefix}_{s}.png")
+            plt.close(fig)
 
 def run_erp(**kwargs):
     """Run ERP analysis."""
