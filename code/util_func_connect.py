@@ -217,22 +217,35 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
         d_lock = d_lock.copy()
         d_lock["band"] = d_lock["band"].replace({"all": "broadband_0p5_40"})
 
-        d_time = (
-            d_lock.groupby(["band", "day", "lock_time"], as_index=False)["conn_val"]
+        d_time_subject = (
+            d_lock.groupby(["band", "day", "subject", "lock_time"], as_index=False)["conn_val"]
             .mean()
-            .sort_values(["band", "day", "lock_time"])
+            .sort_values(["band", "day", "subject", "lock_time"])
         )
         d_peak = (
-            d_time.groupby(["band", "day"], as_index=False)["conn_val"]
+            d_time_subject.groupby(["band", "day", "subject"], as_index=False)["conn_val"]
             .max()
             .rename(columns={"conn_val": "peak_conn"})
         )
-        d_time = d_time.merge(d_peak, on=["band", "day"], how="left")
-        d_time["peak_conn"] = d_time["peak_conn"].where(
-            d_time["peak_conn"] > np.finfo(float).eps,
+        d_time_subject = d_time_subject.merge(d_peak, on=["band", "day", "subject"], how="left")
+        d_time_subject["peak_conn"] = d_time_subject["peak_conn"].where(
+            d_time_subject["peak_conn"] > np.finfo(float).eps,
             np.nan,
         )
-        d_time["conn_val_norm"] = d_time["conn_val"] / d_time["peak_conn"]
+        d_time_subject["conn_val_norm"] = d_time_subject["conn_val"] / d_time_subject["peak_conn"]
+        d_time = (
+            d_time_subject.groupby(["band", "day", "lock_time"], as_index=False)
+            .agg(
+                conn_val_norm_mean=("conn_val_norm", "mean"),
+                conn_val_norm_sem=(
+                    "conn_val_norm",
+                    lambda x: float(np.nanstd(x, ddof=1) / np.sqrt(np.sum(np.isfinite(x))))
+                    if np.sum(np.isfinite(x)) > 1 else np.nan,
+                ),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values(["band", "day", "lock_time"])
+        )
 
         n_bands = len(bands)
         n_cols = 3
@@ -252,22 +265,29 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
                 ax.set_xlabel(x_label)
                 ax.set_ylabel("normalized abs(ImCoh)")
                 continue
-            sns.lineplot(
-                data=d_band,
-                x="lock_time",
-                y="conn_val_norm",
-                hue="day",
-                palette=palette,
-                linewidth=2.0,
-                ax=ax,
-                legend=(i_band == 0),
-            )
+            for day in day_values:
+                d_day = d_band[d_band["day"] == day].sort_values("lock_time")
+                if d_day.empty:
+                    continue
+                x = d_day["lock_time"].to_numpy(dtype=float)
+                y = d_day["conn_val_norm_mean"].to_numpy(dtype=float)
+                sem = d_day["conn_val_norm_sem"].to_numpy(dtype=float)
+                color = palette[day]
+                ax.plot(x, y, color=color, linewidth=2.0, label=f"Day {day}")
+                ax.fill_between(
+                    x,
+                    y - sem,
+                    y + sem,
+                    color=color,
+                    alpha=0.18,
+                    linewidth=0,
+                )
             ax.set_xlim(0.0, 0.80)
             ax.set_title(band_name)
-            ax.set_ylabel("normalized abs(ImCoh)")
+            ax.set_ylabel("subject-normalized abs(ImCoh)")
             ax.set_xlabel(x_label)
-            if i_band != 0 and ax.get_legend() is not None:
-                ax.get_legend().remove()
+            if i_band == 0:
+                ax.legend(loc="best", title="day")
 
         for i_extra in range(n_bands, n_rows * n_cols):
             r = i_extra // n_cols

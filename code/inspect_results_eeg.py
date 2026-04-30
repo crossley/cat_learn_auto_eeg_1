@@ -43,8 +43,8 @@ if __name__ == "__main__":
     # save_fig_connect_sensorwide_dynamics()
 
     # MVPA time-resolved
-    run_mvpa_time_resolved()
-    save_fig_mvpa_time_resolved()
+    # run_mvpa_time_resolved()
+    # save_fig_mvpa_time_resolved()
 
     # MVPA temporal generalization: time x time
     # run_mvpa_temporal_generalization_within_day()
