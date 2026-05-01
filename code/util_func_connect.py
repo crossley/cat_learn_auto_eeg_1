@@ -36,6 +36,147 @@ def _default_connect_n_workers():
     return min(12, max(1, (logical // 2) - 2))
 
 
+def _process_visual_motor_session(task):
+    subject = int(task["subject"])
+    day = int(task["day"])
+    beh_df = task["beh_df"]
+    epo_path = task["epo_path"]
+    roi_visual = task["roi_visual"]
+    roi_motor = task["roi_motor"]
+    bands = task["bands"]
+    window_sec = float(task["window_sec"])
+    step_sec = float(task["step_sec"])
+    stim_plot_tmin = float(task["stim_plot_tmin"])
+    stim_plot_tmax = float(task["stim_plot_tmax"])
+    resp_plot_tmin = float(task["resp_plot_tmin"])
+    resp_plot_tmax = float(task["resp_plot_tmax"])
+    analysis_tmin = float(task["analysis_tmin"])
+    analysis_tmax = float(task["analysis_tmax"])
+    edge_buffer_sec = float(task["edge_buffer_sec"])
+
+    try:
+        epochs = mne.read_epochs(epo_path, preload=False, verbose="ERROR")
+        epochs, beh_aligned = util_wrangle_align_beh_to_epochs(
+            beh_df,
+            epochs,
+            event_names=("Stim/A", "Stim/B"),
+        )
+        epochs = epochs.load_data()
+        epochs.pick(roi_visual + roi_motor)
+        rt_sec = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
+
+        vis_idx = [epochs.ch_names.index(ch) for ch in roi_visual]
+        mot_idx = [epochs.ch_names.index(ch) for ch in roi_motor]
+        indices = (
+            np.repeat(vis_idx, len(mot_idx)),
+            np.tile(mot_idx, len(vis_idx)),
+        )
+        times = epochs.times
+        safe_tmin = max(analysis_tmin, float(times[0]) + edge_buffer_sec)
+        safe_tmax = min(analysis_tmax, float(times[-1]) - edge_buffer_sec)
+        stim_start_times = np.arange(
+            max(stim_plot_tmin, safe_tmin),
+            min(stim_plot_tmax, safe_tmax) - window_sec + 1e-12,
+            step_sec,
+        )
+        resp_start_times = np.arange(
+            resp_plot_tmin,
+            resp_plot_tmax - window_sec + 1e-12,
+            step_sec,
+        )
+        if len(stim_start_times) == 0 and len(resp_start_times) == 0:
+            return {"ok": True, "rows": []}
+
+        rows = []
+        for band_name, (fmin, fmax) in bands.items():
+            epochs_band = epochs.copy()
+            if fmin is not None and fmax is not None:
+                epochs_band = epochs_band.filter(
+                    l_freq=fmin,
+                    h_freq=fmax,
+                    method="fir",
+                    fir_design="firwin",
+                    phase="zero-double",
+                    verbose="ERROR",
+                )
+            epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
+            data = epochs_band.get_data()
+            n_trials = data.shape[0]
+            if n_trials == 0:
+                continue
+
+            for t_start in stim_start_times:
+                t_end = t_start + window_sec
+                i0 = int(np.searchsorted(times, t_start, side="left"))
+                i1 = int(np.searchsorted(times, t_end, side="left"))
+                if i1 - i0 < 2:
+                    continue
+                win = data[:, :, i0:i1]
+                pair_vals = []
+                for i_vis, i_mot in zip(indices[0], indices[1]):
+                    val = _connect_compute_abs_imcoh(
+                        win[:, i_vis, :].reshape(-1),
+                        win[:, i_mot, :].reshape(-1),
+                    )
+                    if np.isfinite(val):
+                        pair_vals.append(val)
+                if pair_vals:
+                    rows.append(
+                        {
+                            "subject": subject,
+                            "day": day,
+                            "lock_type": "stim",
+                            "band": band_name,
+                            "time_window": f"{t_start:.3f}-{t_end:.3f}",
+                            "window_start": float(t_start),
+                            "lock_time": float(t_start),
+                            "conn_val": float(np.nanmean(pair_vals)),
+                        }
+                    )
+
+            for tau_start in resp_start_times:
+                tau_end = tau_start + window_sec
+                pair_vals = []
+                for i_vis, i_mot in zip(indices[0], indices[1]):
+                    x_chunks = []
+                    y_chunks = []
+                    for i_trial in range(n_trials):
+                        rt = rt_sec[i_trial]
+                        if (not np.isfinite(rt)) or (rt <= 0):
+                            continue
+                        seg_tmin = rt - tau_end
+                        seg_tmax = rt - tau_start
+                        if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
+                            continue
+                        i0 = int(np.searchsorted(times, seg_tmin, side="left"))
+                        i1 = int(np.searchsorted(times, seg_tmax, side="left"))
+                        if i1 - i0 < 2:
+                            continue
+                        x_chunks.append(data[i_trial, i_vis, i0:i1])
+                        y_chunks.append(data[i_trial, i_mot, i0:i1])
+                    if not x_chunks:
+                        continue
+                    val = _connect_compute_abs_imcoh(np.concatenate(x_chunks), np.concatenate(y_chunks))
+                    if np.isfinite(val):
+                        pair_vals.append(val)
+                if pair_vals:
+                    rows.append(
+                        {
+                            "subject": subject,
+                            "day": day,
+                            "lock_type": "response",
+                            "band": band_name,
+                            "time_window": f"{tau_start:.3f}-{tau_end:.3f}",
+                            "window_start": float(tau_start),
+                            "lock_time": float(tau_start),
+                            "conn_val": float(np.nanmean(pair_vals)),
+                        }
+                    )
+        return {"ok": True, "rows": rows}
+    except Exception as exc:
+        return {"ok": False, "subject": subject, "day": day, "reason": "compute_error", "detail": str(exc)}
+
+
 def _process_sensorwide_session(task):
     subject = int(task["subject"])
     day = int(task["day"])
@@ -310,153 +451,67 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
     d_connect_path = output_dir / "connectivity_profiles_subject_day.csv"
     if run_compute:
         sessions = util_wrangle_load_sessions()
-        d = pd.DataFrame(sessions)
+        tasks = [
+            {
+                "subject": int(item["subject"]),
+                "day": int(item["day"]),
+                "beh_df": item["beh_df"],
+                "epo_path": str(Path("../EEG_epo") / item["epo_file"]),
+                "roi_visual": roi_visual,
+                "roi_motor": roi_motor,
+                "bands": bands,
+                "window_sec": window_sec,
+                "step_sec": step_sec,
+                "stim_plot_tmin": stim_plot_tmin,
+                "stim_plot_tmax": stim_plot_tmax,
+                "resp_plot_tmin": resp_plot_tmin,
+                "resp_plot_tmax": resp_plot_tmax,
+                "analysis_tmin": analysis_tmin,
+                "analysis_tmax": analysis_tmax,
+                "edge_buffer_sec": edge_buffer_sec,
+            }
+            for item in sessions
+        ]
+        n_workers = _default_connect_n_workers()
         d_connect_rec = []
-        session_keys = [(sbj, day) for sbj in d["subject"].unique() for day in d[d["subject"] == sbj]["day"].unique()]
+        skipped = []
         sessions_done = 0
-        _write_progress("running", 0, len(session_keys))
-        for sbj in d["subject"].unique():
-            ds = d[d["subject"] == sbj]
-            for day in ds["day"].unique():
-                dsd = ds[ds["day"] == day]
-                epochs = dsd["epochs"].iloc[0]
-                epochs, beh_aligned = util_wrangle_align_beh_to_epochs(
-                    dsd["beh_df"].iloc[0],
-                    epochs,
-                    event_names=("Stim/A", "Stim/B"),
-                )
-                epochs = epochs.load_data()
-                epochs.pick(roi_visual + roi_motor)
-                rt_sec = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
+        _write_progress("running", 0, len(tasks))
+        print(
+            f"[connectivity] Starting visual-motor connectivity on {len(tasks)} sessions "
+            f"(n_workers={n_workers})...",
+            flush=True,
+        )
 
-                vis_idx = [epochs.ch_names.index(ch) for ch in roi_visual]
-                mot_idx = [epochs.ch_names.index(ch) for ch in roi_motor]
-
-                indices = (
-                    np.repeat(vis_idx, len(mot_idx)),
-                    np.tile(mot_idx, len(vis_idx)),
-                )
-
-                times = epochs.times
-
-                safe_tmin = max(analysis_tmin, float(times[0]) + edge_buffer_sec)
-                safe_tmax = min(analysis_tmax, float(times[-1]) - edge_buffer_sec)
-                stim_start_times = np.arange(
-                    max(stim_plot_tmin, safe_tmin),
-                    min(stim_plot_tmax, safe_tmax) - window_sec + 1e-12,
-                    step_sec,
-                )
-                resp_start_times = np.arange(
-                    resp_plot_tmin,
-                    resp_plot_tmax - window_sec + 1e-12,
-                    step_sec,
+        def _merge_visual_result(result, done):
+            if result["ok"]:
+                d_connect_rec.extend(result.get("rows", []))
+            else:
+                skipped.append(result)
+            if d_connect_rec and ((done % 5) == 0):
+                pd.DataFrame(d_connect_rec).to_csv(checkpoint_csv, index=False)
+            _write_progress("running", done, len(tasks))
+            if (done % 5) == 0:
+                elapsed = time.time() - t0
+                print(
+                    f"[connectivity] complete {done}/{len(tasks)} sessions "
+                    f"(elapsed {elapsed/60:.1f} min)",
+                    flush=True,
                 )
 
-                if len(stim_start_times) == 0 and len(resp_start_times) == 0:
-                    continue
-
-                for band_name, (fmin, fmax) in bands.items():
-                    epochs_band = epochs.copy()
-                    if fmin is not None and fmax is not None:
-                        epochs_band = epochs_band.filter(
-                            l_freq=fmin,
-                            h_freq=fmax,
-                            method="fir",
-                            fir_design="firwin",
-                            phase="zero-double",
-                            verbose="ERROR",
-                        )
-                    epochs_band = epochs_band.apply_hilbert(envelope=False, verbose="ERROR")
-                    data = epochs_band.get_data()
-                    n_trials = data.shape[0]
-                    if n_trials == 0:
-                        continue
-                    rt_sec_use = rt_sec
-
-                    for t_start in stim_start_times:
-                        t_end = t_start + window_sec
-                        i0 = int(np.searchsorted(times, t_start, side="left"))
-                        i1 = int(np.searchsorted(times, t_end, side="left"))
-                        if i1 - i0 < 2:
-                            continue
-
-                        win = data[:, :, i0:i1]
-                        pair_vals = []
-                        for i_vis, i_mot in zip(indices[0], indices[1]):
-                            x = win[:, i_vis, :].reshape(-1)
-                            y = win[:, i_mot, :].reshape(-1)
-                            val = _connect_compute_abs_imcoh(x, y)
-                            if np.isfinite(val):
-                                pair_vals.append(val)
-
-                        if len(pair_vals) == 0:
-                            continue
-
-                        d_connect_rec.append(
-                            {
-                                "subject": sbj,
-                                "day": day,
-                                "lock_type": "stim",
-                                "band": band_name,
-                                "time_window": f"{t_start:.3f}-{t_end:.3f}",
-                                "window_start": float(t_start),
-                                "lock_time": float(t_start),
-                                "conn_val": float(np.nanmean(pair_vals)),
-                            }
-                        )
-
-                    for tau_start in resp_start_times:
-                        tau_end = tau_start + window_sec
-                        pair_vals = []
-                        for i_vis, i_mot in zip(indices[0], indices[1]):
-                            x_chunks = []
-                            y_chunks = []
-                            for i_trial in range(n_trials):
-                                rt = rt_sec_use[i_trial]
-                                if (not np.isfinite(rt)) or (rt <= 0):
-                                    continue
-
-                                seg_tmin = rt - tau_end
-                                seg_tmax = rt - tau_start
-                                if (seg_tmin < times[0]) or (seg_tmax > times[-1]):
-                                    continue
-
-                                i0 = int(np.searchsorted(times, seg_tmin, side="left"))
-                                i1 = int(np.searchsorted(times, seg_tmax, side="left"))
-                                if i1 - i0 < 2:
-                                    continue
-
-                                x_chunks.append(data[i_trial, i_vis, i0:i1])
-                                y_chunks.append(data[i_trial, i_mot, i0:i1])
-
-                            if not x_chunks:
-                                continue
-
-                            x = np.concatenate(x_chunks)
-                            y = np.concatenate(y_chunks)
-                            val = _connect_compute_abs_imcoh(x, y)
-                            if np.isfinite(val):
-                                pair_vals.append(val)
-
-                        if len(pair_vals) == 0:
-                            continue
-
-                        d_connect_rec.append(
-                            {
-                                "subject": sbj,
-                                "day": day,
-                                "lock_type": "response",
-                                "band": band_name,
-                                "time_window": f"{tau_start:.3f}-{tau_end:.3f}",
-                                "window_start": float(tau_start),
-                                "lock_time": float(tau_start),
-                                "conn_val": float(np.nanmean(pair_vals)),
-                            }
-                        )
-                sessions_done += 1
-                if d_connect_rec:
-                    pd.DataFrame(d_connect_rec).to_csv(checkpoint_csv, index=False)
-                _write_progress("running", sessions_done, len(session_keys))
+        if n_workers == 1:
+            for done, task in enumerate(tasks, start=1):
+                _merge_visual_result(_process_visual_motor_session(task), done)
+        else:
+            try:
+                result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                    delayed(_process_visual_motor_session)(task) for task in tasks
+                )
+                for done, result in enumerate(result_iter, start=1):
+                    _merge_visual_result(result, done)
+            except PermissionError:
+                for done, task in enumerate(tasks, start=1):
+                    _merge_visual_result(_process_visual_motor_session(task), done)
 
         d_connect = pd.DataFrame(d_connect_rec)
 
@@ -466,7 +521,10 @@ def util_connect_compute_visual_motor(save_figures: bool = True, run_compute: bo
 
         d_connect = d_connect.sort_values(["lock_type", "band", "subject", "day", "lock_time"])
         d_connect.to_csv(d_connect_path, index=False)
-        _write_progress("completed", sessions_done, len(session_keys))
+        d_connect.to_csv(checkpoint_csv, index=False)
+        _write_progress("completed", len(tasks), len(tasks))
+        if skipped:
+            print(f"[connectivity] skipped {len(skipped)} sessions; first skip: {skipped[0]}", flush=True)
 
     if not d_connect_path.exists():
         raise FileNotFoundError(f"Missing output table: {d_connect_path}")

@@ -94,12 +94,149 @@ def _decode_timecourse(X, y, n_splits=5, random_state=42):
     return auc
 
 
+def _process_stim_mvpa_session(task: dict):
+    session_file = task["epo_file"]
+    subject = int(task["subject"])
+    day = int(task["day"])
+    min_epochs = int(task["min_epochs"])
+    random_state = int(task["random_state"])
+
+    try:
+        epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
+        stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
+        if len(stim_events) < 2:
+            return {
+                "ok": False,
+                "qc": {
+                    "session_file": session_file,
+                    "subject": subject,
+                    "day": day,
+                    "stage": "event_select",
+                    "reason": "missing_stim_labels",
+                    "detail": ",".join(stim_events),
+                },
+            }
+        stim_epochs = epochs[stim_events].copy()
+        stim_epochs.load_data()
+        stim_epochs.pick_types(eeg=True, exclude="bads")
+        if len(stim_epochs.ch_names) == 0:
+            raise RuntimeError("No EEG channels after pick_types.")
+        stim_epochs.resample(128, npad="auto")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "preprocess",
+                "reason": "prep_error",
+                "detail": str(exc),
+            },
+        }
+
+    codes = stim_epochs.events[:, 2]
+    y = np.full(len(codes), -1, dtype=int)
+    y[codes == stim_epochs.event_id["Stim/A"]] = 0
+    y[codes == stim_epochs.event_id["Stim/B"]] = 1
+    keep = y >= 0
+    y = y[keep]
+    X = stim_epochs.get_data()[keep]
+
+    n_a = int(np.sum(y == 0))
+    n_b = int(np.sum(y == 1))
+    n_trials = int(len(y))
+    if n_trials < min_epochs:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "epoch_count",
+                "reason": "insufficient_epochs",
+                "detail": f"n_trials={n_trials} < min_epochs={min_epochs}",
+            },
+        }
+    if min(n_a, n_b) < 5:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "class_balance",
+                "reason": "insufficient_class_trials",
+                "detail": f"n_a={n_a}, n_b={n_b}; need >=5 in each class",
+            },
+        }
+
+    auc = _decode_timecourse(X, y, n_splits=5, random_state=random_state)
+    times = stim_epochs.times.copy()
+    session_rows = [
+        {
+            "session_file": session_file,
+            "subject": subject,
+            "day": day,
+            "time_sec": float(times[ti]),
+            "auc": float(auc_val),
+            "n_trials": n_trials,
+            "n_a": n_a,
+            "n_b": n_b,
+        }
+        for ti, auc_val in enumerate(auc)
+    ]
+
+    haufe_rows = []
+    channel_pos = []
+    try:
+        patterns = _compute_haufe_patterns_from_xy(X, y, random_state=random_state)
+        for ci, ch in enumerate(stim_epochs.ch_names):
+            loc = stim_epochs.info["chs"][stim_epochs.info.ch_names.index(ch)]["loc"][:3]
+            channel_pos.append({"channel": ch, "x": float(loc[0]), "y": float(loc[1]), "z": float(loc[2])})
+            for ti, tsec in enumerate(times):
+                val = float(patterns[ci, ti])
+                haufe_rows.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "session_file": session_file,
+                        "channel": ch,
+                        "time_sec": float(tsec),
+                        "pattern": val,
+                        "abs_pattern": float(np.abs(val)),
+                        "n_trials": n_trials,
+                        "n_a": n_a,
+                        "n_b": n_b,
+                    }
+                )
+        haufe_qc = None
+    except Exception as exc:
+        haufe_qc = {
+            "session_file": session_file,
+            "subject": subject,
+            "day": day,
+            "stage": "haufe",
+            "reason": "compute_error",
+            "detail": str(exc),
+        }
+
+    return {
+        "ok": True,
+        "session_rows": session_rows,
+        "haufe_rows": haufe_rows,
+        "channel_pos": channel_pos,
+        "haufe_qc": haufe_qc,
+    }
+
+
 def util_mvpa_time_resolved(
     output_dir: Path | str = _OUTPUT_ROOT / "mvpa",
     figures_dir: Path | str = _FIGURES_ROOT / "mvpa",
     min_epochs: int = 20,
     random_state: int = 42,
     save_figures: bool = True,
+    n_workers: int | None = None,
 ):
     """Compute per-session time-resolved MVPA and day-effect statistics."""
     output_dir = Path(output_dir)
@@ -125,145 +262,83 @@ def util_mvpa_time_resolved(
     haufe_day_mean_csv = output_dir / "mvpa_haufe_day_mean_channel_time.csv"
     haufe_channel_pos_csv = output_dir / "mvpa_haufe_channel_positions.csv"
 
+    progress_json = output_dir / "mvpa_progress.json"
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
     qc_rows = []
     session_rows = []
     haufe_rows = []
     haufe_channel_pos = {}
+    t0 = time.time()
 
-    time_sec = None
+    def _write_progress(stage: str, done: int, total: int):
+        payload = {
+            "stage": stage,
+            "done": int(done),
+            "total": int(total),
+            "elapsed_sec": float(time.time() - t0),
+            "updated_at_unix": float(time.time()),
+        }
+        progress_json.write_text(json.dumps(payload, indent=2))
 
     sessions = util_wrangle_load_sessions()
-    for item in sessions:
-        session_file = item["epo_file"]
-        subject = item["subject"]
-        day = item["day"]
-        epochs = item["epochs"]
+    tasks = [
+        {
+            "subject": int(item["subject"]),
+            "day": int(item["day"]),
+            "epo_file": item["epo_file"],
+            "epo_path": str(Path("../EEG_epo") / item["epo_file"]),
+            "min_epochs": int(min_epochs),
+            "random_state": int(random_state),
+        }
+        for item in sessions
+    ]
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    _write_progress("running", 0, len(tasks))
 
-        stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
-        if len(stim_events) < 2:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "event_select",
-                    "reason": "missing_stim_labels",
-                    "detail": ",".join(stim_events),
-                }
-            )
-            continue
-
-        try:
-            stim_epochs = epochs[stim_events].copy()
-            stim_epochs.load_data()
-            stim_epochs.pick_types(eeg=True, exclude="bads")
-            if len(stim_epochs.ch_names) == 0:
-                raise RuntimeError("No EEG channels after pick_types.")
-            stim_epochs.resample(128, npad="auto")
-        except Exception as exc:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "preprocess",
-                    "reason": "prep_error",
-                    "detail": str(exc),
-                }
-            )
-            continue
-
-        codes = stim_epochs.events[:, 2]
-        y = np.full(len(codes), -1, dtype=int)
-        y[codes == stim_epochs.event_id["Stim/A"]] = 0
-        y[codes == stim_epochs.event_id["Stim/B"]] = 1
-        keep = y >= 0
-        y = y[keep]
-        X = stim_epochs.get_data()[keep]
-
-        n_a = int(np.sum(y == 0))
-        n_b = int(np.sum(y == 1))
-        n_trials = int(len(y))
-
-        if n_trials < min_epochs:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "epoch_count",
-                    "reason": "insufficient_epochs",
-                    "detail": f"n_trials={n_trials} < min_epochs={min_epochs}",
-                }
-            )
-            continue
-
-        if min(n_a, n_b) < 5:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "class_balance",
-                    "reason": "insufficient_class_trials",
-                    "detail": f"n_a={n_a}, n_b={n_b}; need >=5 in each class",
-                }
-            )
-            continue
-
-        auc = _decode_timecourse(X, y, n_splits=5, random_state=random_state)
-        t = stim_epochs.times.copy()
-        if time_sec is None:
-            time_sec = t
-
-        try:
-            patterns = _compute_haufe_patterns_from_xy(X, y, random_state=random_state)
-            for ci, ch in enumerate(stim_epochs.ch_names):
+    def _handle_result(result, done):
+        if not result["ok"]:
+            qc_rows.append(result["qc"])
+        else:
+            session_rows.extend(result["session_rows"])
+            haufe_rows.extend(result.get("haufe_rows", []))
+            if result.get("haufe_qc") is not None:
+                qc_rows.append(result["haufe_qc"])
+            for pos_row in result.get("channel_pos", []):
+                ch = pos_row["channel"]
                 if ch not in haufe_channel_pos:
-                    loc = stim_epochs.info["chs"][stim_epochs.info.ch_names.index(ch)]["loc"][:3]
-                    haufe_channel_pos[ch] = np.array(loc, dtype=float)
-                for ti, tsec in enumerate(t):
-                    val = float(patterns[ci, ti])
-                    haufe_rows.append(
-                        {
-                            "subject": subject,
-                            "day": day,
-                            "session_file": session_file,
-                            "channel": ch,
-                            "time_sec": float(tsec),
-                            "pattern": val,
-                            "abs_pattern": float(np.abs(val)),
-                            "n_trials": n_trials,
-                            "n_a": n_a,
-                            "n_b": n_b,
-                        }
-                    )
-        except Exception as exc:
-            qc_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "stage": "haufe",
-                    "reason": "compute_error",
-                    "detail": str(exc),
-                }
+                    haufe_channel_pos[ch] = np.array([pos_row["x"], pos_row["y"], pos_row["z"]], dtype=float)
+        _write_progress("running", done, len(tasks))
+        if (done % 5) == 0:
+            elapsed = time.time() - t0
+            print(
+                f"[MVPA stimulus] complete {done}/{len(tasks)} sessions "
+                f"(elapsed {elapsed/60:.1f} min)",
+                flush=True,
             )
 
-        for ti, auc_val in enumerate(auc):
-            session_rows.append(
-                {
-                    "session_file": session_file,
-                    "subject": subject,
-                    "day": day,
-                    "time_sec": float(t[ti]),
-                    "auc": float(auc_val),
-                    "n_trials": n_trials,
-                    "n_a": n_a,
-                    "n_b": n_b,
-                }
+    print(
+        f"[MVPA stimulus] Starting time-resolved MVPA on {len(tasks)} sessions "
+        f"(n_workers={n_workers})...",
+        flush=True,
+    )
+    if n_workers == 1:
+        for done, task in enumerate(tasks, start=1):
+            _handle_result(_process_stim_mvpa_session(task), done)
+    elif threadpool_limits is None:
+        result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+            delayed(_process_stim_mvpa_session)(task) for task in tasks
+        )
+        for done, result in enumerate(result_iter, start=1):
+            _handle_result(result, done)
+    else:
+        with threadpool_limits(limits=1):
+            result_iter = Parallel(n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered")(
+                delayed(_process_stim_mvpa_session)(task) for task in tasks
             )
+            for done, result in enumerate(result_iter, start=1):
+                _handle_result(result, done)
 
     session_df = pd.DataFrame(session_rows)
     qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
@@ -410,6 +485,7 @@ def util_mvpa_time_resolved(
         haufe_day_mean_df.to_csv(haufe_day_mean_csv, index=False)
         haufe_pos_df.to_csv(haufe_channel_pos_csv, index=False)
     qc_df.to_csv(qc_csv, index=False)
+    _write_progress("completed", len(tasks), len(tasks))
 
     # Plot from on-disk outputs (two-step pattern: compute/write -> read/plot).
     day_means_plot_df = pd.read_csv(day_means_csv)
