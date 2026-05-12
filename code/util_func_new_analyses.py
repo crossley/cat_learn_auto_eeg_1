@@ -71,14 +71,18 @@ def _default_n_workers():
 def _parallel_collect(func, items, n_workers):
     if n_workers == 1:
         return [func(item) for item in items]
-    if threadpool_limits is None:
-        return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-            delayed(func)(item) for item in items
-        )
-    with threadpool_limits(limits=1):
-        return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-            delayed(func)(item) for item in items
-        )
+    try:
+        if threadpool_limits is None:
+            return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                delayed(func)(item) for item in items
+            )
+        with threadpool_limits(limits=1):
+            return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
+                delayed(func)(item) for item in items
+            )
+    except PermissionError:
+        print("[parallel] loky unavailable; falling back to serial execution.", flush=True)
+        return [func(item) for item in items]
 
 
 def _fit_ols(formula, df, cluster_subject=True):
@@ -383,8 +387,56 @@ def plot_day1_anchored_trajectories(window_df, fig_path):
     plt.close(fig)
 
 
-def plot_day_pair_window_matrices(window_df, fig_path):
+def extract_within_day_window_auc(
+    within_csv: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_within_day_subject_level.csv",
+    windows: dict[str, tuple[float, float]] = TG_WINDOWS,
+):
+    within_csv = Path(within_csv)
+    if not within_csv.exists():
+        return pd.DataFrame(
+            columns=["subject", "train_day", "test_day", "day_distance", "window", "mean_auc", "n_cells"]
+        )
+    d = pd.read_csv(within_csv, low_memory=False)
+    for col in ["subject", "day", "train_time_sec", "test_time_sec", "auc"]:
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna(subset=["subject", "day", "train_time_sec", "test_time_sec", "auc"]).copy()
+    rows = []
+    for (subject, day), g_day in d.groupby(["subject", "day"]):
+        train_t = g_day["train_time_sec"].to_numpy(dtype=float)
+        test_t = g_day["test_time_sec"].to_numpy(dtype=float)
+        auc = g_day["auc"].to_numpy(dtype=float)
+        for window_name, (tmin, tmax) in windows.items():
+            mask = (
+                (train_t >= tmin)
+                & (train_t <= tmax)
+                & (test_t >= tmin)
+                & (test_t <= tmax)
+                & np.isfinite(auc)
+            )
+            rows.append(
+                {
+                    "subject": int(subject),
+                    "train_day": int(day),
+                    "test_day": int(day),
+                    "day_distance": 0,
+                    "window": window_name,
+                    "window_tmin": tmin,
+                    "window_tmax": tmax,
+                    "mean_auc": float(np.nanmean(auc[mask])) if np.any(mask) else np.nan,
+                    "n_cells": int(np.sum(mask)),
+                    "matrix_file": "",
+                    "day1_pair_type": "within_day",
+                    "pair_group": "within_day",
+                    "includes_day1": int(day) == 1,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_day_pair_window_matrices(window_df, fig_path, within_df=None):
     d = window_df.dropna(subset=["mean_auc"]).copy()
+    if within_df is not None and not within_df.empty:
+        d = pd.concat([d, within_df.dropna(subset=["mean_auc"]).copy()], ignore_index=True)
     pair_mean = (
         d.groupby(["window", "train_day", "test_day"], as_index=False)["mean_auc"]
         .mean()
@@ -412,10 +464,9 @@ def plot_day_pair_window_matrices(window_df, fig_path):
         for i in range(len(days)):
             for j in range(len(days)):
                 if np.isfinite(mat[i, j]):
-                    ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white", fontsize=8)
-                elif i == j:
-                    ax.text(j, i, "-", ha="center", va="center", color="black", fontsize=9)
-    fig.suptitle("Cross-Day TG Window AUC by Day Pair")
+                    color = "black" if mat[i, j] > (vmin + 0.65 * (vmax - vmin)) else "white"
+                    ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color=color, fontsize=8)
+    fig.suptitle("TG Window AUC by Day Pair (Diagonal = Within-Day)")
     fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.85, label="AUC")
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
@@ -433,6 +484,7 @@ def run_day1_distinctiveness_analysis(
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     window_df = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir))
+    within_df = extract_within_day_window_auc()
     stats_df, _, _ = fit_day1_distinctiveness(window_df)
     group_summary = (
         window_df.dropna(subset=["mean_auc"])
@@ -445,8 +497,12 @@ def run_day1_distinctiveness_analysis(
         )
         .sort_values(["window", "day1_pair_type"])
     )
+    pair_matrix_source = pd.concat(
+        [window_df.dropna(subset=["mean_auc"]), within_df.dropna(subset=["mean_auc"])],
+        ignore_index=True,
+    )
     pair_matrix = (
-        window_df.dropna(subset=["mean_auc"])
+        pair_matrix_source
         .groupby(["window", "train_day", "test_day"], as_index=False)
         .agg(
             auc_mean=("mean_auc", "mean"),
@@ -470,7 +526,7 @@ def run_day1_distinctiveness_analysis(
     pair_matrix.to_csv(matrix_csv, index=False)
     plot_day1_pair_group_bars(window_df, fig_pair_types)
     plot_day1_anchored_trajectories(window_df, fig_anchored)
-    plot_day_pair_window_matrices(window_df, fig_matrices)
+    plot_day_pair_window_matrices(window_df, fig_matrices, within_df=within_df)
 
     return {
         "window_df": window_df,
@@ -639,6 +695,126 @@ def _prepare_band_envelope_cache(session_item, cache_dir, band_name, fmin, fmax,
 
 def _prepare_band_envelope_cache_from_task(task):
     return _prepare_band_envelope_cache(
+        task["session_item"],
+        task["cache_dir"],
+        task["band_name"],
+        task["fmin"],
+        task["fmax"],
+        task["min_epochs"],
+        task["random_state"],
+    )
+
+
+def _prepare_band_signed_cache(session_item, cache_dir, band_name, fmin, fmax, min_epochs, random_state):
+    subject = int(session_item["subject"])
+    day = int(session_item["day"])
+    session_file = session_item["epo_file"]
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{band_name}_signed_cache_{_session_cache_key(session_item)}.npz"
+    if cache_path.exists():
+        with np.load(cache_path, allow_pickle=False) as z:
+            y = z["y"]
+            t = z["t"]
+            ch_names = z["ch_names"]
+        return {
+            "ok": True,
+            "subject": subject,
+            "day": day,
+            "session_file": session_file,
+            "cache_path": str(cache_path),
+            "n_trials": int(len(y)),
+            "n_a": int(np.sum(y == 0)),
+            "n_b": int(np.sum(y == 1)),
+            "n_times": int(len(t)),
+            "ch_names": ch_names.tolist(),
+        }
+
+    try:
+        epochs = mne.read_epochs(session_item["epo_path"], preload=False, verbose="ERROR")
+        stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
+        if len(stim_events) < 2:
+            raise ValueError(f"missing_stim_labels:{','.join(stim_events)}")
+        epochs = epochs[stim_events].copy().load_data()
+        epochs.pick_types(eeg=True, exclude="bads")
+        if len(epochs.ch_names) == 0:
+            raise RuntimeError("no_eeg_channels_after_pick")
+
+        analysis_tmin, analysis_tmax = -0.2, 0.8
+        if band_name == "delta":
+            left_margin = analysis_tmin - float(epochs.times[0])
+            right_margin = float(epochs.times[-1]) - analysis_tmax
+            if left_margin < 1.0 or right_margin < 1.0:
+                return {
+                    "ok": False,
+                    "qc": {
+                        "session_file": session_file,
+                        "subject": subject,
+                        "day": day,
+                        "stage": "filter_margin",
+                        "reason": "delta_skipped_insufficient_epoch_margin",
+                        "detail": (
+                            f"Need >=1 s outside analysis window; "
+                            f"left={left_margin:.3f}, right={right_margin:.3f}"
+                        ),
+                    },
+                }
+
+        epochs.filter(
+            l_freq=fmin,
+            h_freq=fmax,
+            method="fir",
+            fir_design="firwin",
+            phase="zero-double",
+            pad="reflect_limited",
+            verbose="ERROR",
+        )
+        epochs.resample(128, npad="auto")
+
+        codes = epochs.events[:, 2]
+        y = np.full(len(codes), -1, dtype=int)
+        y[codes == epochs.event_id["Stim/A"]] = 0
+        y[codes == epochs.event_id["Stim/B"]] = 1
+        keep = y >= 0
+        y = y[keep]
+        X = epochs.get_data()[keep]
+        t = epochs.times.copy()
+        ch_names = np.array(epochs.ch_names, dtype=str)
+        if len(y) < min_epochs:
+            raise ValueError(f"insufficient_epochs:n_trials={len(y)} < min_epochs={min_epochs}")
+        if min(np.sum(y == 0), np.sum(y == 1)) < 5:
+            raise ValueError(f"insufficient_class_trials:n_a={int(np.sum(y == 0))}, n_b={int(np.sum(y == 1))}")
+        np.savez_compressed(cache_path, X=X, y=y, t=t, ch_names=ch_names)
+        return {
+            "ok": True,
+            "subject": subject,
+            "day": day,
+            "session_file": session_file,
+            "cache_path": str(cache_path),
+            "n_trials": int(len(y)),
+            "n_a": int(np.sum(y == 0)),
+            "n_b": int(np.sum(y == 1)),
+            "n_times": int(len(t)),
+            "ch_names": ch_names.tolist(),
+        }
+    except Exception as exc:
+        msg = str(exc)
+        reason = msg.split(":")[0] if ":" in msg else "prep_error"
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "prepare_band_signed_voltage",
+                "reason": reason,
+                "detail": msg,
+            },
+        }
+
+
+def _prepare_band_signed_cache_from_task(task):
+    return _prepare_band_signed_cache(
         task["session_item"],
         task["cache_dir"],
         task["band_name"],
@@ -837,6 +1013,105 @@ def run_band_envelope_cross_day_tg(
     return {"band_results": band_results, "progress": progress, "summary": summary, "band_gradient": band_gradient}
 
 
+def run_band_signed_voltage_cross_day_tg(
+    bands: dict[str, tuple[float, float]] = BANDS,
+    min_epochs: int = 20,
+    random_state: int = 42,
+    n_workers: int | None = None,
+    output_root: Path | str = PROJECT_DIR / "output",
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    """Run cross-day TG on signed band-limited voltages without Hilbert envelope."""
+    output_root = Path(output_root)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    mne.set_log_level("ERROR")
+    sessions = _load_sessions_for_band_tg()
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    band_results = {}
+    progress = {}
+    for band_name, (fmin, fmax) in bands.items():
+        t0 = time.time()
+        band_dir = output_root / f"mvpa_tg_band_signed_{band_name}"
+        cache_dir = band_dir / "cache_band_signed_arrays"
+        band_dir.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[Band signed TG] Preparing {band_name} signed-voltage caches for {len(sessions)} sessions "
+            f"(n_workers={n_workers})...",
+            flush=True,
+        )
+        prep_tasks = [
+            {
+                "session_item": item,
+                "cache_dir": cache_dir,
+                "band_name": band_name,
+                "fmin": fmin,
+                "fmax": fmax,
+                "min_epochs": min_epochs,
+                "random_state": random_state,
+            }
+            for item in sessions
+        ]
+        prep_results = _parallel_collect(_prepare_band_signed_cache_from_task, prep_tasks, n_workers)
+        prepared = [r for r in prep_results if r["ok"]]
+        qc_rows = [r["qc"] for r in prep_results if not r["ok"]]
+        day_data = {
+            (int(r["subject"]), int(r["day"])): {
+                "cache_path": r["cache_path"],
+                "session_file": r["session_file"],
+            }
+            for r in prepared
+        }
+        pair_items = []
+        rng = np.random.default_rng(random_state)
+        for subject in sorted({k[0] for k in day_data}):
+            days = sorted(k[1] for k in day_data if k[0] == subject)
+            for train_day in days:
+                for test_day in days:
+                    if train_day == test_day:
+                        continue
+                    pair_items.append(
+                        {
+                            "subject": subject,
+                            "train_day": train_day,
+                            "test_day": test_day,
+                            "train_cache_path": day_data[(subject, train_day)]["cache_path"],
+                            "test_cache_path": day_data[(subject, test_day)]["cache_path"],
+                            "train_session_file": day_data[(subject, train_day)]["session_file"],
+                            "test_session_file": day_data[(subject, test_day)]["session_file"],
+                            "pair_seed": int(rng.integers(0, 2**31 - 1)),
+                        }
+                    )
+
+        print(
+            f"[Band signed TG] Running {band_name} cross-day TG on {len(pair_items)} directed pairs "
+            f"(prepared_sessions={len(prepared)}, n_workers={n_workers})...",
+            flush=True,
+        )
+        if len(pair_items) == 0:
+            out = _write_cross_day_outputs([{"ok": False, "qc": r} for r in qc_rows], band_dir)
+        else:
+            pair_tasks = [{"pair_item": item, "random_state": random_state} for item in pair_items]
+            results = _parallel_collect(_process_cross_day_pair_from_task, pair_tasks, n_workers)
+            results.extend({"ok": False, "qc": r} for r in qc_rows)
+            out = _write_cross_day_outputs(results, band_dir)
+
+        band_results[band_name] = out
+        progress[band_name] = {
+            "prepared_sessions": len(prepared),
+            "cross_day_pairs": len(pair_items),
+            "elapsed_sec": time.time() - t0,
+            "output_dir": str(band_dir),
+            "n_workers": n_workers,
+        }
+        (band_dir / "band_signed_tg_progress.json").write_text(json.dumps(progress[band_name], indent=2))
+
+    summary = summarize_band_signed_tg_outputs(output_root=output_root, bands=bands, figures_dir=figures_dir)
+    return {"band_results": band_results, "progress": progress, "summary": summary}
+
+
 def summarize_band_tg_outputs(
     output_root: Path | str = PROJECT_DIR / "output",
     bands: dict[str, tuple[float, float]] = BANDS,
@@ -898,6 +1173,75 @@ def summarize_band_tg_outputs(
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Diagonal AUC")
     ax.set_title("Band-Envelope Cross-Day TG Diagonal Timecourse")
+    ax.legend(title="Band")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return {"diag_csv": diag_csv, "mean_csv": mean_csv, "figure": fig_path}
+
+
+def summarize_band_signed_tg_outputs(
+    output_root: Path | str = PROJECT_DIR / "output",
+    bands: dict[str, tuple[float, float]] = BANDS,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_root = Path(output_root)
+    figures_dir = Path(figures_dir)
+    rows = []
+    for band_name in bands:
+        matrix_dir = output_root / f"mvpa_tg_band_signed_{band_name}" / "tg_cross_day_subject_matrices"
+        for path in sorted(matrix_dir.glob("sub_*_trainD*_testD*.npz")):
+            parsed = _parse_matrix_path(path)
+            if parsed is None:
+                continue
+            subject, train_day, test_day = parsed
+            with np.load(path, allow_pickle=False) as z:
+                mat = np.asarray(z["auc"], dtype=float)
+                t = np.asarray(z["time_sec"], dtype=float)
+            diag = np.diag(mat)
+            for time_sec, auc in zip(t, diag):
+                rows.append(
+                    {
+                        "band": band_name,
+                        "subject": subject,
+                        "train_day": train_day,
+                        "test_day": test_day,
+                        "time_sec": float(time_sec),
+                        "auc": float(auc),
+                    }
+                )
+    diag_df = pd.DataFrame(rows)
+    diag_csv = OUTPUT_DIR / "band_signed_tg_diagonal_timecourse_subject_pairs.csv"
+    mean_csv = OUTPUT_DIR / "band_signed_tg_diagonal_timecourse_mean.csv"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    diag_df.to_csv(diag_csv, index=False)
+    if diag_df.empty:
+        pd.DataFrame().to_csv(mean_csv, index=False)
+        return {"diag_csv": diag_csv, "mean_csv": mean_csv, "figure": None}
+    subject_df = (
+        diag_df.groupby(["band", "subject", "time_sec"], as_index=False)["auc"]
+        .mean()
+        .sort_values(["band", "subject", "time_sec"])
+    )
+    mean_df = (
+        subject_df.groupby(["band", "time_sec"], as_index=False)
+        .agg(auc_mean=("auc", "mean"), auc_sem=("auc", _sem), n_subjects=("subject", "nunique"))
+        .sort_values(["band", "time_sec"])
+    )
+    mean_df.to_csv(mean_csv, index=False)
+
+    fig_path = figures_dir / "band_signed_tg_diagonal_timecourses.png"
+    fig, ax = plt.subplots(figsize=(8, 4.6))
+    for band_name, g in mean_df.groupby("band"):
+        g = g.sort_values("time_sec")
+        ax.plot(g["time_sec"], g["auc_mean"], linewidth=1.8, label=band_name)
+        ax.fill_between(g["time_sec"], g["auc_mean"] - g["auc_sem"], g["auc_mean"] + g["auc_sem"], alpha=0.15)
+    ax.axhline(0.5, color="0.3", linestyle=":", linewidth=1)
+    ax.axvline(0.0, color="0.5", linestyle=":", linewidth=1)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Diagonal AUC")
+    ax.set_title("Band-Limited Signed-Voltage Cross-Day TG Diagonal Timecourse")
     ax.legend(title="Band")
     ax.grid(alpha=0.25)
     fig.tight_layout()
@@ -986,6 +1330,257 @@ def run_band_tg_window_gradients(
         "window_df": window_df,
         "slope_df": slope_df,
         "interaction_df": interaction_df,
+    }
+
+
+def _load_diagonal_timecourses_from_matrices(matrix_dir, signal_name):
+    rows = []
+    matrix_dir = Path(matrix_dir)
+    for path in sorted(matrix_dir.glob("sub_*_trainD*_testD*.npz")):
+        parsed = _parse_matrix_path(path)
+        if parsed is None:
+            continue
+        subject, train_day, test_day = parsed
+        with np.load(path, allow_pickle=False) as z:
+            mat = np.asarray(z["auc"], dtype=float)
+            time_sec = np.asarray(z["time_sec"], dtype=float)
+        diag = np.diag(mat)
+        if (train_day == 1) and (test_day != 1):
+            pair_type = "day1_forward"
+        elif (train_day != 1) and (test_day == 1):
+            pair_type = "day1_backward"
+        elif (train_day != 1) and (test_day != 1):
+            pair_type = "later_only"
+        else:
+            continue
+        for t, auc in zip(time_sec, diag):
+            rows.append(
+                {
+                    "signal": signal_name,
+                    "subject": subject,
+                    "train_day": train_day,
+                    "test_day": test_day,
+                    "day_distance": abs(train_day - test_day),
+                    "pair_type": pair_type,
+                    "time_sec": float(t),
+                    "auc": float(auc),
+                }
+            )
+    return rows
+
+
+def _summarize_diagonal_by_signal_pair(diag_df):
+    subject_df = (
+        diag_df.groupby(["signal", "pair_type", "subject", "time_sec"], as_index=False)["auc"]
+        .mean()
+        .sort_values(["signal", "pair_type", "subject", "time_sec"])
+    )
+    mean_df = (
+        subject_df.groupby(["signal", "pair_type", "time_sec"], as_index=False)
+        .agg(auc_mean=("auc", "mean"), auc_sem=("auc", _sem), n_subjects=("subject", "nunique"))
+        .sort_values(["signal", "pair_type", "time_sec"])
+    )
+    window_rows = []
+    for signal, pair_type, subject in subject_df[["signal", "pair_type", "subject"]].drop_duplicates().itertuples(index=False):
+        g = subject_df[
+            (subject_df["signal"] == signal)
+            & (subject_df["pair_type"] == pair_type)
+            & (subject_df["subject"] == subject)
+        ]
+        for window_name, (tmin, tmax) in TG_WINDOWS.items():
+            w = g[(g["time_sec"] >= tmin) & (g["time_sec"] <= tmax)]
+            if w.empty:
+                continue
+            window_rows.append(
+                {
+                    "signal": signal,
+                    "pair_type": pair_type,
+                    "subject": subject,
+                    "window": window_name,
+                    "auc": float(w["auc"].mean()),
+                }
+            )
+    window_subject_df = pd.DataFrame(window_rows)
+    window_mean_df = (
+        window_subject_df.groupby(["signal", "pair_type", "window"], as_index=False)
+        .agg(auc_mean=("auc", "mean"), auc_sem=("auc", _sem), n_subjects=("subject", "nunique"))
+        .sort_values(["signal", "pair_type", "window"])
+    )
+    return subject_df, mean_df, window_subject_df, window_mean_df
+
+
+def plot_broadband_vs_band_pair_diagnostics(mean_df, fig_path):
+    signal_order = [
+        "broadband",
+        "theta_envelope",
+        "theta_signed",
+        "alpha_envelope",
+        "alpha_signed",
+        "beta_envelope",
+        "beta_signed",
+        "gamma_envelope",
+        "gamma_signed",
+    ]
+    signal_order = [signal for signal in signal_order if signal in set(mean_df["signal"])]
+    pair_order = ["day1_forward", "day1_backward", "later_only"]
+    pair_labels = {
+        "day1_forward": "D1 -> later",
+        "day1_backward": "Later -> D1",
+        "later_only": "Later only",
+    }
+    colors = {
+        "broadband": "black",
+        "theta_envelope": "tab:blue",
+        "theta_signed": "navy",
+        "alpha_envelope": "tab:orange",
+        "alpha_signed": "darkorange",
+        "beta_envelope": "tab:green",
+        "beta_signed": "darkgreen",
+        "gamma_envelope": "tab:red",
+        "gamma_signed": "darkred",
+    }
+
+    fig, axes = plt.subplots(len(pair_order), 1, figsize=(10.5, 9.2), sharex=True, sharey=True)
+    if len(pair_order) == 1:
+        axes = [axes]
+    for ax, pair_type in zip(axes, pair_order):
+        for signal in signal_order:
+            g = mean_df[(mean_df["signal"] == signal) & (mean_df["pair_type"] == pair_type)].sort_values("time_sec")
+            if g.empty:
+                continue
+            ax.plot(g["time_sec"], g["auc_mean"], color=colors.get(signal, None), linewidth=1.8, label=signal)
+            ax.fill_between(
+                g["time_sec"],
+                g["auc_mean"] - g["auc_sem"],
+                g["auc_mean"] + g["auc_sem"],
+                color=colors.get(signal, None),
+                alpha=0.10,
+                linewidth=0,
+            )
+        ax.axhline(0.5, color="0.35", linestyle=":", linewidth=1)
+        ax.axvspan(TG_WINDOWS["early"][0], TG_WINDOWS["early"][1], color="tab:blue", alpha=0.08, linewidth=0)
+        ax.axvspan(TG_WINDOWS["late"][0], TG_WINDOWS["late"][1], color="tab:orange", alpha=0.08, linewidth=0)
+        ax.set_title(pair_labels[pair_type])
+        ax.set_ylabel("Diagonal AUC")
+        ax.grid(alpha=0.22)
+    axes[-1].set_xlabel("Time from stimulus onset (s)")
+    axes[0].legend(loc="best", ncol=3, fontsize=8)
+    fig.suptitle("Broadband vs Band-Envelope/Signed Cross-Day TG by Day-Pair Type")
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_broadband_vs_band_window_bars(window_mean_df, fig_path):
+    signal_order = [
+        "broadband",
+        "theta_envelope",
+        "theta_signed",
+        "alpha_envelope",
+        "alpha_signed",
+        "beta_envelope",
+        "beta_signed",
+        "gamma_envelope",
+        "gamma_signed",
+    ]
+    signal_order = [signal for signal in signal_order if signal in set(window_mean_df["signal"])]
+    pair_order = ["day1_forward", "day1_backward", "later_only"]
+    pair_labels = ["D1 -> later", "Later -> D1", "Later only"]
+    colors = {"early": "tab:blue", "late": "tab:orange"}
+
+    fig, axes = plt.subplots(1, len(pair_order), figsize=(13, 4), sharey=True, squeeze=False)
+    width = 0.35
+    x = np.arange(len(signal_order), dtype=float)
+    for ax, pair_type, pair_label in zip(axes.ravel(), pair_order, pair_labels):
+        for i_window, window_name in enumerate(["early", "late"]):
+            g = (
+                window_mean_df[
+                    (window_mean_df["pair_type"] == pair_type)
+                    & (window_mean_df["window"] == window_name)
+                ]
+                .set_index("signal")
+                .reindex(signal_order)
+            )
+            offset = (-width / 2) if window_name == "early" else (width / 2)
+            ax.bar(
+                x + offset,
+                g["auc_mean"],
+                width=width,
+                yerr=g["auc_sem"],
+                color=colors[window_name],
+                alpha=0.75,
+                capsize=3,
+                label=window_name if pair_type == pair_order[0] else None,
+            )
+        ax.axhline(0.5, color="0.35", linestyle=":", linewidth=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(signal_order, rotation=35, ha="right")
+        ax.set_title(pair_label)
+        ax.grid(axis="y", alpha=0.22)
+    axes.ravel()[0].set_ylabel("Mean window diagonal AUC")
+    axes.ravel()[0].legend(loc="best")
+    fig.suptitle("Early/Late TG by Signal Type and Day-Pair Type")
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_broadband_vs_band_diagnostic(
+    output_root: Path | str = PROJECT_DIR / "output",
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_root = Path(output_root)
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = _load_diagonal_timecourses_from_matrices(
+        output_root / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
+        "broadband",
+    )
+    for band_name in ["theta", "alpha", "beta", "gamma"]:
+        rows.extend(
+            _load_diagonal_timecourses_from_matrices(
+                output_root / f"mvpa_tg_band_{band_name}" / "tg_cross_day_subject_matrices",
+                f"{band_name}_envelope",
+            )
+        )
+        rows.extend(
+            _load_diagonal_timecourses_from_matrices(
+                output_root / f"mvpa_tg_band_signed_{band_name}" / "tg_cross_day_subject_matrices",
+                f"{band_name}_signed",
+            )
+        )
+    diag_df = pd.DataFrame(rows)
+    if diag_df.empty:
+        raise RuntimeError("No TG diagonal matrices found for broadband-vs-band diagnostic.")
+    subject_df, mean_df, window_subject_df, window_mean_df = _summarize_diagonal_by_signal_pair(diag_df)
+
+    diag_csv = output_dir / "tg_broadband_vs_band_diagonal_subject_pairs.csv"
+    mean_csv = output_dir / "tg_broadband_vs_band_diagonal_mean.csv"
+    window_subject_csv = output_dir / "tg_broadband_vs_band_window_subject.csv"
+    window_mean_csv = output_dir / "tg_broadband_vs_band_window_mean.csv"
+    fig_timecourse = figures_dir / "tg_broadband_vs_band_pair_type_timecourses.png"
+    fig_window = figures_dir / "tg_broadband_vs_band_window_bars.png"
+
+    diag_df.to_csv(diag_csv, index=False)
+    mean_df.to_csv(mean_csv, index=False)
+    window_subject_df.to_csv(window_subject_csv, index=False)
+    window_mean_df.to_csv(window_mean_csv, index=False)
+    plot_broadband_vs_band_pair_diagnostics(mean_df, fig_timecourse)
+    plot_broadband_vs_band_window_bars(window_mean_df, fig_window)
+    return {
+        "diag_csv": diag_csv,
+        "mean_csv": mean_csv,
+        "window_subject_csv": window_subject_csv,
+        "window_mean_csv": window_mean_csv,
+        "figures": {
+            "timecourse": fig_timecourse,
+            "window": fig_window,
+        },
+        "window_mean_df": window_mean_df,
     }
 
 
@@ -1217,6 +1812,8 @@ def run_all_new_analyses(run_band_tg=False, n_workers=None):
     }
     if run_band_tg:
         results["band_tg"] = run_band_envelope_cross_day_tg(n_workers=n_workers)
+        results["band_signed_tg"] = run_band_signed_voltage_cross_day_tg(n_workers=n_workers)
+    results["broadband_vs_band_diagnostic"] = run_broadband_vs_band_diagnostic()
     return results
 
 
