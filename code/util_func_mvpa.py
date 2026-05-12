@@ -594,6 +594,15 @@ def _build_clf(random_state: int):
     )
 
 
+def _pick_eeg_interpolate_bads(epochs):
+    epochs.pick("eeg", exclude=[])
+    if len(epochs.ch_names) == 0:
+        raise RuntimeError("no_eeg_channels_after_pick")
+    if len(epochs.info.get("bads", [])):
+        epochs.interpolate_bads(reset_bads=True, verbose="ERROR")
+    return epochs
+
+
 def _prepare_stim_data(epochs):
     stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
     if len(stim_events) < 2:
@@ -601,9 +610,7 @@ def _prepare_stim_data(epochs):
 
     stim_epochs = epochs[stim_events].copy()
     stim_epochs.load_data()
-    stim_epochs.pick_types(eeg=True, exclude="bads")
-    if len(stim_epochs.ch_names) == 0:
-        raise RuntimeError("no_eeg_channels_after_pick")
+    _pick_eeg_interpolate_bads(stim_epochs)
     stim_epochs.resample(128, npad="auto")
 
     codes = stim_epochs.events[:, 2]
@@ -626,7 +633,7 @@ def _prepare_session_cache(session_item: dict, cache_dir: Path):
     day = int(session_item["day"])
     epochs = session_item["epochs"]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"stim_cache_{_session_cache_key(session_item)}.npz"
+    cache_path = cache_dir / f"stim_cache_interp_bads_{_session_cache_key(session_item)}.npz"
 
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:

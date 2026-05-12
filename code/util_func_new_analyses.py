@@ -27,12 +27,16 @@ import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 from joblib import Parallel, delayed
+from scipy.optimize import minimize_scalar
+from scipy import stats
+from sklearn.linear_model import LogisticRegression
 try:
     from threadpoolctl import threadpool_limits
 except Exception:  # pragma: no cover
     threadpool_limits = None
 
-from util_func_mvpa import _process_cross_day_pair, _session_cache_key
+from util_func_mvpa import _pick_eeg_interpolate_bads, _process_cross_day_pair, _session_cache_key
+from util_func_wrangle import util_wrangle_align_beh_to_epochs
 
 
 CODE_DIR = Path(__file__).resolve().parent
@@ -102,11 +106,30 @@ def _model_term_summary(model, term):
         lo, hi = ci[idx]
     return {
         "term": term,
-        "estimate": float(model.params[idx]),
+        "estimate": float(model.params.iloc[idx] if hasattr(model.params, "iloc") else model.params[idx]),
         "ci_low": float(lo),
         "ci_high": float(hi),
-        "p_value": float(model.pvalues[idx]),
+        "p_value": float(model.pvalues.iloc[idx] if hasattr(model.pvalues, "iloc") else model.pvalues[idx]),
     }
+
+
+def _fit_regression_with_fallback(formula, df, group_col="subject", re_formula=None):
+    try:
+        if re_formula is None:
+            model = smf.mixedlm(formula, data=df, groups=df[group_col]).fit(reml=False, method="lbfgs", disp=False)
+        else:
+            model = smf.mixedlm(formula, data=df, groups=df[group_col], re_formula=re_formula).fit(
+                reml=False,
+                method="lbfgs",
+                disp=False,
+            )
+        status = "mixedlm"
+        return model, status
+    except Exception as exc:
+        model = smf.ols(formula, data=df).fit(cov_type="cluster", cov_kwds={"groups": df[group_col]})
+        model._fallback_detail = str(exc)
+        status = "ols_cluster_fallback"
+        return model, status
 
 
 def _parse_matrix_path(path):
@@ -675,7 +698,7 @@ def _prepare_band_envelope_cache(session_item, cache_dir, band_name, fmin, fmax,
     session_file = session_item["epo_file"]
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{band_name}_cache_{_session_cache_key(session_item)}.npz"
+    cache_path = cache_dir / f"{band_name}_cache_interp_bads_{_session_cache_key(session_item)}.npz"
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:
             y = z["y"]
@@ -700,9 +723,7 @@ def _prepare_band_envelope_cache(session_item, cache_dir, band_name, fmin, fmax,
         if len(stim_events) < 2:
             raise ValueError(f"missing_stim_labels:{','.join(stim_events)}")
         epochs = epochs[stim_events].copy().load_data()
-        epochs.pick_types(eeg=True, exclude="bads")
-        if len(epochs.ch_names) == 0:
-            raise RuntimeError("no_eeg_channels_after_pick")
+        _pick_eeg_interpolate_bads(epochs)
 
         analysis_tmin, analysis_tmax = -0.2, 0.8
         if band_name == "delta":
@@ -796,7 +817,7 @@ def _prepare_band_signed_cache(session_item, cache_dir, band_name, fmin, fmax, m
     session_file = session_item["epo_file"]
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{band_name}_signed_cache_{_session_cache_key(session_item)}.npz"
+    cache_path = cache_dir / f"{band_name}_signed_cache_interp_bads_{_session_cache_key(session_item)}.npz"
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:
             y = z["y"]
@@ -821,9 +842,7 @@ def _prepare_band_signed_cache(session_item, cache_dir, band_name, fmin, fmax, m
         if len(stim_events) < 2:
             raise ValueError(f"missing_stim_labels:{','.join(stim_events)}")
         epochs = epochs[stim_events].copy().load_data()
-        epochs.pick_types(eeg=True, exclude="bads")
-        if len(epochs.ch_names) == 0:
-            raise RuntimeError("no_eeg_channels_after_pick")
+        _pick_eeg_interpolate_bads(epochs)
 
         analysis_tmin, analysis_tmax = -0.2, 0.8
         if band_name == "delta":
@@ -1669,6 +1688,602 @@ def run_broadband_vs_band_diagnostic(
     }
 
 
+def load_behaviour_with_boundary(project_dir: Path | str = PROJECT_DIR):
+    project_dir = Path(project_dir)
+    beh_dir = project_dir / "Behavioural"
+    beh_re = re.compile(r"^sub_(\d+)_day_(\d+)_data\.csv$")
+    rows = []
+    for path in sorted(beh_dir.glob("*.csv")):
+        m = beh_re.match(path.name)
+        if m is None:
+            continue
+        d = pd.read_csv(path)
+        subject = int(m.group(1))
+        day_code = int(m.group(2))
+        day = day_code // 100
+        d["subject"] = subject
+        d["day_code"] = day_code
+        d["day"] = day
+        d["beh_file"] = path.name
+        rows.append(d)
+    if not rows:
+        raise FileNotFoundError(f"No behavioural CSV files found in {beh_dir}")
+    beh = pd.concat(rows, ignore_index=True)
+    beh["cat_binary"] = (beh["cat"].astype(str) == "B").astype(int)
+    clf = LogisticRegression(solver="lbfgs", C=1e6, max_iter=1000)
+    X = beh[["xt", "yt"]].to_numpy(dtype=float)
+    y = beh["cat_binary"].to_numpy(dtype=int)
+    clf.fit(X, y)
+    w = clf.coef_[0].astype(float)
+    b = float(clf.intercept_[0])
+    norm = float(np.linalg.norm(w))
+    decision_distance = (X @ w + b) / norm
+    correct_side_distance = np.where(y == 1, decision_distance, -decision_distance)
+    beh["boundary_distance"] = correct_side_distance
+    beh["boundary_distance_abs"] = np.abs(correct_side_distance)
+    beh["boundary_decision_distance"] = decision_distance
+    beh["accuracy"] = (beh["fb"].astype(str).str.lower() == "correct").astype(float)
+    beh["rt_sec"] = pd.to_numeric(beh["rt"], errors="coerce") / 1000.0
+    boundary = {
+        "coef_xt": float(w[0]),
+        "coef_yt": float(w[1]),
+        "intercept": b,
+        "norm": norm,
+        "classes": "A=0,B=1",
+    }
+    return beh, boundary
+
+
+def add_distance_tertiles(beh):
+    d = beh.copy()
+
+    def _bin_group(g):
+        g = g.copy()
+        ranks = g["boundary_distance_abs"].rank(method="first")
+        try:
+            g["distance_tertile"] = pd.qcut(ranks, 3, labels=["hard", "medium", "easy"])
+        except ValueError:
+            g["distance_tertile"] = pd.cut(ranks, 3, labels=["hard", "medium", "easy"], include_lowest=True)
+        return g
+
+    return pd.concat([_bin_group(g) for _, g in d.groupby(["subject", "day"], sort=False)], ignore_index=True)
+
+
+def plot_boundary_behaviour(agg_df, fig_path):
+    tertile_order = ["hard", "medium", "easy"]
+    colors = {"hard": "tab:red", "medium": "tab:orange", "easy": "tab:green"}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), squeeze=False)
+    for ax, metric, ylabel in [
+        (axes[0, 0], "rt_sec", "RT (s)"),
+        (axes[0, 1], "accuracy", "Accuracy"),
+    ]:
+        for tertile in tertile_order:
+            g = agg_df[agg_df["distance_tertile"] == tertile]
+            summary = (
+                g.groupby("day", as_index=False)
+                .agg(mean=(metric, "mean"), sem=(metric, _sem), n_subjects=("subject", "nunique"))
+                .sort_values("day")
+            )
+            ax.errorbar(
+                summary["day"],
+                summary["mean"],
+                yerr=summary["sem"],
+                marker="o",
+                linewidth=1.8,
+                capsize=3,
+                color=colors[tertile],
+                label=tertile,
+            )
+        ax.set_xlabel("Day")
+        ax.set_ylabel(ylabel)
+        ax.grid(alpha=0.25)
+    axes[0, 0].legend(title="Boundary distance")
+    fig.suptitle("Behaviour by Boundary-Distance Tertile")
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_boundary_behaviour_analysis(output_dir: Path | str = OUTPUT_DIR, figures_dir: Path | str = FIGURES_DIR):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    beh, boundary = load_behaviour_with_boundary()
+    beh = add_distance_tertiles(beh)
+    agg = (
+        beh.groupby(["subject", "day", "distance_tertile"], observed=True, as_index=False)
+        .agg(
+            rt_sec=("rt_sec", "mean"),
+            accuracy=("accuracy", "mean"),
+            mean_boundary_distance=("boundary_distance_abs", "mean"),
+            n_trials=("trial", "size"),
+        )
+        .sort_values(["subject", "day", "distance_tertile"])
+    )
+    model_rows = []
+    for metric in ["rt_sec", "accuracy"]:
+        d_model = agg.dropna(subset=[metric]).copy()
+        d_model["distance_tertile"] = pd.Categorical(
+            d_model["distance_tertile"], categories=["hard", "medium", "easy"], ordered=True
+        )
+        model, status = _fit_regression_with_fallback(f"{metric} ~ distance_tertile * day", d_model)
+        for term in model.model.exog_names:
+            if term == "Intercept":
+                continue
+            item = _model_term_summary(model, term)
+            item.update({"metric": metric, "status": status})
+            model_rows.append(item)
+    boundary_csv = output_dir / "boundary_model_params.csv"
+    trial_csv = output_dir / "behaviour_with_boundary_distance.csv"
+    agg_csv = output_dir / "boundary_behaviour_tertile_subject_day.csv"
+    model_csv = output_dir / "boundary_behaviour_model_terms.csv"
+    fig_path = figures_dir / "boundary_behaviour_by_tertile.png"
+    pd.DataFrame([boundary]).to_csv(boundary_csv, index=False)
+    beh.to_csv(trial_csv, index=False)
+    agg.to_csv(agg_csv, index=False)
+    model_df = pd.DataFrame(model_rows)
+    model_df.to_csv(model_csv, index=False)
+    plot_boundary_behaviour(agg, fig_path)
+    return {
+        "beh_df": beh,
+        "agg_df": agg,
+        "model_df": model_df,
+        "boundary": boundary,
+        "boundary_csv": boundary_csv,
+        "trial_csv": trial_csv,
+        "agg_csv": agg_csv,
+        "model_csv": model_csv,
+        "figure": fig_path,
+    }
+
+
+def _load_epoch_beh_sessions_with_boundary(project_dir: Path | str = PROJECT_DIR):
+    project_dir = Path(project_dir)
+    beh, boundary = load_behaviour_with_boundary(project_dir)
+    epo_dir = project_dir / "EEG_epo"
+    epo_re = re.compile(r"^P(\d+)_D([\d_]+)-epo\.fif$")
+    sessions = []
+    for epo_path in sorted(epo_dir.glob("*-epo.fif")):
+        m = epo_re.match(epo_path.name)
+        if m is None:
+            continue
+        subject = int(m.group(1))
+        day = int(m.group(2).split("_")[0])
+        beh_df = beh[(beh["subject"] == subject) & (beh["day"] == day)].copy()
+        if beh_df.empty:
+            continue
+        sessions.append({"subject": subject, "day": day, "epo_path": epo_path, "beh_df": beh_df})
+    return sessions, boundary
+
+
+def _extract_n2_session(task):
+    subject = int(task["subject"])
+    day = int(task["day"])
+    try:
+        epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
+        epochs_stim, beh_aligned = util_wrangle_align_beh_to_epochs(
+            task["beh_df"], epochs, event_names=("Stim/A", "Stim/B")
+        )
+        if len(epochs_stim) == 0:
+            return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "no_stim_epochs", "detail": ""}}
+        epochs_stim = epochs_stim.copy().load_data()
+        channels = [ch for ch in ["Fz", "FCz", "FC1", "FC2"] if ch in epochs_stim.ch_names]
+        if len(channels) == 0:
+            return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "missing_channels", "detail": ""}}
+        data = epochs_stim.copy().pick(channels).get_data()
+        times = epochs_stim.times
+        tmask = (times >= 0.200) & (times <= 0.300)
+        amp = data[:, :, tmask].mean(axis=(1, 2))
+        out = beh_aligned.reset_index(drop=True).copy()
+        out["subject"] = subject
+        out["day"] = day
+        out["n2_amplitude_v"] = amp
+        out["n2_amplitude_uv"] = amp * 1e6
+        return {"ok": True, "rows": out}
+    except Exception as exc:
+        return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "extract_error", "detail": str(exc)}}
+
+
+def plot_n2_boundary_slopes(slope_df, fig_path):
+    fig, ax = plt.subplots(figsize=(6.5, 4))
+    summary = (
+        slope_df.groupby("day", as_index=False)
+        .agg(slope_mean=("slope", "mean"), slope_sem=("slope", _sem), n_subjects=("subject", "nunique"))
+        .sort_values("day")
+    )
+    ax.errorbar(
+        summary["day"],
+        summary["slope_mean"],
+        yerr=summary["slope_sem"],
+        marker="o",
+        linewidth=1.8,
+        capsize=3,
+        color="tab:blue",
+    )
+    ax.axhline(0, color="0.35", linestyle=":", linewidth=1)
+    ax.set_xlabel("Day")
+    ax.set_ylabel("N2 slope on boundary distance (uV/unit)")
+    ax.set_title("Frontal N2 Boundary-Distance Slope")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_n2_boundary_distance_analysis(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+    n_workers: int | None = None,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    sessions, boundary = _load_epoch_beh_sessions_with_boundary()
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    tasks = [{"subject": s["subject"], "day": s["day"], "epo_path": s["epo_path"], "beh_df": s["beh_df"]} for s in sessions]
+    results = _parallel_collect(_extract_n2_session, tasks, n_workers)
+    rows = []
+    qc = []
+    for result in results:
+        if result["ok"]:
+            rows.append(result["rows"])
+        else:
+            qc.append(result["qc"])
+    trial_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if trial_df.empty:
+        raise RuntimeError("No N2 boundary-distance rows extracted.")
+    trial_df = trial_df.dropna(subset=["n2_amplitude_uv", "boundary_distance"]).copy()
+    model_df = trial_df.copy()
+    model, status = _fit_regression_with_fallback(
+        "n2_amplitude_uv ~ boundary_distance * day",
+        model_df,
+        re_formula="~boundary_distance",
+    )
+    terms = []
+    for term in model.model.exog_names:
+        if term == "Intercept":
+            continue
+        item = _model_term_summary(model, term)
+        item["status"] = status
+        terms.append(item)
+    slope_rows = []
+    for (subject, day), g in trial_df.groupby(["subject", "day"]):
+        if len(g) < 5 or g["boundary_distance"].nunique() < 2:
+            continue
+        fit = smf.ols("n2_amplitude_uv ~ boundary_distance", data=g).fit()
+        slope_rows.append(
+            {
+                "subject": int(subject),
+                "day": int(day),
+                "slope": float(fit.params["boundary_distance"]),
+                "intercept": float(fit.params["Intercept"]),
+                "p_value": float(fit.pvalues["boundary_distance"]),
+                "n_trials": int(len(g)),
+            }
+        )
+    slope_df = pd.DataFrame(slope_rows)
+    trial_csv = output_dir / "n2_boundary_trial_level.csv"
+    model_csv = output_dir / "n2_boundary_model_terms.csv"
+    slope_csv = output_dir / "n2_boundary_subject_day_slopes.csv"
+    qc_csv = output_dir / "n2_boundary_qc.csv"
+    fig_path = figures_dir / "n2_boundary_slope_by_day.png"
+    trial_df.to_csv(trial_csv, index=False)
+    pd.DataFrame(terms).to_csv(model_csv, index=False)
+    slope_df.to_csv(slope_csv, index=False)
+    pd.DataFrame(qc).to_csv(qc_csv, index=False)
+    plot_n2_boundary_slopes(slope_df, fig_path)
+    return {
+        "trial_df": trial_df,
+        "model_df": pd.DataFrame(terms),
+        "slope_df": slope_df,
+        "trial_csv": trial_csv,
+        "model_csv": model_csv,
+        "slope_csv": slope_csv,
+        "qc_csv": qc_csv,
+        "figure": fig_path,
+    }
+
+
+def _align_feedback_to_beh(beh_df, epochs, event_names=("FB/Cor", "FB/Inc")):
+    beh_sorted = beh_df.sort_values("trial").reset_index(drop=True)
+    event_names = [name for name in event_names if name in epochs.event_id]
+    if not event_names:
+        return epochs[:0], beh_sorted.iloc[:0].copy()
+    epochs_fb = epochs[event_names]
+    if len(epochs_fb) == 0:
+        return epochs_fb, beh_sorted.iloc[:0].copy()
+    if epochs_fb.metadata is not None and "beh_trial_index" in epochs_fb.metadata:
+        trial_idx = epochs_fb.metadata["beh_trial_index"].to_numpy(dtype=int)
+    else:
+        sel = np.asarray(epochs_fb.selection, dtype=int)
+        if len(sel) > 1:
+            diffs = np.diff(np.sort(sel))
+            step = int(diffs[0])
+            for diff in diffs[1:]:
+                step = np.gcd(step, int(diff))
+            offset = int(np.min(sel % step)) if step > 1 else 0
+            trial_idx = (sel - offset) // step if step > 1 else sel.copy()
+        else:
+            trial_idx = sel.copy()
+    valid = (trial_idx >= 0) & (trial_idx < len(beh_sorted))
+    if not valid.all():
+        epochs_fb = epochs_fb[np.where(valid)[0]]
+        trial_idx = trial_idx[valid]
+    return epochs_fb, beh_sorted.iloc[trial_idx].reset_index(drop=True)
+
+
+def fit_rw_for_subject(outcomes):
+    outcomes = np.asarray(outcomes, dtype=float)
+
+    def _nll(alpha):
+        v = 0.5
+        nll = 0.0
+        eps = 1e-6
+        for outcome in outcomes:
+            p = np.clip(v, eps, 1 - eps)
+            nll -= outcome * np.log(p) + (1 - outcome) * np.log(1 - p)
+            v = v + alpha * (outcome - v)
+        return nll
+
+    res = minimize_scalar(_nll, bounds=(0.01, 0.99), method="bounded")
+    alpha = float(res.x)
+    v = 0.5
+    preds = []
+    rpes = []
+    for outcome in outcomes:
+        preds.append(v)
+        rpes.append(outcome - v)
+        v = v + alpha * (outcome - v)
+    return alpha, float(res.fun), np.asarray(preds), np.asarray(rpes)
+
+
+def _extract_frn_day1_session(task):
+    subject = int(task["subject"])
+    day = int(task["day"])
+    if day != 1:
+        return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "not_day1", "detail": ""}}
+    try:
+        beh_df = task["beh_df"].sort_values("trial").reset_index(drop=True).copy()
+        outcomes = (beh_df["fb"].astype(str).str.lower() == "correct").astype(float).to_numpy()
+        alpha, nll, pred, rpe = fit_rw_for_subject(outcomes)
+        beh_df["rw_alpha"] = alpha
+        beh_df["rw_nll"] = nll
+        beh_df["rw_pred"] = pred
+        beh_df["rpe"] = rpe
+        epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
+        epochs_fb, beh_aligned = _align_feedback_to_beh(beh_df, epochs)
+        if len(epochs_fb) == 0:
+            return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "no_feedback_epochs", "detail": ""}}
+        epochs_fb = epochs_fb.copy().load_data()
+        channels = [ch for ch in ["Fz", "FCz"] if ch in epochs_fb.ch_names]
+        if len(channels) == 0:
+            return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "missing_frn_channels", "detail": ""}}
+        data = epochs_fb.copy().pick(channels).get_data()
+        times = epochs_fb.times
+        tmask = (times >= 0.200) & (times <= 0.300)
+        frn = data[:, :, tmask].mean(axis=(1, 2))
+        out = beh_aligned.reset_index(drop=True).copy()
+        out["subject"] = subject
+        out["day"] = day
+        out["frn_amplitude_v"] = frn
+        out["frn_amplitude_uv"] = frn * 1e6
+        waves = epochs_fb.copy().pick(channels).get_data().mean(axis=1) * 1e6
+        wave_df = pd.DataFrame(waves, columns=[float(t) for t in times])
+        wave_df.insert(0, "rpe", out["rpe"].to_numpy())
+        wave_df.insert(0, "subject", subject)
+        return {"ok": True, "rows": out, "waves": wave_df, "fit": {"subject": subject, "alpha": alpha, "nll": nll}}
+    except Exception as exc:
+        return {"ok": False, "qc": {"subject": subject, "day": day, "reason": "extract_error", "detail": str(exc)}}
+
+
+def plot_frn_rpe_tertiles(wave_df, fig_path):
+    if wave_df.empty:
+        return
+    wave_df = wave_df.copy()
+    wave_df["rpe_tertile"] = pd.qcut(wave_df["rpe"].rank(method="first"), 3, labels=["low", "medium", "high"])
+    id_cols = ["subject", "rpe"]
+    value_cols = [c for c in wave_df.columns if c not in id_cols + ["rpe_tertile"]]
+    long = wave_df.melt(id_vars=id_cols + ["rpe_tertile"], value_vars=value_cols, var_name="time_sec", value_name="amp_uv")
+    long["time_sec"] = long["time_sec"].astype(float)
+    summary = (
+        long.groupby(["rpe_tertile", "time_sec"], observed=True, as_index=False)
+        .agg(amp_mean=("amp_uv", "mean"), amp_sem=("amp_uv", _sem))
+        .sort_values(["rpe_tertile", "time_sec"])
+    )
+    fig, ax = plt.subplots(figsize=(7, 4))
+    colors = {"low": "tab:red", "medium": "tab:orange", "high": "tab:green"}
+    for tertile, g in summary.groupby("rpe_tertile", observed=True):
+        ax.plot(g["time_sec"], g["amp_mean"], color=colors[str(tertile)], linewidth=1.8, label=str(tertile))
+        ax.fill_between(
+            g["time_sec"],
+            g["amp_mean"] - g["amp_sem"],
+            g["amp_mean"] + g["amp_sem"],
+            color=colors[str(tertile)],
+            alpha=0.15,
+            linewidth=0,
+        )
+    ax.axvspan(0.200, 0.300, color="0.5", alpha=0.12, linewidth=0)
+    ax.axvline(0, color="0.35", linestyle=":", linewidth=1)
+    ax.set_xlabel("Time from feedback (s)")
+    ax.set_ylabel("Fz/FCz amplitude (uV)")
+    ax.set_title("Day 1 FRN by RPE Tertile")
+    ax.legend(title="RPE")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_day1_rw_frn_analysis(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+    n_workers: int | None = None,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    sessions, _ = _load_epoch_beh_sessions_with_boundary()
+    sessions = [s for s in sessions if int(s["day"]) == 1]
+    if n_workers is None:
+        n_workers = _default_n_workers()
+    n_workers = max(1, int(n_workers))
+    tasks = [{"subject": s["subject"], "day": s["day"], "epo_path": s["epo_path"], "beh_df": s["beh_df"]} for s in sessions]
+    results = _parallel_collect(_extract_frn_day1_session, tasks, n_workers)
+    rows = []
+    waves = []
+    fits = []
+    qc = []
+    for result in results:
+        if result["ok"]:
+            rows.append(result["rows"])
+            waves.append(result["waves"])
+            fits.append(result["fit"])
+        else:
+            qc.append(result["qc"])
+    trial_df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    wave_df = pd.concat(waves, ignore_index=True) if waves else pd.DataFrame()
+    fit_df = pd.DataFrame(fits)
+    coef_rows = []
+    for subject, g in trial_df.groupby("subject"):
+        if len(g) < 5 or g["rpe"].nunique() < 2:
+            continue
+        fit = smf.ols("frn_amplitude_uv ~ rpe", data=g).fit()
+        coef_rows.append(
+            {
+                "subject": int(subject),
+                "coef_rpe": float(fit.params["rpe"]),
+                "p_value": float(fit.pvalues["rpe"]),
+                "n_trials": int(len(g)),
+            }
+        )
+    coef_df = pd.DataFrame(coef_rows)
+    if coef_df.empty:
+        group_stats = {"n_subjects": 0, "mean_coef": np.nan, "t": np.nan, "p_value": np.nan}
+    else:
+        t_res = stats.ttest_1samp(coef_df["coef_rpe"].to_numpy(dtype=float), 0.0, nan_policy="omit")
+        group_stats = {
+            "n_subjects": int(coef_df["subject"].nunique()),
+            "mean_coef": float(coef_df["coef_rpe"].mean()),
+            "t": float(t_res.statistic),
+            "p_value": float(t_res.pvalue),
+        }
+    trial_csv = output_dir / "day1_rw_frn_trial_level.csv"
+    coef_csv = output_dir / "day1_rw_frn_subject_coefficients.csv"
+    fit_csv = output_dir / "day1_rw_fitted_alphas.csv"
+    group_csv = output_dir / "day1_rw_frn_group_ttest.csv"
+    qc_csv = output_dir / "day1_rw_frn_qc.csv"
+    fig_path = figures_dir / "day1_frn_by_rpe_tertile.png"
+    trial_df.to_csv(trial_csv, index=False)
+    coef_df.to_csv(coef_csv, index=False)
+    fit_df.to_csv(fit_csv, index=False)
+    pd.DataFrame([group_stats]).to_csv(group_csv, index=False)
+    pd.DataFrame(qc).to_csv(qc_csv, index=False)
+    plot_frn_rpe_tertiles(wave_df, fig_path)
+    return {
+        "trial_df": trial_df,
+        "coef_df": coef_df,
+        "fit_df": fit_df,
+        "group_stats": group_stats,
+        "trial_csv": trial_csv,
+        "coef_csv": coef_csv,
+        "fit_csv": fit_csv,
+        "group_csv": group_csv,
+        "qc_csv": qc_csv,
+        "figure": fig_path,
+    }
+
+
+def plot_boundary_tg_individual_differences(corr_df, fig_path):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), squeeze=False)
+    for ax, xcol, title in [
+        (axes[0, 0], "slope_change", "N2 slope change vs late TG gain"),
+        (axes[0, 1], "distance_slope_day1", "Day 1 N2 slope vs late TG gain"),
+    ]:
+        d = corr_df.dropna(subset=[xcol, "late_tg_gain"])
+        ax.scatter(d[xcol], d["late_tg_gain"], color="tab:blue", alpha=0.8)
+        if len(d) >= 3:
+            fit = smf.ols(f"late_tg_gain ~ {xcol}", data=d).fit()
+            x = np.linspace(d[xcol].min(), d[xcol].max(), 100)
+            y = fit.predict(pd.DataFrame({xcol: x}))
+            ax.plot(x, y, color="black", linestyle="--", linewidth=1.5)
+        ax.axhline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.axvline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.set_xlabel(xcol)
+        ax.set_ylabel("Late TG gain")
+        ax.set_title(title)
+        ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_boundary_tg_individual_difference_analysis(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    slope_path = output_dir / "n2_boundary_subject_day_slopes.csv"
+    day1_path = output_dir / "tg_day1_window_auc_subject_pairs.csv"
+    if not slope_path.exists():
+        run_n2_boundary_distance_analysis(output_dir=output_dir, figures_dir=figures_dir)
+    if not day1_path.exists():
+        run_day1_distinctiveness_analysis(output_dir=output_dir, figures_dir=figures_dir)
+    slopes = pd.read_csv(slope_path)
+    tg = pd.read_csv(day1_path)
+    n2_rows = []
+    for subject, g in slopes.groupby("subject"):
+        g = g.sort_values("day")
+        if g.empty:
+            continue
+        day1 = g[g["day"] == 1]
+        first = day1.iloc[0] if not day1.empty else g.iloc[0]
+        last = g.iloc[-1]
+        n2_rows.append(
+            {
+                "subject": int(subject),
+                "distance_slope_day1": float(first["slope"]),
+                "distance_slope_last": float(last["slope"]),
+                "last_day": int(last["day"]),
+                "slope_change": float(last["slope"] - first["slope"]),
+            }
+        )
+    n2_df = pd.DataFrame(n2_rows)
+    late = tg[(tg["window"] == "late") & (tg["train_day"] != tg["test_day"])].copy()
+    late["pair_group"] = np.where((late["train_day"] == 1) | (late["test_day"] == 1), "day1_pair", "later_only")
+    tg_subject = late.groupby(["subject", "pair_group"], as_index=False)["mean_auc"].mean()
+    tg_wide = tg_subject.pivot(index="subject", columns="pair_group", values="mean_auc").reset_index()
+    tg_wide["late_tg_gain"] = tg_wide["later_only"] - tg_wide["day1_pair"]
+    corr_df = n2_df.merge(tg_wide, on="subject", how="inner")
+    corr_rows = []
+    for xcol in ["slope_change", "distance_slope_day1"]:
+        d = corr_df.dropna(subset=[xcol, "late_tg_gain"])
+        if len(d) >= 3:
+            r, pval = stats.pearsonr(d[xcol], d["late_tg_gain"])
+        else:
+            r, pval = np.nan, np.nan
+        corr_rows.append({"predictor": xcol, "r": r, "p_value": pval, "n_subjects": int(len(d))})
+    corr_stats = pd.DataFrame(corr_rows)
+    corr_csv = output_dir / "n2_boundary_late_tg_individual_differences.csv"
+    stats_csv = output_dir / "n2_boundary_late_tg_correlations.csv"
+    fig_path = figures_dir / "n2_boundary_late_tg_individual_differences.png"
+    corr_df.to_csv(corr_csv, index=False)
+    corr_stats.to_csv(stats_csv, index=False)
+    plot_boundary_tg_individual_differences(corr_df, fig_path)
+    return {
+        "corr_df": corr_df,
+        "corr_stats": corr_stats,
+        "corr_csv": corr_csv,
+        "stats_csv": stats_csv,
+        "figure": fig_path,
+    }
+
+
 def _flat_peak(values, eps=1e-12):
     values = np.asarray(values, dtype=float)
     finite = values[np.isfinite(values)]
@@ -1891,8 +2506,12 @@ def run_erp_peak_latency_trajectories(
 
 def run_all_new_analyses(run_band_tg=False, n_workers=None):
     results = {
+        "boundary_behaviour": run_boundary_behaviour_analysis(),
         "tg_window_structure": run_cross_day_tg_window_structure(),
         "day1_distinctiveness": run_day1_distinctiveness_analysis(),
+        "n2_boundary_distance": run_n2_boundary_distance_analysis(n_workers=n_workers),
+        "day1_rw_frn": run_day1_rw_frn_analysis(n_workers=n_workers),
+        "boundary_tg_individual_differences": run_boundary_tg_individual_difference_analysis(),
         "erp_peak_latencies": run_erp_peak_latency_trajectories(),
     }
     if run_band_tg:
