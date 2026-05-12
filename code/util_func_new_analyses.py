@@ -116,9 +116,29 @@ def _parse_matrix_path(path):
     return int(m.group(1)), int(m.group(2)), int(m.group(3))
 
 
+def _summarize_tg_window_matrix(win, train_times=None, test_times=None, summary="square_mean", top_prop=0.10):
+    win = np.asarray(win, dtype=float)
+    if summary == "square_mean":
+        vals = win[np.isfinite(win)]
+    elif summary == "diagonal_mean":
+        vals = np.diag(win)
+        vals = vals[np.isfinite(vals)]
+    elif summary == "top10_mean":
+        vals = win[np.isfinite(win)]
+        if len(vals) > 0:
+            n_top = max(1, int(np.ceil(len(vals) * top_prop)))
+            vals = np.sort(vals)[-n_top:]
+    else:
+        raise ValueError(f"Unknown TG window summary: {summary}")
+    if len(vals) == 0:
+        return np.nan, 0
+    return float(np.nanmean(vals)), int(len(vals))
+
+
 def extract_tg_window_auc(
     matrix_dir: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
     windows: dict[str, tuple[float, float]] = TG_WINDOWS,
+    summary: str = "square_mean",
 ):
     """Extract subject-level cross-day window means from saved TG matrices."""
     matrix_dir = Path(matrix_dir)
@@ -140,8 +160,7 @@ def extract_tg_window_auc(
                 n_cells = 0
             else:
                 win = auc[np.ix_(mask, mask)]
-                mean_auc = float(np.nanmean(win)) if np.isfinite(win).any() else np.nan
-                n_cells = int(np.sum(np.isfinite(win)))
+                mean_auc, n_cells = _summarize_tg_window_matrix(win, summary=summary)
             rows.append(
                 {
                     "subject": subject,
@@ -153,6 +172,7 @@ def extract_tg_window_auc(
                     "window_tmax": tmax,
                     "mean_auc": mean_auc,
                     "n_cells": n_cells,
+                    "summary": summary,
                     "matrix_file": path.name,
                 }
             )
@@ -390,6 +410,7 @@ def plot_day1_anchored_trajectories(window_df, fig_path):
 def extract_within_day_window_auc(
     within_csv: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_within_day_subject_level.csv",
     windows: dict[str, tuple[float, float]] = TG_WINDOWS,
+    summary: str = "square_mean",
 ):
     within_csv = Path(within_csv)
     if not within_csv.exists():
@@ -402,17 +423,15 @@ def extract_within_day_window_auc(
     d = d.dropna(subset=["subject", "day", "train_time_sec", "test_time_sec", "auc"]).copy()
     rows = []
     for (subject, day), g_day in d.groupby(["subject", "day"]):
-        train_t = g_day["train_time_sec"].to_numpy(dtype=float)
-        test_t = g_day["test_time_sec"].to_numpy(dtype=float)
-        auc = g_day["auc"].to_numpy(dtype=float)
+        pivot = g_day.pivot_table(index="train_time_sec", columns="test_time_sec", values="auc", aggfunc="mean")
+        train_axis = pivot.index.to_numpy(dtype=float)
+        test_axis = pivot.columns.to_numpy(dtype=float)
+        auc_mat = pivot.to_numpy(dtype=float)
         for window_name, (tmin, tmax) in windows.items():
-            mask = (
-                (train_t >= tmin)
-                & (train_t <= tmax)
-                & (test_t >= tmin)
-                & (test_t <= tmax)
-                & np.isfinite(auc)
-            )
+            train_mask = (train_axis >= tmin) & (train_axis <= tmax)
+            test_mask = (test_axis >= tmin) & (test_axis <= tmax)
+            win = auc_mat[np.ix_(train_mask, test_mask)]
+            mean_auc, n_cells = _summarize_tg_window_matrix(win, summary=summary)
             rows.append(
                 {
                     "subject": int(subject),
@@ -422,8 +441,9 @@ def extract_within_day_window_auc(
                     "window": window_name,
                     "window_tmin": tmin,
                     "window_tmax": tmax,
-                    "mean_auc": float(np.nanmean(auc[mask])) if np.any(mask) else np.nan,
-                    "n_cells": int(np.sum(mask)),
+                    "mean_auc": mean_auc,
+                    "n_cells": n_cells,
+                    "summary": summary,
                     "matrix_file": "",
                     "day1_pair_type": "within_day",
                     "pair_group": "within_day",
@@ -473,6 +493,43 @@ def plot_day_pair_window_matrices(window_df, fig_path, within_df=None):
     plt.close(fig)
 
 
+def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
+    summaries = ["square_mean", "diagonal_mean", "top10_mean"]
+    summaries = [s for s in summaries if s in set(matrix_df["summary"])]
+    days = [1, 2, 3, 4, 5]
+    fig, axes = plt.subplots(len(summaries), 2, figsize=(9.4, 4.1 * len(summaries)), squeeze=False)
+    for r, summary in enumerate(summaries):
+        d_summary = matrix_df[matrix_df["summary"] == summary]
+        vmin = float(d_summary["auc_mean"].min()) if not d_summary.empty else 0.45
+        vmax = float(d_summary["auc_mean"].max()) if not d_summary.empty else 0.55
+        for c, window_name in enumerate(["early", "late"]):
+            ax = axes[r, c]
+            mat = np.full((len(days), len(days)), np.nan)
+            g = d_summary[d_summary["window"] == window_name]
+            for _, row in g.iterrows():
+                i = days.index(int(row["train_day"]))
+                j = days.index(int(row["test_day"]))
+                mat[i, j] = float(row["auc_mean"])
+            im = ax.imshow(np.ma.masked_invalid(mat), origin="upper", cmap="viridis", vmin=vmin, vmax=vmax)
+            ax.set_xticks(range(len(days)))
+            ax.set_yticks(range(len(days)))
+            ax.set_xticklabels([f"D{day}" for day in days])
+            ax.set_yticklabels([f"D{day}" for day in days])
+            ax.set_xlabel("Test day")
+            ax.set_ylabel("Train day")
+            ax.set_title(f"{summary} | {window_name}")
+            for i in range(len(days)):
+                for j in range(len(days)):
+                    if np.isfinite(mat[i, j]):
+                        color = "black" if mat[i, j] > (vmin + 0.65 * (vmax - vmin)) else "white"
+                        ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color=color, fontsize=8)
+            fig.colorbar(im, ax=ax, shrink=0.75, label="AUC")
+    fig.suptitle("TG Window AUC by Day Pair and Summary (Diagonal = Within-Day)", y=1.0)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def run_day1_distinctiveness_analysis(
     matrix_dir: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
     output_dir: Path | str = OUTPUT_DIR,
@@ -483,8 +540,27 @@ def run_day1_distinctiveness_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    window_df = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir))
-    within_df = extract_within_day_window_auc()
+    window_df = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir, summary="square_mean"))
+    within_df = extract_within_day_window_auc(summary="square_mean")
+    summary_matrix_rows = []
+    summary_window_rows = []
+    for summary_name in ["square_mean", "diagonal_mean", "top10_mean"]:
+        d_cross = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir, summary=summary_name))
+        d_within = extract_within_day_window_auc(summary=summary_name)
+        d_all = pd.concat(
+            [d_cross.dropna(subset=["mean_auc"]), d_within.dropna(subset=["mean_auc"])],
+            ignore_index=True,
+        )
+        summary_window_rows.append(d_all)
+        summary_matrix_rows.append(
+            d_all.groupby(["summary", "window", "train_day", "test_day"], as_index=False)
+            .agg(
+                auc_mean=("mean_auc", "mean"),
+                auc_sem=("mean_auc", _sem),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values(["summary", "window", "train_day", "test_day"])
+        )
     stats_df, _, _ = fit_day1_distinctiveness(window_df)
     group_summary = (
         window_df.dropna(subset=["mean_auc"])
@@ -516,17 +592,23 @@ def run_day1_distinctiveness_analysis(
     stats_csv = output_dir / "tg_day1_distinctiveness_model_terms.csv"
     summary_csv = output_dir / "tg_day1_pair_type_summary.csv"
     matrix_csv = output_dir / "tg_day_pair_window_auc_matrix.csv"
+    summary_window_csv = output_dir / "tg_day_pair_window_auc_subject_pairs_by_summary.csv"
+    summary_matrix_csv = output_dir / "tg_day_pair_window_auc_matrix_by_summary.csv"
     fig_pair_types = figures_dir / "tg_day1_pair_type_contrast.png"
     fig_anchored = figures_dir / "tg_day1_anchored_trajectories.png"
     fig_matrices = figures_dir / "tg_day_pair_window_matrices.png"
+    fig_matrices_by_summary = figures_dir / "tg_day_pair_window_matrices_by_summary.png"
 
     window_df.to_csv(window_csv, index=False)
     stats_df.to_csv(stats_csv, index=False)
     group_summary.to_csv(summary_csv, index=False)
     pair_matrix.to_csv(matrix_csv, index=False)
+    pd.concat(summary_window_rows, ignore_index=True).to_csv(summary_window_csv, index=False)
+    pd.concat(summary_matrix_rows, ignore_index=True).to_csv(summary_matrix_csv, index=False)
     plot_day1_pair_group_bars(window_df, fig_pair_types)
     plot_day1_anchored_trajectories(window_df, fig_anchored)
     plot_day_pair_window_matrices(window_df, fig_matrices, within_df=within_df)
+    plot_day_pair_window_matrices_by_summary(pd.concat(summary_matrix_rows, ignore_index=True), fig_matrices_by_summary)
 
     return {
         "window_df": window_df,
@@ -537,10 +619,13 @@ def run_day1_distinctiveness_analysis(
         "stats_csv": stats_csv,
         "summary_csv": summary_csv,
         "matrix_csv": matrix_csv,
+        "summary_window_csv": summary_window_csv,
+        "summary_matrix_csv": summary_matrix_csv,
         "figures": {
             "pair_types": fig_pair_types,
             "anchored": fig_anchored,
             "matrices": fig_matrices,
+            "matrices_by_summary": fig_matrices_by_summary,
         },
     }
 
