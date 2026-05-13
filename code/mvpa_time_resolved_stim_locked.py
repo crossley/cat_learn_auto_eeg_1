@@ -39,8 +39,8 @@ except Exception:
 from load_project_data import load_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 

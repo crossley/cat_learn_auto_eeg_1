@@ -27,8 +27,8 @@ from analysis_utils import parallel_collect
 from boundary_distance import load_behaviour_with_boundary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "erp_frn_rpe"
-FIGURES_DIR = PROJECT_DIR / "figures" / "erp_frn_rpe"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 

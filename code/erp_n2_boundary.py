@@ -27,8 +27,8 @@ from boundary_distance import load_behaviour_with_boundary
 from load_project_data import align_behaviour_to_epochs
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "erp_n2_boundary"
-FIGURES_DIR = PROJECT_DIR / "figures" / "erp_n2_boundary"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 
@@ -195,11 +195,11 @@ def run_n2_boundary_distance_analysis(
             }
         )
     slope_df = pd.DataFrame(slope_rows)
-    trial_csv = output_dir / "n2_boundary_trial_level.csv"
-    model_csv = output_dir / "n2_boundary_model_terms.csv"
-    slope_csv = output_dir / "n2_boundary_subject_day_slopes.csv"
-    qc_csv = output_dir / "n2_boundary_qc.csv"
-    fig_path = figures_dir / "n2_boundary_slope_by_day.png"
+    trial_csv = output_dir / "erp_n2_boundary_trial_level.csv"
+    model_csv = output_dir / "erp_n2_boundary_model_terms.csv"
+    slope_csv = output_dir / "erp_n2_boundary_subject_day_slopes.csv"
+    qc_csv = output_dir / "erp_n2_boundary_qc.csv"
+    fig_path = figures_dir / "erp_n2_boundary_slope_by_day.png"
     trial_df.to_csv(trial_csv, index=False)
     pd.DataFrame(terms).to_csv(model_csv, index=False)
     slope_df.to_csv(slope_csv, index=False)
@@ -248,9 +248,9 @@ def run_boundary_tg_individual_difference_analysis(
 ):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
-    slope_path = output_dir / "n2_boundary_subject_day_slopes.csv"
+    slope_path = output_dir / "erp_n2_boundary_subject_day_slopes.csv"
     if tg_matrix_dir is None:
-        tg_matrix_dir = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices"
+        tg_matrix_dir = output_dir
     day1_path = output_dir / "tg_day1_window_auc_subject_pairs.csv"
     if not slope_path.exists():
         run_n2_boundary_distance_analysis(output_dir=output_dir, figures_dir=figures_dir)
@@ -296,9 +296,9 @@ def run_boundary_tg_individual_difference_analysis(
             r, pval = np.nan, np.nan
         corr_rows.append({"predictor": xcol, "r": r, "p_value": pval, "n_subjects": int(len(d))})
     corr_stats = pd.DataFrame(corr_rows)
-    corr_csv = output_dir / "n2_boundary_late_tg_individual_differences.csv"
-    stats_csv = output_dir / "n2_boundary_late_tg_correlations.csv"
-    fig_path = figures_dir / "n2_boundary_late_tg_individual_differences.png"
+    corr_csv = output_dir / "erp_n2_boundary_late_tg_individual_differences.csv"
+    stats_csv = output_dir / "erp_n2_boundary_late_tg_correlations.csv"
+    fig_path = figures_dir / "erp_n2_boundary_late_tg_individual_differences.png"
     corr_df.to_csv(corr_csv, index=False)
     corr_stats.to_csv(stats_csv, index=False)
     plot_boundary_tg_individual_differences(corr_df, fig_path)

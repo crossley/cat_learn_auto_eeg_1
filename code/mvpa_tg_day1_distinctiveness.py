@@ -21,14 +21,15 @@ import statsmodels.formula.api as smf
 
 from analysis_utils import model_term_summary
 from mvpa_tg_window_structure import (
+    TG_CROSS_DAY_MATRIX_GLOB,
     TG_WINDOWS,
     extract_tg_window_auc,
     summarize_tg_window_matrix,
 )
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_day1_distinctiveness"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_day1_distinctiveness"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 
 def _sem(x):
@@ -171,7 +172,7 @@ def plot_day1_anchored_trajectories(window_df, fig_path):
 
 
 def extract_within_day_window_auc(
-    within_csv: Path | str = PROJECT_DIR / "output" / "mvpa_tg_within_day" / "tg_within_day_subject_level.csv",
+    within_csv: Path | str = PROJECT_DIR / "output" / "tg_within_day_subject_level.csv",
     windows: dict[str, tuple[float, float]] = TG_WINDOWS,
     summary: str = "square_mean",
 ):
@@ -298,7 +299,8 @@ def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
 
 
 def run_day1_distinctiveness_analysis(
-    matrix_dir: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
+    matrix_dir: Path | str = OUTPUT_DIR,
+    matrix_glob: str = TG_CROSS_DAY_MATRIX_GLOB,
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
 ):
@@ -307,12 +309,24 @@ def run_day1_distinctiveness_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    window_df = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir, summary="square_mean"))
+    window_df = add_day1_pair_labels(
+        extract_tg_window_auc(
+            matrix_dir=matrix_dir,
+            matrix_glob=matrix_glob,
+            summary="square_mean",
+        )
+    )
     within_df = extract_within_day_window_auc()
     summary_matrix_rows = []
     summary_window_rows = []
     for summary_name in ["square_mean", "diagonal_mean", "top10_mean"]:
-        d_cross = add_day1_pair_labels(extract_tg_window_auc(matrix_dir=matrix_dir, summary=summary_name))
+        d_cross = add_day1_pair_labels(
+            extract_tg_window_auc(
+                matrix_dir=matrix_dir,
+                matrix_glob=matrix_glob,
+                summary=summary_name,
+            )
+        )
         d_within = extract_within_day_window_auc(summary=summary_name)
         d_all = pd.concat(
             [d_cross.dropna(subset=["mean_auc"]), d_within.dropna(subset=["mean_auc"])],

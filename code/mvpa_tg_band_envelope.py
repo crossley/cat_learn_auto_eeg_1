@@ -27,8 +27,8 @@ from mvpa_tg_window_structure import extract_tg_window_auc, fit_tg_window_gradie
 from mvpa_tg_within_day import pick_eeg_interpolate_bads, session_cache_key
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_band_envelope"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_band_envelope"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 BANDS: dict[str, tuple[float, float]] = {
@@ -38,6 +38,10 @@ BANDS: dict[str, tuple[float, float]] = {
     "beta": (13.0, 30.0),
     "gamma": (30.0, 45.0),
 }
+
+
+def band_tg_matrix_glob(band_name: str) -> str:
+    return f"band_tg_{band_name}_matrix_sub_*_trainD*_testD*.npz"
 
 
 def _sem(x):
@@ -97,7 +101,10 @@ def prepare_band_envelope_cache(
     session_file = session_item["epo_file"]
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{band_name}_cache_interp_bads_{session_cache_key(session_item)}.npz"
+    cache_path = (
+        cache_dir
+        / f"band_tg_{band_name}_envelope_cache_interp_bads_{session_cache_key(session_item)}.npz"
+    )
 
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -226,11 +233,12 @@ def summarize_band_tg_outputs(
     output_root = Path(output_root)
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for band_name in bands:
-        matrix_dir = output_root / f"mvpa_tg_band_{band_name}" / "tg_cross_day_subject_matrices"
-        for path in sorted(matrix_dir.glob("sub_*_trainD*_testD*.npz")):
+        matrix_dir = output_root
+        for path in sorted(matrix_dir.glob(band_tg_matrix_glob(band_name))):
             from mvpa_tg_window_structure import parse_matrix_path
             parsed = parse_matrix_path(path)
             if parsed is None:
@@ -304,15 +312,19 @@ def run_band_tg_window_gradients(
     output_root = Path(output_root)
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     slope_rows = []
     interaction_rows = []
     for band_name in bands:
-        matrix_dir = output_root / f"mvpa_tg_band_{band_name}" / "tg_cross_day_subject_matrices"
-        if not matrix_dir.exists():
+        matrix_dir = output_root
+        if not list(matrix_dir.glob(band_tg_matrix_glob(band_name))):
             continue
-        d = extract_tg_window_auc(matrix_dir=matrix_dir)
+        d = extract_tg_window_auc(
+            matrix_dir=matrix_dir,
+            matrix_glob=band_tg_matrix_glob(band_name),
+        )
         if d.empty:
             continue
         d["band"] = band_name
@@ -382,6 +394,7 @@ def run_band_envelope_cross_day_tg(
     output_root = Path(output_root)
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
     mne.set_log_level("ERROR")
@@ -393,9 +406,7 @@ def run_band_envelope_cross_day_tg(
     progress = {}
     for band_name, (fmin, fmax) in bands.items():
         t0 = time.time()
-        band_dir = output_root / f"mvpa_tg_band_{band_name}"
-        cache_dir = band_dir / "cache_band_envelope_arrays"
-        band_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = output_root
         print(
             f"[Band TG] Preparing {band_name} envelope caches for {len(sessions)} sessions "
             f"(n_workers={n_workers})...",
@@ -450,11 +461,13 @@ def run_band_envelope_cross_day_tg(
             flush=True,
         )
 
-        matrix_dir = band_dir / "tg_cross_day_subject_matrices"
+        matrix_dir = output_root
         matrix_dir.mkdir(parents=True, exist_ok=True)
-        cross_subject_csv = band_dir / "tg_cross_day_subject_level.csv"
-        cross_day_mean_csv = band_dir / "tg_cross_day_day_mean.csv"
-        cross_matrix_day_mean_csv = band_dir / "tg_cross_day_timegen_day_mean.csv"
+        cross_subject_csv = output_root / f"band_tg_{band_name}_cross_day_subject_level.csv"
+        cross_day_mean_csv = output_root / f"band_tg_{band_name}_cross_day_day_mean.csv"
+        cross_matrix_day_mean_csv = (
+            output_root / f"band_tg_{band_name}_cross_day_timegen_day_mean.csv"
+        )
 
         if len(pair_items) == 0:
             cross_rows = [{"ok": False, "qc": r} for r in qc_rows]
@@ -476,7 +489,8 @@ def run_band_envelope_cross_day_tg(
             cross_row_dicts.append(row)
             np.savez_compressed(
                 matrix_dir / (
-                    f"sub_{int(row['subject']):03d}_trainD{int(row['train_day'])}"
+                    f"band_tg_{band_name}_matrix_sub_{int(row['subject']):03d}"
+                    f"_trainD{int(row['train_day'])}"
                     f"_testD{int(row['test_day'])}.npz"
                 ),
                 auc=mat,
@@ -504,17 +518,21 @@ def run_band_envelope_cross_day_tg(
             cross_matrix_day_mean_csv=cross_matrix_day_mean_csv,
         )
         if fail_qc:
-            pd.DataFrame(fail_qc).to_csv(band_dir / "tg_qc_log.csv", index=False)
+            pd.DataFrame(fail_qc).to_csv(
+                output_root / f"band_tg_{band_name}_qc_log.csv", index=False
+            )
 
         band_results[band_name] = out
         progress[band_name] = {
             "prepared_sessions": len(prepared),
             "cross_day_pairs": len(pair_items),
             "elapsed_sec": time.time() - t0,
-            "output_dir": str(band_dir),
+            "output_dir": str(output_root),
             "n_workers": n_workers,
         }
-        (band_dir / "band_tg_progress.json").write_text(json.dumps(progress[band_name], indent=2))
+        (output_root / f"band_tg_{band_name}_progress.json").write_text(
+            json.dumps(progress[band_name], indent=2)
+        )
 
     summary = summarize_band_tg_outputs(
         output_root=output_root, bands=bands, output_dir=output_dir, figures_dir=figures_dir

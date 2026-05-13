@@ -37,8 +37,8 @@ except Exception:
 from load_project_data import load_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_within_day"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_within_day"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 
@@ -93,13 +93,17 @@ def prepare_stim_data(epochs):
     return X, y, t, ch_names
 
 
-def prepare_session_cache(session_item: dict, cache_dir: Path):
+def prepare_session_cache(
+    session_item: dict,
+    cache_dir: Path,
+    cache_prefix: str = "stim_cache_interp_bads",
+):
     session_file = session_item["epo_file"]
     subject = int(session_item["subject"])
     day = int(session_item["day"])
     epochs = session_item["epochs"]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"stim_cache_interp_bads_{session_cache_key(session_item)}.npz"
+    cache_path = cache_dir / f"{cache_prefix}_{session_cache_key(session_item)}.npz"
 
     if cache_path.exists():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -249,7 +253,7 @@ def run_mvpa_tg_within_day(
 
     within_subject_csv = output_dir / "tg_within_day_subject_level.csv"
     within_day_mean_csv = output_dir / "tg_within_day_day_mean.csv"
-    qc_csv = output_dir / "tg_qc_log.csv"
+    qc_csv = output_dir / "tg_within_day_qc_log.csv"
 
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
     qc_rows = []
@@ -264,8 +268,14 @@ def run_mvpa_tg_within_day(
         return True
 
     session_items = load_sessions(load_epochs=True)
-    cache_dir = output_dir / "cache_stim_arrays"
-    cache_results = [prepare_session_cache(item, cache_dir=cache_dir) for item in session_items]
+    cache_results = [
+        prepare_session_cache(
+            item,
+            cache_dir=output_dir,
+            cache_prefix="tg_within_day_stim_cache_interp_bads",
+        )
+        for item in session_items
+    ]
     prepared_items = []
     for result in cache_results:
         if not result["ok"]:

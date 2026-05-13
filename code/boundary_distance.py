@@ -24,8 +24,8 @@ from sklearn.linear_model import LogisticRegression
 from analysis_utils import model_term_summary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "boundary_distance"
-FIGURES_DIR = PROJECT_DIR / "figures" / "boundary_distance"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 
 def _sem(x):
@@ -188,11 +188,11 @@ def run_boundary_behaviour_analysis(
             item = model_term_summary(model, term)
             item.update({"metric": metric, "status": status})
             model_rows.append(item)
-    boundary_csv = output_dir / "boundary_model_params.csv"
-    trial_csv = output_dir / "behaviour_with_boundary_distance.csv"
-    agg_csv = output_dir / "boundary_behaviour_tertile_subject_day.csv"
-    model_csv = output_dir / "boundary_behaviour_model_terms.csv"
-    fig_path = figures_dir / "boundary_behaviour_by_tertile.png"
+    boundary_csv = output_dir / "boundary_distance_model_params.csv"
+    trial_csv = output_dir / "boundary_distance_behaviour_trial_level.csv"
+    agg_csv = output_dir / "boundary_distance_tertile_subject_day.csv"
+    model_csv = output_dir / "boundary_distance_model_terms.csv"
+    fig_path = figures_dir / "boundary_distance_behaviour_by_tertile.png"
     pd.DataFrame([boundary]).to_csv(boundary_csv, index=False)
     beh.to_csv(trial_csv, index=False)
     agg.to_csv(agg_csv, index=False)

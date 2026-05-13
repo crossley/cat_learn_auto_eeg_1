@@ -22,6 +22,8 @@ from joblib import Parallel, delayed
 from load_project_data import align_behaviour_to_epochs, load_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 
@@ -99,14 +101,14 @@ def run_erp_grand_average(
     n_workers: int | None = None,
 ):
     """Build grand-average ERPs and save figures."""
-    output_dir = PROJECT_DIR / "output" / "erp"
-    figures_dir = PROJECT_DIR / "figures" / "erp"
+    output_dir = OUTPUT_DIR
+    figures_dir = FIGURES_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    d_grand_path = output_dir / "erp_grand_averages_by_day_lock_condition.csv"
-    d_subject_path = output_dir / "erp_subject_day_all.csv"
-    progress_json = output_dir / "erp_progress.json"
+    d_grand_path = output_dir / "erp_grand_average_by_day_lock_condition.csv"
+    d_subject_path = output_dir / "erp_grand_average_subject_day_all.csv"
+    progress_json = output_dir / "erp_grand_average_progress.json"
     t0 = time.time()
 
     def write_progress(stage: str, done: int = 0, total: int = 0):
@@ -360,7 +362,7 @@ def run_erp_grand_average(
         d_subject.to_csv(d_subject_path, index=False)
         write_progress("completed", len(worker_items), len(worker_items))
 
-    old_subject_path = output_dir / "erp_subject_day_stim_all.csv"
+    old_subject_path = output_dir / "erp_grand_average_subject_day_stim_all.csv"
     if old_subject_path.exists() and not d_subject_path.exists():
         pd.read_csv(old_subject_path).to_csv(d_subject_path, index=False)
     if not d_grand_path.exists() or not d_subject_path.exists():
@@ -376,7 +378,7 @@ def run_erp_grand_average(
     plot_day_grid(
         long_to_evoked_map(d_grand_plot, "stim", "all"),
         title="Grand Average ERP: stim_all",
-        fig_name="erp_stim_all.png",
+        fig_name="erp_grand_average_stim_all.png",
     )
     plot_day_condition_grid(
         {
@@ -388,12 +390,12 @@ def run_erp_grand_average(
             for day, ev in long_to_evoked_map(d_grand_plot, "stim", "incorrect").items()
         },
         title="Grand Average ERP: stim locked by feedback correctness",
-        fig_name="erp_stim_correct_vs_incorrect.png",
+        fig_name="erp_grand_average_stim_correct_vs_incorrect.png",
     )
     plot_day_grid(
         long_to_evoked_map(d_grand_plot, "response", "all"),
         title="Grand Average ERP: response locked (time before response)",
-        fig_name="erp_response_all.png",
+        fig_name="erp_grand_average_response_all.png",
     )
     plot_day_condition_grid(
         {
@@ -405,14 +407,14 @@ def run_erp_grand_average(
             for day, ev in long_to_evoked_map(d_grand_plot, "response", "incorrect").items()
         },
         title="Grand Average ERP: response locked by feedback correctness",
-        fig_name="erp_response_correct_vs_incorrect.png",
+        fig_name="erp_grand_average_response_correct_vs_incorrect.png",
     )
 
     for s in sorted(d_subject_plot["subject"].unique().astype(int)):
         d_sub = d_subject_plot[d_subject_plot["subject"] == s].copy()
         for lock_type, fig_prefix, title_lock in [
-            ("stim", "erp_stim_all_sub", "stim_all"),
-            ("response", "erp_response_all_sub", "response_all"),
+            ("stim", "erp_grand_average_stim_sub", "stim_all"),
+            ("response", "erp_grand_average_response_sub", "response_all"),
         ]:
             evoked_sub = long_to_evoked_map(d_sub, lock_type, "all")
             days_sorted = sorted(evoked_sub.keys())

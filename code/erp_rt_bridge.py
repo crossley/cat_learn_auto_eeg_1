@@ -12,8 +12,8 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "erp_rt_bridge"
-FIGURES_DIR = PROJECT_DIR / "figures" / "erp_rt_bridge"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 
 def run_erp_rt_bridge_analysis(

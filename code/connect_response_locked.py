@@ -26,8 +26,8 @@ from analysis_utils import parallel_collect
 from load_project_data import align_behaviour_to_epochs, load_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "connect_response_locked"
-FIGURES_DIR = PROJECT_DIR / "figures" / "connect_response_locked"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 ROI_VISUAL = ["O1", "Oz", "O2"]
@@ -161,7 +161,7 @@ def run_response_locked_connectivity_analysis(
     mne.set_log_level("ERROR")
     sessions = load_sessions()
     t0 = time.time()
-    progress_json = output_dir / "progress.json"
+    progress_json = output_dir / "connect_response_locked_progress.json"
 
     tasks = [
         {
@@ -204,7 +204,9 @@ def run_response_locked_connectivity_analysis(
         )
     )
     if skipped:
-        pd.DataFrame(skipped).to_csv(output_dir / "qc_skipped.csv", index=False)
+        pd.DataFrame(skipped).to_csv(
+            output_dir / "connect_response_locked_qc_skipped.csv", index=False
+        )
 
     d = pd.DataFrame(all_rows)
     output_csv = output_dir / "connectivity_response_locked_subject_day.csv"

@@ -24,8 +24,9 @@ import statsmodels.formula.api as smf
 from analysis_utils import model_term_summary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_window_structure"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_window_structure"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
+TG_CROSS_DAY_MATRIX_GLOB = "tg_cross_day_matrix_sub_*_trainD*_testD*.npz"
 
 TG_WINDOWS: dict[str, tuple[float, float]] = {
     "early": (0.060, 0.180),
@@ -49,7 +50,7 @@ def _fit_ols(formula, df, cluster_subject=True):
 
 
 def parse_matrix_path(path: Path):
-    m = re.match(r"sub_(\d+)_trainD(\d+)_testD(\d+)\.npz$", path.name)
+    m = re.match(r"(?:.*_)?sub_(\d+)_trainD(\d+)_testD(\d+)\.npz$", path.name)
     if m is None:
         return None
     return int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -81,13 +82,14 @@ def summarize_tg_window_matrix(
 
 
 def extract_tg_window_auc(
-    matrix_dir: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
+    matrix_dir: Path | str = OUTPUT_DIR,
+    matrix_glob: str = TG_CROSS_DAY_MATRIX_GLOB,
     windows: dict[str, tuple[float, float]] = TG_WINDOWS,
     summary: str = "square_mean",
 ):
     matrix_dir = Path(matrix_dir)
     rows = []
-    for path in sorted(matrix_dir.glob("sub_*_trainD*_testD*.npz")):
+    for path in sorted(matrix_dir.glob(matrix_glob)):
         parsed = parse_matrix_path(path)
         if parsed is None:
             continue
@@ -210,7 +212,8 @@ def plot_tg_window_gradients(window_df, slope_df, fig_path):
 
 
 def run_cross_day_tg_window_structure(
-    matrix_dir: Path | str = PROJECT_DIR / "output" / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
+    matrix_dir: Path | str = OUTPUT_DIR,
+    matrix_glob: str = TG_CROSS_DAY_MATRIX_GLOB,
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
 ):
@@ -219,7 +222,7 @@ def run_cross_day_tg_window_structure(
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    window_df = extract_tg_window_auc(matrix_dir=matrix_dir)
+    window_df = extract_tg_window_auc(matrix_dir=matrix_dir, matrix_glob=matrix_glob)
     slope_df, interaction_summary, _, _ = fit_tg_window_gradients(window_df)
     window_csv = output_dir / "tg_cross_day_window_auc_subject_pairs.csv"
     slope_csv = output_dir / "tg_cross_day_window_gradient_slopes.csv"

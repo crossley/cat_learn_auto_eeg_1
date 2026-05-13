@@ -25,8 +25,8 @@ from analysis_utils import parallel_collect
 from load_project_data import align_behaviour_to_epochs, load_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "connect_sensorwide"
-FIGURES_DIR = PROJECT_DIR / "figures" / "connect_sensorwide"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 CHANNEL_SUBSET = [
@@ -223,7 +223,7 @@ def plot_edge_time_carpet(day_data, pair_idx, lock_name, band_name, figures_dir)
     )
     fig.suptitle(f"Edge-time carpet | {lock_name} | {band_name}", y=1.01)
     fig.tight_layout()
-    fig_path = figures_dir / f"carpet_{lock_name}_{band_name}.png"
+    fig_path = figures_dir / f"sensorwide_carpet_{lock_name}_{band_name}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -274,7 +274,7 @@ def plot_graph_snapshots(day_data, xy, pair_idx, lock_name, band_name, figures_d
             ax.set_title(f"D{day} t={t_show:.2f}")
     fig.suptitle(f"Top-edge graph snapshots | {lock_name} | {band_name}", y=1.01)
     fig.tight_layout()
-    fig_path = figures_dir / f"graphs_{lock_name}_{band_name}.png"
+    fig_path = figures_dir / f"sensorwide_graphs_{lock_name}_{band_name}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -306,7 +306,7 @@ def plot_node_strength_topomaps(day_data, info_subset, lock_name, band_name, fig
             ax.set_title(f"D{day} t={t_show:.2f}")
     fig.suptitle(f"Node-strength topomaps | {lock_name} | {band_name}", y=1.01)
     fig.tight_layout()
-    fig_path = figures_dir / f"topomap_{lock_name}_{band_name}.png"
+    fig_path = figures_dir / f"sensorwide_topomap_{lock_name}_{band_name}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -335,7 +335,7 @@ def run_sensorwide_connectivity_analysis(
     mne.set_log_level("ERROR")
     sessions = load_sessions()
     t0 = time.time()
-    progress_json = output_dir / "progress.json"
+    progress_json = output_dir / "connect_sensorwide_progress.json"
     edges_path = output_dir / "sensorwide_edge_timeseries.csv"
     node_path = output_dir / "sensorwide_node_strength_timeseries.csv"
     channels_path = output_dir / "sensorwide_channel_layout.csv"
@@ -397,7 +397,9 @@ def run_sensorwide_connectivity_analysis(
         )
     )
     if skipped:
-        pd.DataFrame(skipped).to_csv(output_dir / "qc_skipped.csv", index=False)
+        pd.DataFrame(skipped).to_csv(
+            output_dir / "connect_sensorwide_qc_skipped.csv", index=False
+        )
 
     if not agg or info_subset is None:
         print("[connect_sensorwide] No data computed.", flush=True)

@@ -12,8 +12,8 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "erp_p3_boundary"
-FIGURES_DIR = PROJECT_DIR / "figures" / "erp_p3_boundary"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 P3_CHANNELS = ["Pz", "P3", "P4"]
 P3_TMIN = 0.300

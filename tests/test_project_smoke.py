@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import sys
 
 import numpy as np
@@ -64,3 +65,37 @@ def test_align_behaviour_to_epochs_uses_metadata_trial_index():
 
     assert len(selected_epochs) == 2
     assert aligned["trial"].tolist() == [0, 2]
+
+
+def test_analysis_output_roots_are_flat():
+    nested_constant_re = re.compile(
+        r"^\s*(OUTPUT_DIR|FIGURES_DIR)\s*=\s*PROJECT_DIR\s*/\s*"
+        r'"(output|figures)"\s*/'
+    )
+    offenders = []
+    for path in sorted((PROJECT_DIR / "code").glob("*.py")):
+        for line_no, line in enumerate(path.read_text().splitlines(), start=1):
+            if nested_constant_re.search(line):
+                offenders.append(f"{path.relative_to(PROJECT_DIR)}:{line_no}:{line.strip()}")
+
+    assert offenders == []
+
+
+def test_generated_artifacts_do_not_use_known_output_subdirectories():
+    banned_fragments = [
+        '/ "cache_stim_arrays"',
+        '/ "cache_band_envelope_arrays"',
+        '/ "cache_band_signed_arrays"',
+        '/ "tg_cross_day_subject_matrices"',
+        '/ "progress.json"',
+        '/ "qc_skipped.csv"',
+        '/ "tg_qc_log.csv"',
+    ]
+    offenders = []
+    for path in sorted((PROJECT_DIR / "code").glob("*.py")):
+        text = path.read_text()
+        for fragment in banned_fragments:
+            if fragment in text:
+                offenders.append(f"{path.relative_to(PROJECT_DIR)} contains {fragment}")
+
+    assert offenders == []

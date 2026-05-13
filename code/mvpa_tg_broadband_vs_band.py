@@ -18,11 +18,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from mvpa_tg_window_structure import TG_WINDOWS, parse_matrix_path
+from mvpa_tg_window_structure import TG_CROSS_DAY_MATRIX_GLOB, TG_WINDOWS, parse_matrix_path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_broadband_vs_band"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_broadband_vs_band"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 
 def _sem(x):
@@ -33,10 +33,14 @@ def _sem(x):
     return float(np.std(x, ddof=1) / np.sqrt(len(x)))
 
 
-def load_diagonal_timecourses_from_matrices(matrix_dir, signal_name):
+def load_diagonal_timecourses_from_matrices(
+    matrix_dir,
+    signal_name,
+    matrix_glob: str = "sub_*_trainD*_testD*.npz",
+):
     rows = []
     matrix_dir = Path(matrix_dir)
-    for path in sorted(matrix_dir.glob("sub_*_trainD*_testD*.npz")):
+    for path in sorted(matrix_dir.glob(matrix_glob)):
         parsed = parse_matrix_path(path)
         if parsed is None:
             continue
@@ -245,20 +249,23 @@ def run_broadband_vs_band_diagnostic(
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     rows = load_diagonal_timecourses_from_matrices(
-        output_root / "mvpa_tg_cross_day" / "tg_cross_day_subject_matrices",
+        output_root,
         "broadband",
+        matrix_glob=TG_CROSS_DAY_MATRIX_GLOB,
     )
     for band_name in ["theta", "alpha", "beta", "gamma"]:
         rows.extend(
             load_diagonal_timecourses_from_matrices(
-                output_root / f"mvpa_tg_band_{band_name}" / "tg_cross_day_subject_matrices",
+                output_root,
                 f"{band_name}_envelope",
+                matrix_glob=f"band_tg_{band_name}_matrix_sub_*_trainD*_testD*.npz",
             )
         )
         rows.extend(
             load_diagonal_timecourses_from_matrices(
-                output_root / f"mvpa_tg_band_signed_{band_name}" / "tg_cross_day_subject_matrices",
+                output_root,
                 f"{band_name}_signed",
+                matrix_glob=f"band_signed_tg_{band_name}_matrix_sub_*_trainD*_testD*.npz",
             )
         )
     diag_df = pd.DataFrame(rows)

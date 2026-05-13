@@ -38,8 +38,8 @@ from mvpa_tg_within_day import (
 )
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "mvpa_tg_cross_day"
-FIGURES_DIR = PROJECT_DIR / "figures" / "mvpa_tg_cross_day"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 
 
@@ -212,9 +212,9 @@ def run_mvpa_tg_cross_day(
 
     cross_subject_csv = output_dir / "tg_cross_day_subject_level.csv"
     cross_day_mean_csv = output_dir / "tg_cross_day_day_mean.csv"
-    cross_matrix_dir = output_dir / "tg_cross_day_subject_matrices"
+    cross_matrix_dir = output_dir
     cross_matrix_day_mean_csv = output_dir / "tg_cross_day_timegen_day_mean.csv"
-    qc_csv = output_dir / "tg_qc_log.csv"
+    qc_csv = output_dir / "tg_cross_day_qc_log.csv"
 
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
     qc_rows = []
@@ -228,8 +228,14 @@ def run_mvpa_tg_cross_day(
         return True
 
     session_items = load_sessions(load_epochs=True)
-    cache_dir = output_dir / "cache_stim_arrays"
-    cache_results = [prepare_session_cache(item, cache_dir=cache_dir) for item in session_items]
+    cache_results = [
+        prepare_session_cache(
+            item,
+            cache_dir=output_dir,
+            cache_prefix="tg_cross_day_stim_cache_interp_bads",
+        )
+        for item in session_items
+    ]
     prepared_map: dict[tuple, dict] = {}
     for result in cache_results:
         if not result["ok"]:
@@ -286,7 +292,7 @@ def run_mvpa_tg_cross_day(
             cross_rows.append(row)
             wrote_cross = append_csv(pd.DataFrame([row]), cross_subject_csv, wrote_cross)
             matrix_path = cross_matrix_dir / (
-                f"sub_{int(row['subject']):03d}_trainD{int(row['train_day'])}"
+                f"tg_cross_day_matrix_sub_{int(row['subject']):03d}_trainD{int(row['train_day'])}"
                 f"_testD{int(row['test_day'])}.npz"
             )
             np.savez_compressed(matrix_path, auc=mat, time_sec=t_vec)

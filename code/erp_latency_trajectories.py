@@ -22,8 +22,8 @@ import statsmodels.formula.api as smf
 from analysis_utils import model_term_summary
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_DIR / "output" / "erp_latency"
-FIGURES_DIR = PROJECT_DIR / "figures" / "erp_latency"
+OUTPUT_DIR = PROJECT_DIR / "output"
+FIGURES_DIR = PROJECT_DIR / "figures"
 
 
 def _sem(x):
@@ -118,9 +118,9 @@ def erp_component_for_group(group, component, level):
 
 
 def compute_erp_peak_latencies(
-    erp_subject_csv: Path | str = PROJECT_DIR / "output" / "erp" / "erp_subject_day_all.csv",
+    erp_subject_csv: Path | str = PROJECT_DIR / "output" / "erp_grand_average_subject_day_all.csv",
     erp_grand_csv: Path | str = (
-        PROJECT_DIR / "output" / "erp" / "erp_grand_averages_by_day_lock_condition.csv"
+        PROJECT_DIR / "output" / "erp_grand_average_by_day_lock_condition.csv"
     ),
 ):
     rows = []
@@ -267,10 +267,10 @@ def run_erp_peak_latency_trajectories(
     figures_dir.mkdir(parents=True, exist_ok=True)
     latency_df = compute_erp_peak_latencies()
     slope_df, comparison_df, _ = fit_erp_latency_slopes(latency_df)
-    latency_csv = output_dir / "erp_peak_latencies.csv"
-    slope_csv = output_dir / "erp_latency_day_slopes.csv"
-    comparison_csv = output_dir / "erp_latency_slope_comparisons.csv"
-    fig_path = figures_dir / "erp_peak_latency_trajectories.png"
+    latency_csv = output_dir / "erp_latency_trajectories_peak_latencies.csv"
+    slope_csv = output_dir / "erp_latency_trajectories_day_slopes.csv"
+    comparison_csv = output_dir / "erp_latency_trajectories_slope_comparisons.csv"
+    fig_path = figures_dir / "erp_latency_trajectories_peak_latency.png"
     latency_df.to_csv(latency_csv, index=False)
     slope_df.to_csv(slope_csv, index=False)
     comparison_df.to_csv(comparison_csv, index=False)

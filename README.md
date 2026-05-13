@@ -22,8 +22,8 @@ EEG_epo/P<subject>_D<daycode>-epo.fif
 Generated outputs:
 
 ```text
-output/<analysis>/
-figures/<analysis>/
+output/
+figures/
 ```
 
 `Behavioural/`, `EEG/`, `EEG_epo/`, and `output/` are not tracked in git.
