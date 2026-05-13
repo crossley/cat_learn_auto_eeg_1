@@ -1,0 +1,21 @@
+name: cat-learn-auto-eeg
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - statsmodels
+  - joblib
+  - pytest
+  - mne
+  - threadpoolctl
+  - pip
+  - pip:
+      - autoreject
+      - pyprep
+      - psychopy

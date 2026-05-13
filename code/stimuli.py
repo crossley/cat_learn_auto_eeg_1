@@ -1,4 +1,5 @@
-from imports import *
+import numpy as np
+import pandas as pd
 
 
 def make_stim_cats(n_stimuli_per_category=200):
@@ -115,6 +116,8 @@ def create_grating_patch(size, freq, theta):
 
 
 def grating_to_surface(grating_patch):
+    import pygame
+
     normalized_patch = (grating_patch + 1) / 2 * 255
     uint8_patch = normalized_patch.astype(np.uint8)
     surface = pygame.Surface((grating_patch.shape[0], grating_patch.shape[1]),
@@ -176,4 +179,3 @@ def plot_stim_space_examples(ds):
                     pygame.quit()
                 if event.key == pygame.K_SPACE:
                     running = False
-

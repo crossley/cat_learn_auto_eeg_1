@@ -4,18 +4,21 @@ Single-phase categorization task (PsychoPy-only) with veridical feedback and EEG
 Maintains the original state-machine style and adds 'day' (repeated-measures).
 """
 
-import os, sys
+from pathlib import Path
+import sys
 import numpy as np
 import pandas as pd
 
-from util_func import *
+from stimuli import make_stim_cats
 
 from psychopy import visual, core, event, logging
 from psychopy.hardware import keyboard
 
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+
 # --------------------------- EEG (Parallel Port) helper ---------------------------
 # Flip-locked rising edges; non-blocking clear to zero a few ms later.
-EEG_ENABLED = True
+EEG_ENABLED = False
 EEG_PORT_ADDRESS = '0x3FD8'   # <-- change to your lab's address (e.g., '0x0378' or int)
 EEG_DEFAULT_PULSE_MS = 10
 
@@ -90,15 +93,15 @@ class EEGPort:
 if __name__ == "__main__":
 
     # --------------------------- Subject / Day handling ---------------------------
-    subject = 1   # set via CLI/dialog as needed
+    subject = 9999999   # set via CLI/dialog as needed
     day = 1       # repeated-measures day/session (1,2,3,...)
 
-    dir_data = "../data"
-    os.makedirs(dir_data, exist_ok=True)
+    dir_data = PROJECT_DIR / "Behavioural"
+    dir_data.mkdir(parents=True, exist_ok=True)
     f_name = f"sub_{subject:03d}_day_{day:02d}_data.csv"
-    full_path = os.path.join(dir_data, f_name)
+    full_path = dir_data / f_name
 
-    if os.path.exists(full_path):
+    if full_path.exists():
         print(f"File {f_name} already exists. Aborting.")
         sys.exit()
 

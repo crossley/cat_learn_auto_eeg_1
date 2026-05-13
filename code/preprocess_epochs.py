@@ -3,6 +3,10 @@
 from pathlib import Path
 import re
 import os
+
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
+
 import mne
 import numpy as np
 import pandas as pd
@@ -11,6 +15,9 @@ from pyprep.prep_pipeline import PrepPipeline
 from autoreject import AutoReject
 
 # os.environ["NUMBA_DISABLE_JIT"] = "1"
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+N_JOBS = 8
 
 
 def process_single_subject(raw_path, epo_dir):
@@ -128,17 +135,21 @@ def process_single_subject(raw_path, epo_dir):
     return f"Finished sub {subject}, day {day_token}"
 
 
-def util_epo_make_from_bdf():
+def preprocess_epochs():
     """Create epoched FIF files from raw BDF files."""
-    raw_dir = Path("../EEG")
-    epo_dir = Path("../EEG_epo")
+    raw_dir = PROJECT_DIR / "EEG"
+    epo_dir = PROJECT_DIR / "EEG_epo"
     epo_dir.mkdir(parents=True, exist_ok=True)
 
     raw_files = sorted(raw_dir.glob("*.bdf"))
-    results = Parallel(n_jobs=10)(
+    results = Parallel(n_jobs=N_JOBS)(
         delayed(process_single_subject)(raw_path, epo_dir) for raw_path in raw_files
     )
 
     for result in results:
         if result is not None:
             print(result)
+
+
+if __name__ == "__main__":
+    preprocess_epochs()
