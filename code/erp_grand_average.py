@@ -105,8 +105,11 @@ def process_erp_session(session_item):
 
     rt_use = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
     fb_use = beh_aligned["fb"].astype(str).str.lower().to_numpy()
+    cat_use = beh_aligned["cat"].astype(str).to_numpy()
     idx_cor = np.where(fb_use == "correct")[0]
     idx_inc = np.where(fb_use == "incorrect")[0]
+    idx_cat_a = np.where(cat_use == "A")[0]
+    idx_cat_b = np.where(cat_use == "B")[0]
     fb_epoch_use = beh_fb_aligned["fb"].astype(str).str.lower().to_numpy()
     idx_fb_cor = np.where(fb_epoch_use == "correct")[0]
     idx_fb_inc = np.where(fb_epoch_use == "incorrect")[0]
@@ -129,6 +132,10 @@ def process_erp_session(session_item):
         result["evoked_resp_inc"] = make_response_locked_evoked(
             epochs_stim_all[idx_inc], rt_use[idx_inc], t_before=0.6
         )
+    if len(idx_cat_a) > 0:
+        result["evoked_stim_cat_a"] = epochs_stim_all[idx_cat_a].average()
+    if len(idx_cat_b) > 0:
+        result["evoked_stim_cat_b"] = epochs_stim_all[idx_cat_b].average()
     if len(idx_fb_cor) > 0:
         result["evoked_feedback_cor"] = epochs_fb_all[idx_fb_cor].average()
     if len(idx_fb_inc) > 0:
@@ -211,11 +218,12 @@ def run_erp_grand_average(
         fig.savefig(figures_dir / fig_name)
         plt.close(fig)
 
-    def plot_day_condition_grid(evoked_by_day_cond, title, fig_name):
+    def plot_day_condition_grid(
+        evoked_by_day_cond, title, fig_name, conds=("correct", "incorrect")
+    ):
         days_sorted = sorted({k[0] for k in evoked_by_day_cond.keys()})
         if len(days_sorted) == 0:
             return
-        conds = ["correct", "incorrect"]
         fig, axes = plt.subplots(
             len(conds),
             len(days_sorted),
@@ -284,6 +292,51 @@ def run_erp_grand_average(
         fig.savefig(figures_dir / fig_name, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
+    def plot_stim_difference(df, conditions, channels, fig_name, title, ylabel):
+        cond_a, cond_b = conditions
+        d = df[
+            (df["lock_type"] == "stim")
+            & (df["condition"].isin([cond_a, cond_b]))
+            & (df["channel"].isin(channels))
+        ].copy()
+        if d.empty:
+            return
+        d = (
+            d.groupby(["day", "condition", "time_s"], as_index=False)["amplitude_v"]
+            .mean()
+            .sort_values(["day", "condition", "time_s"])
+        )
+        wide = d.pivot_table(
+            index=["day", "time_s"], columns="condition", values="amplitude_v"
+        ).reset_index()
+        if not {cond_a, cond_b} <= set(wide.columns):
+            return
+        wide["difference_uv"] = (wide[cond_a] - wide[cond_b]) * 1e6
+        fig, ax = plt.subplots(figsize=(7, 4))
+        days = sorted(wide["day"].unique().astype(int))
+        cmap = plt.get_cmap("viridis", max(len(days), 2))
+        for idx, day in enumerate(days):
+            g = wide[wide["day"] == day].sort_values("time_s")
+            ax.plot(
+                g["time_s"],
+                g["difference_uv"],
+                linewidth=1.8,
+                color=cmap(idx),
+                label=f"Day {day}",
+            )
+        ax.axvline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.axhline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.axvspan(0.060, 0.180, color="0.5", alpha=0.10, linewidth=0)
+        ax.axvspan(0.250, 0.550, color="0.5", alpha=0.07, linewidth=0)
+        ax.set_xlabel("Time from stimulus (s)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend(frameon=False, ncol=1)
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(figures_dir / fig_name, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
     def evoked_map_to_long(evoked_map, lock_type, condition):
         rows = []
         for day, evoked in evoked_map.items():
@@ -341,6 +394,8 @@ def run_erp_grand_average(
         evoked_stim_all_rec = []
         evoked_stim_cor_rec = []
         evoked_stim_inc_rec = []
+        evoked_stim_cat_a_rec = []
+        evoked_stim_cat_b_rec = []
         evoked_resp_all_rec = []
         evoked_resp_cor_rec = []
         evoked_resp_inc_rec = []
@@ -406,6 +461,22 @@ def run_erp_grand_average(
                 evoked_stim_inc_rec.append(
                     {"subject": subject, "day": day, "evoked_stim_inc": result["evoked_stim_inc"]}
                 )
+            if "evoked_stim_cat_a" in result:
+                evoked_stim_cat_a_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_stim_cat_a": result["evoked_stim_cat_a"],
+                    }
+                )
+            if "evoked_stim_cat_b" in result:
+                evoked_stim_cat_b_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_stim_cat_b": result["evoked_stim_cat_b"],
+                    }
+                )
             if "evoked_resp_cor" in result:
                 evoked_resp_cor_rec.append(
                     {"subject": subject, "day": day, "evoked_resp_cor": result["evoked_resp_cor"]}
@@ -435,6 +506,8 @@ def run_erp_grand_average(
         evoked_stim_all_rec = pd.DataFrame(evoked_stim_all_rec)
         evoked_stim_cor_rec = pd.DataFrame(evoked_stim_cor_rec)
         evoked_stim_inc_rec = pd.DataFrame(evoked_stim_inc_rec)
+        evoked_stim_cat_a_rec = pd.DataFrame(evoked_stim_cat_a_rec)
+        evoked_stim_cat_b_rec = pd.DataFrame(evoked_stim_cat_b_rec)
         evoked_resp_all_rec = pd.DataFrame(evoked_resp_all_rec)
         evoked_resp_cor_rec = pd.DataFrame(evoked_resp_cor_rec)
         evoked_resp_inc_rec = pd.DataFrame(evoked_resp_inc_rec)
@@ -452,6 +525,16 @@ def run_erp_grand_average(
         evoked_stim_inc_mean = {}
         for day, g in evoked_stim_inc_rec.groupby("day"):
             evoked_stim_inc_mean[day] = mne.grand_average(g["evoked_stim_inc"].tolist())
+        evoked_stim_cat_a_mean = {}
+        for day, g in evoked_stim_cat_a_rec.groupby("day"):
+            evoked_stim_cat_a_mean[day] = mne.grand_average(
+                g["evoked_stim_cat_a"].tolist()
+            )
+        evoked_stim_cat_b_mean = {}
+        for day, g in evoked_stim_cat_b_rec.groupby("day"):
+            evoked_stim_cat_b_mean[day] = mne.grand_average(
+                g["evoked_stim_cat_b"].tolist()
+            )
 
         evoked_resp_all_mean = {}
         for day, g in evoked_resp_all_rec.groupby("day"):
@@ -480,6 +563,8 @@ def run_erp_grand_average(
                 evoked_map_to_long(evoked_stim_all_mean, "stim", "all"),
                 evoked_map_to_long(evoked_stim_cor_mean, "stim", "correct"),
                 evoked_map_to_long(evoked_stim_inc_mean, "stim", "incorrect"),
+                evoked_map_to_long(evoked_stim_cat_a_mean, "stim", "cat_a"),
+                evoked_map_to_long(evoked_stim_cat_b_mean, "stim", "cat_b"),
                 evoked_map_to_long(evoked_resp_all_mean, "response", "all"),
                 evoked_map_to_long(evoked_resp_cor_mean, "response", "correct"),
                 evoked_map_to_long(evoked_resp_inc_mean, "response", "incorrect"),
@@ -569,6 +654,35 @@ def run_erp_grand_average(
         },
         title="Grand Average ERP: stim locked by feedback correctness",
         fig_name="erp_grand_average_stim_correct_vs_incorrect.png",
+    )
+    plot_day_condition_grid(
+        {
+            (day, "cat_a"): ev
+            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_a").items()
+        }
+        | {
+            (day, "cat_b"): ev
+            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_b").items()
+        },
+        title="Grand Average ERP: stim locked by category",
+        fig_name="erp_grand_average_stim_cat_a_vs_cat_b.png",
+        conds=("cat_a", "cat_b"),
+    )
+    plot_stim_difference(
+        d_grand_plot,
+        conditions=("incorrect", "correct"),
+        channels=["Fz", "FCz"],
+        fig_name="erp_grand_average_stim_correctness_difference.png",
+        title="Stim-Locked Correctness Difference at Fz/FCz",
+        ylabel="Incorrect - correct amplitude (uV)",
+    )
+    plot_stim_difference(
+        d_grand_plot,
+        conditions=("cat_a", "cat_b"),
+        channels=["Oz", "O1", "O2", "POz"],
+        fig_name="erp_grand_average_stim_category_difference.png",
+        title="Stim-Locked Category Difference at Posterior Channels",
+        ylabel="Category A - category B amplitude (uV)",
     )
     plot_day_grid(
         long_to_evoked_map(d_grand_plot, "response", "all"),
