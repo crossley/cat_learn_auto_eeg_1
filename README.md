@@ -83,6 +83,7 @@ There is deliberately no all-in-one runner.
 |---|---|
 | `mvpa_tg_within_day.py` | Within-day TG matrices (session cache infrastructure) |
 | `mvpa_tg_cross_day.py` | Cross-day TG matrices |
+| `mvpa_tg_stim_feedback_cross_epoch.py` | Cross-epoch TG between stimulus and feedback A/B codes |
 | `mvpa_tg_feedback_locked.py` | Feedback-locked category-label cross-day TG |
 | `mvpa_tg_window_structure.py` | Early/late AUC windows and day-distance gradients |
 | `mvpa_tg_day1_distinctiveness.py` | Day-1 distinctiveness and anchored trajectories |
