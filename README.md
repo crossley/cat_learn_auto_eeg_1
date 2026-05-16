@@ -66,6 +66,7 @@ There is deliberately no all-in-one runner.
 | `erp_latency_trajectories.py` | ERP peak-latency trajectories across days |
 | `erp_n2_boundary.py` | Frontal N2 × boundary distance |
 | `erp_frn_rpe_day1.py` | FRN and RPE analysis (Day 1) |
+| `erp_feedback_window_predictors.py` | Feedback-window amplitudes × feedback, boundary distance, and RPE |
 | `erp_p3_boundary.py` | Parietal P3 × boundary distance |
 | `erp_rt_bridge.py` | ERP–RT bridge analysis |
 
