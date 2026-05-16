@@ -37,6 +37,7 @@ except Exception:
     threadpool_limits = None
 
 from load_project_data import load_sessions
+from mvpa_tg_within_day import pick_eeg_interpolate_bads
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
@@ -135,9 +136,9 @@ def process_stim_mvpa_session(task: dict):
             }
         stim_epochs = epochs[stim_events].copy()
         stim_epochs.load_data()
-        stim_epochs.pick_types(eeg=True, exclude="bads")
+        pick_eeg_interpolate_bads(stim_epochs)
         if len(stim_epochs.ch_names) == 0:
-            raise RuntimeError("No EEG channels after pick_types.")
+            raise RuntimeError("No EEG channels after interpolation.")
         stim_epochs.resample(128, npad="auto")
     except Exception as exc:
         return {

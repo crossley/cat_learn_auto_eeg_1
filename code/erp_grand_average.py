@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import json
 import time
+import math
 import numpy as np
 import pandas as pd
 
@@ -56,6 +57,34 @@ def make_response_locked_evoked(epochs_stim, rt_sec, t_before=0.6):
     return mne.EvokedArray(mean_data, info=info, tmin=0.0, nave=n_trials)
 
 
+def align_feedback_to_beh(behaviour, epochs, event_names=("FB/Cor", "FB/Inc")):
+    behaviour = behaviour.sort_values("trial").reset_index(drop=True)
+    event_names = [name for name in event_names if name in epochs.event_id]
+    if len(event_names) == 0:
+        return epochs[:0], behaviour.iloc[:0].copy()
+    epochs_fb = epochs[event_names]
+    if len(epochs_fb) == 0:
+        return epochs_fb, behaviour.iloc[:0].copy()
+    if epochs_fb.metadata is not None and "beh_trial_index" in epochs_fb.metadata:
+        trial_index = epochs_fb.metadata["beh_trial_index"].to_numpy(dtype=int)
+    else:
+        selection = np.asarray(epochs_fb.selection, dtype=int)
+        if len(selection) > 1:
+            differences = np.diff(np.sort(selection))
+            step = int(differences[0])
+            for difference in differences[1:]:
+                step = math.gcd(step, int(difference))
+            offset = int(np.min(selection % step)) if step > 1 else 0
+            trial_index = (selection - offset) // step if step > 1 else selection.copy()
+        else:
+            trial_index = selection.copy()
+    valid = (trial_index >= 0) & (trial_index < len(behaviour))
+    if not valid.all():
+        epochs_fb = epochs_fb[np.where(valid)[0]]
+        trial_index = trial_index[valid]
+    return epochs_fb, behaviour.iloc[trial_index].reset_index(drop=True)
+
+
 def process_erp_session(session_item):
     event_names = ["Stim/A", "Stim/B"]
     subject = session_item["subject"]
@@ -70,11 +99,15 @@ def process_erp_session(session_item):
     )
     if len(epochs_stim_all) == 0:
         return None
+    epochs_fb_all, beh_fb_aligned = align_feedback_to_beh(beh_df, epochs)
 
     rt_use = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
     fb_use = beh_aligned["fb"].astype(str).str.lower().to_numpy()
     idx_cor = np.where(fb_use == "correct")[0]
     idx_inc = np.where(fb_use == "incorrect")[0]
+    fb_epoch_use = beh_fb_aligned["fb"].astype(str).str.lower().to_numpy()
+    idx_fb_cor = np.where(fb_epoch_use == "correct")[0]
+    idx_fb_inc = np.where(fb_epoch_use == "incorrect")[0]
 
     result = {
         "subject": subject,
@@ -82,6 +115,8 @@ def process_erp_session(session_item):
         "evoked_stim_all": epochs_stim_all.average(),
         "evoked_resp_all": make_response_locked_evoked(epochs_stim_all, rt_use, t_before=0.6),
     }
+    if len(epochs_fb_all) > 0:
+        result["evoked_feedback_all"] = epochs_fb_all.average()
     if len(idx_cor) > 0:
         result["evoked_stim_cor"] = epochs_stim_all[idx_cor].average()
         result["evoked_resp_cor"] = make_response_locked_evoked(
@@ -92,7 +127,42 @@ def process_erp_session(session_item):
         result["evoked_resp_inc"] = make_response_locked_evoked(
             epochs_stim_all[idx_inc], rt_use[idx_inc], t_before=0.6
         )
+    if len(idx_fb_cor) > 0:
+        result["evoked_feedback_cor"] = epochs_fb_all[idx_fb_cor].average()
+    if len(idx_fb_inc) > 0:
+        result["evoked_feedback_inc"] = epochs_fb_all[idx_fb_inc].average()
     return result
+
+
+def process_erp_session_safe(session_item):
+    subject = session_item["subject"]
+    day = session_item["day"]
+    try:
+        result = process_erp_session(session_item)
+        if result is None:
+            return {
+                "ok": False,
+                "qc": {
+                    "subject": subject,
+                    "day": day,
+                    "stage": "erp_session",
+                    "reason": "no_stim_epochs",
+                    "detail": "",
+                },
+            }
+        result["ok"] = True
+        return result
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "subject": subject,
+                "day": day,
+                "stage": "erp_session",
+                "reason": "extract_error",
+                "detail": str(exc),
+            },
+        }
 
 
 def run_erp_grand_average(
@@ -108,6 +178,7 @@ def run_erp_grand_average(
 
     d_grand_path = output_dir / "erp_grand_average_by_day_lock_condition.csv"
     d_subject_path = output_dir / "erp_grand_average_subject_day_all.csv"
+    qc_path = output_dir / "erp_grand_average_qc.csv"
     progress_json = output_dir / "erp_grand_average_progress.json"
     t0 = time.time()
 
@@ -140,6 +211,8 @@ def run_erp_grand_average(
 
     def plot_day_condition_grid(evoked_by_day_cond, title, fig_name):
         days_sorted = sorted({k[0] for k in evoked_by_day_cond.keys()})
+        if len(days_sorted) == 0:
+            return
         conds = ["correct", "incorrect"]
         fig, axes = plt.subplots(
             len(conds),
@@ -163,6 +236,50 @@ def run_erp_grand_average(
                 ax.set_title(f"Day {day} - {cond}")
         fig.suptitle(title)
         fig.savefig(figures_dir / fig_name)
+        plt.close(fig)
+
+    def plot_feedback_frn_difference(df, fig_name):
+        channels = ["Fz", "FCz"]
+        d = df[
+            (df["lock_type"] == "feedback")
+            & (df["condition"].isin(["correct", "incorrect"]))
+            & (df["channel"].isin(channels))
+        ].copy()
+        if d.empty:
+            return
+        d = (
+            d.groupby(["day", "condition", "time_s"], as_index=False)["amplitude_v"]
+            .mean()
+            .sort_values(["day", "condition", "time_s"])
+        )
+        wide = d.pivot_table(
+            index=["day", "time_s"], columns="condition", values="amplitude_v"
+        ).reset_index()
+        if not {"correct", "incorrect"} <= set(wide.columns):
+            return
+        wide["difference_uv"] = (wide["incorrect"] - wide["correct"]) * 1e6
+        fig, ax = plt.subplots(figsize=(7, 4))
+        days = sorted(wide["day"].unique().astype(int))
+        cmap = plt.get_cmap("viridis", max(len(days), 2))
+        for idx, day in enumerate(days):
+            g = wide[wide["day"] == day].sort_values("time_s")
+            ax.plot(
+                g["time_s"],
+                g["difference_uv"],
+                linewidth=1.8,
+                color=cmap(idx),
+                label=f"Day {day}",
+            )
+        ax.axvline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.axhline(0, color="0.35", linestyle=":", linewidth=1)
+        ax.axvspan(0.200, 0.300, color="0.5", alpha=0.12, linewidth=0)
+        ax.set_xlabel("Time from feedback (s)")
+        ax.set_ylabel("Incorrect - correct amplitude (uV)")
+        ax.set_title("Feedback FRN Difference at Fz/FCz")
+        ax.legend(frameon=False, ncol=1)
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(figures_dir / fig_name, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
     def evoked_map_to_long(evoked_map, lock_type, condition):
@@ -225,6 +342,9 @@ def run_erp_grand_average(
         evoked_resp_all_rec = []
         evoked_resp_cor_rec = []
         evoked_resp_inc_rec = []
+        evoked_feedback_all_rec = []
+        evoked_feedback_cor_rec = []
+        evoked_feedback_inc_rec = []
         sessions = load_sessions()
         worker_items = [
             {
@@ -242,19 +362,23 @@ def run_erp_grand_average(
         if n_workers == 1:
             session_results = []
             for i, item in enumerate(worker_items, start=1):
-                session_results.append(process_erp_session(item))
+                session_results.append(process_erp_session_safe(item))
                 write_progress("running", i, len(worker_items))
         else:
             result_iter = Parallel(
                 n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(delayed(process_erp_session)(item) for item in worker_items)
+            )(delayed(process_erp_session_safe)(item) for item in worker_items)
             session_results = []
             for i, result in enumerate(result_iter, start=1):
                 session_results.append(result)
                 write_progress("running", i, len(worker_items))
 
+        qc_rows = []
         for result in session_results:
             if result is None:
+                continue
+            if not result.get("ok", True):
+                qc_rows.append(result["qc"])
                 continue
             subject = result["subject"]
             day = result["day"]
@@ -264,6 +388,14 @@ def run_erp_grand_average(
             evoked_resp_all_rec.append(
                 {"subject": subject, "day": day, "evoked_resp_all": result["evoked_resp_all"]}
             )
+            if "evoked_feedback_all" in result:
+                evoked_feedback_all_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_feedback_all": result["evoked_feedback_all"],
+                    }
+                )
             if "evoked_stim_cor" in result:
                 evoked_stim_cor_rec.append(
                     {"subject": subject, "day": day, "evoked_stim_cor": result["evoked_stim_cor"]}
@@ -280,6 +412,23 @@ def run_erp_grand_average(
                 evoked_resp_inc_rec.append(
                     {"subject": subject, "day": day, "evoked_resp_inc": result["evoked_resp_inc"]}
                 )
+            if "evoked_feedback_cor" in result:
+                evoked_feedback_cor_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_feedback_cor": result["evoked_feedback_cor"],
+                    }
+                )
+            if "evoked_feedback_inc" in result:
+                evoked_feedback_inc_rec.append(
+                    {
+                        "subject": subject,
+                        "day": day,
+                        "evoked_feedback_inc": result["evoked_feedback_inc"],
+                    }
+                )
+        pd.DataFrame(qc_rows).to_csv(qc_path, index=False)
 
         evoked_stim_all_rec = pd.DataFrame(evoked_stim_all_rec)
         evoked_stim_cor_rec = pd.DataFrame(evoked_stim_cor_rec)
@@ -287,6 +436,9 @@ def run_erp_grand_average(
         evoked_resp_all_rec = pd.DataFrame(evoked_resp_all_rec)
         evoked_resp_cor_rec = pd.DataFrame(evoked_resp_cor_rec)
         evoked_resp_inc_rec = pd.DataFrame(evoked_resp_inc_rec)
+        evoked_feedback_all_rec = pd.DataFrame(evoked_feedback_all_rec)
+        evoked_feedback_cor_rec = pd.DataFrame(evoked_feedback_cor_rec)
+        evoked_feedback_inc_rec = pd.DataFrame(evoked_feedback_inc_rec)
 
         evoked_stim_all_mean = {}
         for day, g in evoked_stim_all_rec.groupby("day"):
@@ -310,6 +462,17 @@ def run_erp_grand_average(
         for day, g in evoked_resp_inc_rec.groupby("day"):
             evoked_resp_inc_mean[day] = mne.grand_average(g["evoked_resp_inc"].tolist())
 
+        evoked_feedback_all_mean = {}
+        for day, g in evoked_feedback_all_rec.groupby("day"):
+            evoked_feedback_all_mean[day] = mne.grand_average(g["evoked_feedback_all"].tolist())
+
+        evoked_feedback_cor_mean = {}
+        for day, g in evoked_feedback_cor_rec.groupby("day"):
+            evoked_feedback_cor_mean[day] = mne.grand_average(g["evoked_feedback_cor"].tolist())
+        evoked_feedback_inc_mean = {}
+        for day, g in evoked_feedback_inc_rec.groupby("day"):
+            evoked_feedback_inc_mean[day] = mne.grand_average(g["evoked_feedback_inc"].tolist())
+
         d_grand = pd.concat(
             [
                 evoked_map_to_long(evoked_stim_all_mean, "stim", "all"),
@@ -318,6 +481,9 @@ def run_erp_grand_average(
                 evoked_map_to_long(evoked_resp_all_mean, "response", "all"),
                 evoked_map_to_long(evoked_resp_cor_mean, "response", "correct"),
                 evoked_map_to_long(evoked_resp_inc_mean, "response", "incorrect"),
+                evoked_map_to_long(evoked_feedback_all_mean, "feedback", "all"),
+                evoked_map_to_long(evoked_feedback_cor_mean, "feedback", "correct"),
+                evoked_map_to_long(evoked_feedback_inc_mean, "feedback", "incorrect"),
             ],
             ignore_index=True,
         ).sort_values(["lock_type", "condition", "day", "channel", "time_s"])
@@ -345,7 +511,17 @@ def run_erp_grand_average(
                 "response",
                 "all",
             )
-            d_sub_s = pd.concat([d_stim_s, d_resp_s], ignore_index=True)
+            d_feedback_s = evoked_map_to_long(
+                {
+                    int(row["day"]): row["evoked_feedback_all"]
+                    for _, row in evoked_feedback_all_rec[
+                        evoked_feedback_all_rec["subject"] == s
+                    ].iterrows()
+                },
+                "feedback",
+                "all",
+            )
+            d_sub_s = pd.concat([d_stim_s, d_resp_s, d_feedback_s], ignore_index=True)
             if not d_sub_s.empty:
                 subject_rows.append(d_sub_s.assign(subject=int(s)))
 
@@ -409,12 +585,34 @@ def run_erp_grand_average(
         title="Grand Average ERP: response locked by feedback correctness",
         fig_name="erp_grand_average_response_correct_vs_incorrect.png",
     )
+    plot_day_grid(
+        long_to_evoked_map(d_grand_plot, "feedback", "all"),
+        title="Grand Average ERP: feedback locked",
+        fig_name="erp_grand_average_feedback_all.png",
+    )
+    plot_day_condition_grid(
+        {
+            (day, "correct"): ev
+            for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "correct").items()
+        }
+        | {
+            (day, "incorrect"): ev
+            for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "incorrect").items()
+        },
+        title="Grand Average ERP: feedback locked by feedback correctness",
+        fig_name="erp_grand_average_feedback_correct_vs_incorrect.png",
+    )
+    plot_feedback_frn_difference(
+        d_grand_plot,
+        fig_name="erp_grand_average_feedback_frn_difference.png",
+    )
 
     for s in sorted(d_subject_plot["subject"].unique().astype(int)):
         d_sub = d_subject_plot[d_subject_plot["subject"] == s].copy()
         for lock_type, fig_prefix, title_lock in [
             ("stim", "erp_grand_average_stim_sub", "stim_all"),
             ("response", "erp_grand_average_response_sub", "response_all"),
+            ("feedback", "erp_grand_average_feedback_sub", "feedback_all"),
         ]:
             evoked_sub = long_to_evoked_map(d_sub, lock_type, "all")
             days_sorted = sorted(evoked_sub.keys())

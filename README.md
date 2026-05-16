@@ -66,8 +66,8 @@ There is deliberately no all-in-one runner.
 | `erp_latency_trajectories.py` | ERP peak-latency trajectories across days |
 | `erp_n2_boundary.py` | Frontal N2 × boundary distance |
 | `erp_frn_rpe_day1.py` | FRN and RPE analysis (Day 1) |
-| `erp_p3_boundary.py` | Parietal P3 × boundary distance *(stub)* |
-| `erp_rt_bridge.py` | ERP–RT bridge analysis *(stub)* |
+| `erp_p3_boundary.py` | Parietal P3 × boundary distance |
+| `erp_rt_bridge.py` | ERP–RT bridge analysis |
 
 ### MVPA time-resolved (`mvpa_time_resolved_`)
 
@@ -87,7 +87,7 @@ There is deliberately no all-in-one runner.
 | `mvpa_tg_band_envelope.py` | Cross-day TG on band-limited amplitude envelopes |
 | `mvpa_tg_band_signed.py` | Cross-day TG on band-limited signed voltages |
 | `mvpa_tg_broadband_vs_band.py` | Broadband vs band diagnostic (diagonal timecourses) |
-| `mvpa_classifier_confidence.py` | Classifier confidence time-resolved *(stub)* |
+| `mvpa_classifier_confidence.py` | Classifier confidence time-resolved |
 
 ### Connectivity (`connect_`)
 
