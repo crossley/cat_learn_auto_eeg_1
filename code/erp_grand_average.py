@@ -99,7 +99,9 @@ def process_erp_session(session_item):
     )
     if len(epochs_stim_all) == 0:
         return None
-    epochs_fb_all, beh_fb_aligned = align_feedback_to_beh(beh_df, epochs)
+    epochs_fb_all, beh_fb_aligned = align_behaviour_to_epochs(
+        beh_df, epochs, event_names=("FB/Cor", "FB/Inc")
+    )
 
     rt_use = beh_aligned["rt"].astype(float).to_numpy() / 1000.0
     fb_use = beh_aligned["fb"].astype(str).str.lower().to_numpy()
