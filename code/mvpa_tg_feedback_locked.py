@@ -273,7 +273,7 @@ def save_fig_mvpa_temporal_generalization_feedback_cross_day(
     if cross_matrix_day_mean_csv.exists():
         d_mat = pd.read_csv(cross_matrix_day_mean_csv)
         if not d_mat.empty:
-            fig, axes = plt.subplots(5, 5, figsize=(15, 15), squeeze=False)
+            fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False)
             vmin = float(d_mat["auc_mean"].min())
             vmax = float(d_mat["auc_mean"].max())
             for i, train_day in enumerate(day_grid):
@@ -314,8 +314,9 @@ def save_fig_mvpa_temporal_generalization_feedback_cross_day(
                     if j == 0:
                         ax.set_ylabel("Train Time (s)")
             fig.suptitle("Feedback-Locked Temporal Generalization by Day Pair (AUC)")
-            fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.75, label="AUC")
-            fig.subplots_adjust(top=0.94, wspace=0.30, hspace=0.35)
+            fig.subplots_adjust(top=0.94, bottom=0.05, left=0.05, right=0.90, wspace=0.30, hspace=0.35)
+            cax = fig.add_axes([0.92, 0.12, 0.015, 0.74])
+            fig.colorbar(im, cax=cax, label="AUC")
             fig.savefig(fig_cross_timegen, dpi=150, bbox_inches="tight")
             plt.close(fig)
 
