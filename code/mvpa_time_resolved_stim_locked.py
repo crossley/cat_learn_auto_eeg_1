@@ -62,6 +62,239 @@ def build_clf(random_state: int):
     )
 
 
+def make_haufe_info_from_pos_df(pos_df):
+    ch_names = pos_df["channel"].tolist()
+    ch_pos = {
+        r["channel"]: np.array([r["x"], r["y"], r["z"]], dtype=float)
+        for _, r in pos_df.iterrows()
+    }
+    info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
+    info.set_montage(montage, on_missing="ignore")
+    return info, ch_names
+
+
+def plot_peak_latency_trajectory(peak_df, figures_dir):
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = figures_dir / "mvpa_peak_latency_trajectory.png"
+
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), sharey=True, squeeze=False)
+    peak_order = [p for p in ["early", "late"] if p in set(peak_df["peak"])]
+    if not peak_order:
+        fig.text(0.5, 0.5, "No peak data available", ha="center", va="center")
+        fig.tight_layout()
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return fig_path
+
+    for ax, peak_label in zip(axes.ravel(), peak_order):
+        d_peak = peak_df[peak_df["peak"] == peak_label].copy()
+        days = sorted(d_peak["day"].dropna().unique().astype(int).tolist())
+        subj_days = (
+            d_peak.groupby(["subject", "day"], as_index=False)["peak_time_sec"]
+            .mean()
+            .sort_values(["subject", "day"])
+        )
+        for _, d_sub in subj_days.groupby("subject"):
+            ax.plot(
+                d_sub["day"].to_numpy(dtype=float),
+                d_sub["peak_time_sec"].to_numpy(dtype=float),
+                color="#2f4f4f",
+                alpha=0.28,
+                linewidth=1.0,
+            )
+
+        day_mean = (
+            d_peak.groupby("day", as_index=False)
+            .agg(
+                peak_time_sec_mean=("peak_time_sec", "mean"),
+                peak_time_sec_sem=(
+                    "peak_time_sec",
+                    lambda x: (
+                        float(np.std(x, ddof=1) / np.sqrt(len(x)))
+                        if len(x) > 1
+                        else np.nan
+                    ),
+                ),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values("day")
+        )
+        x = day_mean["day"].to_numpy(dtype=float)
+        y = day_mean["peak_time_sec_mean"].to_numpy(dtype=float)
+        yerr = day_mean["peak_time_sec_sem"].to_numpy(dtype=float)
+        ax.errorbar(
+            x,
+            y,
+            yerr=yerr,
+            color="tab:blue",
+            marker="o",
+            markersize=5,
+            linewidth=2,
+            capsize=3,
+            label="Group mean \u00b1 SEM",
+        )
+        valid = np.isfinite(x) & np.isfinite(y)
+        if int(np.sum(valid)) >= 2:
+            coef = np.polyfit(x[valid], y[valid], 1)
+            x_fit = np.linspace(
+                float(np.nanmin(x[valid])),
+                float(np.nanmax(x[valid])),
+                100,
+            )
+            y_fit = np.polyval(coef, x_fit)
+            ax.plot(
+                x_fit,
+                y_fit,
+                color="tab:red",
+                linestyle="--",
+                linewidth=1.8,
+                label="OLS trend",
+            )
+        ax.set_title(f"{peak_label.capitalize()} peak")
+        ax.set_xlabel("Day")
+        ax.set_xticks(days)
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+
+    axes.ravel()[0].set_ylabel("Peak latency (s)")
+    for ax in axes.ravel()[len(peak_order) :]:
+        ax.axis("off")
+    fig.suptitle("Stimulus-Locked MVPA Peak Latency Trajectory")
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_haufe_topo_at_peak(peak_df, haufe_day_mean_df, pos_df, figures_dir):
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = figures_dir / "mvpa_haufe_topo_at_peak.png"
+
+    if peak_df.empty or haufe_day_mean_df.empty or pos_df.empty:
+        fig = plt.figure(figsize=(10, 4))
+        fig.text(0.5, 0.5, "No Haufe peak data available", ha="center", va="center")
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return fig_path
+
+    info, ch_names = make_haufe_info_from_pos_df(pos_df)
+    day_order = [
+        day for day in range(1, 6) if day in set(peak_df["day"].dropna().astype(int))
+    ]
+    peak_order = [p for p in ["early", "late"] if p in set(peak_df["peak"])]
+
+    topo_items = []
+    for peak_label in peak_order:
+        for day in day_order:
+            d_peak = peak_df[(peak_df["day"] == day) & (peak_df["peak"] == peak_label)]
+            d_day = haufe_day_mean_df[haufe_day_mean_df["day"] == day].copy()
+            if d_peak.empty or d_day.empty:
+                topo_items.append(
+                    {
+                        "peak": peak_label,
+                        "day": day,
+                        "peak_time_sec": np.nan,
+                        "used_time_sec": np.nan,
+                        "values": None,
+                    }
+                )
+                continue
+            peak_time = float(d_peak["peak_time_sec"].median())
+            times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
+            if len(times) == 0:
+                topo_items.append(
+                    {
+                        "peak": peak_label,
+                        "day": day,
+                        "peak_time_sec": peak_time,
+                        "used_time_sec": np.nan,
+                        "values": None,
+                    }
+                )
+                continue
+            t_show = float(times[int(np.argmin(np.abs(times - peak_time)))])
+            d_topo = d_day[np.isclose(d_day["time_sec"], t_show)]
+            vals = (
+                d_topo.set_index("channel")
+                .reindex(ch_names)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+            topo_items.append(
+                {
+                    "peak": peak_label,
+                    "day": day,
+                    "peak_time_sec": peak_time,
+                    "used_time_sec": t_show,
+                    "values": vals,
+                }
+            )
+
+    valid_vals = [item["values"] for item in topo_items if item["values"] is not None]
+    lim = (
+        float(np.nanmax(np.abs(np.vstack(valid_vals))))
+        if valid_vals
+        else 1e-12
+    )
+    if not np.isfinite(lim) or lim <= 0:
+        lim = 1e-12
+
+    fig, axes = plt.subplots(
+        len(peak_order),
+        len(day_order),
+        figsize=(2.55 * len(day_order), 5.6),
+        squeeze=False,
+    )
+    im_last = None
+    for r, peak_label in enumerate(peak_order):
+        for c, day in enumerate(day_order):
+            ax = axes[r, c]
+            item = next(
+                x for x in topo_items if x["peak"] == peak_label and x["day"] == day
+            )
+            if item["values"] is None:
+                ax.axis("off")
+                continue
+            im_last, _ = mne.viz.plot_topomap(
+                item["values"],
+                info,
+                axes=ax,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-lim, lim),
+                sphere=(0.0, 0.0, 0.0, 0.095),
+            )
+            ax.set_title(
+                f"Day {day}\n{item['peak_time_sec'] * 1000.0:.0f} ms",
+                fontsize=9,
+            )
+            if c == 0:
+                ax.text(
+                    -0.16,
+                    0.5,
+                    f"{peak_label.capitalize()} peak",
+                    transform=ax.transAxes,
+                    rotation=90,
+                    va="center",
+                    ha="right",
+                    fontsize=10,
+                )
+
+    fig.suptitle("Haufe Topographies at Subject-Median Peak Latency", y=0.98)
+    cax = fig.add_axes([0.92, 0.18, 0.02, 0.64])
+    if im_last is not None:
+        fig.colorbar(im_last, cax=cax, label="Haufe pattern")
+    else:
+        cax.axis("off")
+    fig.tight_layout(rect=[0, 0, 0.90, 0.95])
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def decode_timecourse(X, y, n_splits=5, random_state=42):
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     clf = build_clf(random_state=random_state)
@@ -508,7 +741,8 @@ def save_fig_mvpa_time_resolved(
 
     if (not day_means_csv.exists()) or (not day_effect_csv.exists()):
         raise FileNotFoundError(
-            f"Missing MVPA outputs in {output_dir}. Run run_stimulus_locked_mvpa_analysis() first."
+            "Missing MVPA outputs in "
+            f"{output_dir}. Run run_stimulus_locked_mvpa_analysis() first."
         )
 
     day_means_df = pd.read_csv(day_means_csv)
@@ -543,17 +777,6 @@ def save_fig_mvpa_time_resolved(
         peak_df.to_csv(haufe_peak_times_csv, index=False)
         return peak_df
 
-    def make_haufe_info(pos_df):
-        ch_names = pos_df["channel"].tolist()
-        ch_pos = {
-            r["channel"]: np.array([r["x"], r["y"], r["z"]], dtype=float)
-            for _, r in pos_df.iterrows()
-        }
-        info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
-        montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
-        info.set_montage(montage, on_missing="ignore")
-        return info, ch_names
-
     def vector_corr(x_vec, y_vec):
         valid = np.isfinite(x_vec) & np.isfinite(y_vec)
         if int(np.sum(valid)) < 3:
@@ -578,7 +801,9 @@ def save_fig_mvpa_time_resolved(
             if len(times) == 0:
                 continue
             for peak_label in ["early", "late"]:
-                d_peak_meta = peak_df[(peak_df["day"] == day) & (peak_df["peak"] == peak_label)]
+                d_peak_meta = peak_df[
+                    (peak_df["day"] == day) & (peak_df["peak"] == peak_label)
+                ]
                 if d_peak_meta.empty:
                     continue
                 vec_rows = []
@@ -587,7 +812,8 @@ def save_fig_mvpa_time_resolved(
                     peak_time = float(peak_row["peak_time_sec"])
                     t_show = float(times[int(np.argmin(np.abs(times - peak_time)))])
                     d_peak = d_day[
-                        (d_day["subject"] == subject) & np.isclose(d_day["time_sec"], t_show)
+                        (d_day["subject"] == subject)
+                        & np.isclose(d_day["time_sec"], t_show)
                     ].copy()
                     if d_peak.empty:
                         continue
@@ -625,10 +851,14 @@ def save_fig_mvpa_time_resolved(
                             "subject": int(subject),
                             "day": int(day),
                             "peak": peak_label,
-                            "subject_peak_time_sec": float(vec_rows[i_sub]["peak_time_sec"]),
+                            "subject_peak_time_sec": float(
+                                vec_rows[i_sub]["peak_time_sec"]
+                            ),
                             "used_time_sec": float(vec_rows[i_sub]["used_time_sec"]),
                             "loo_pattern_r": vector_corr(x_vec, y_vec),
-                            "n_channels": int(np.sum(np.isfinite(x_vec) & np.isfinite(y_vec))),
+                            "n_channels": int(
+                                np.sum(np.isfinite(x_vec) & np.isfinite(y_vec))
+                            ),
                         }
                     )
         subject_df = pd.DataFrame(rows)
@@ -714,11 +944,12 @@ def save_fig_mvpa_time_resolved(
     haufe_ch_names = []
     peak_df = pd.DataFrame()
     peak_medians = {}
+    pos_df = pd.DataFrame()
     if haufe_day_mean_csv.exists() and haufe_channel_pos_csv.exists():
         haufe_df = pd.read_csv(haufe_day_mean_csv)
         pos_df = pd.read_csv(haufe_channel_pos_csv)
         if (not haufe_df.empty) and (not pos_df.empty):
-            haufe_info, haufe_ch_names = make_haufe_info(pos_df)
+            haufe_info, haufe_ch_names = make_haufe_info_from_pos_df(pos_df)
             peak_df = detect_subject_day_peak_times()
             if not peak_df.empty:
                 d_peak_median = (
@@ -734,6 +965,14 @@ def save_fig_mvpa_time_resolved(
     if (not peak_df.empty) and haufe_ch_names:
         stability_df, _ = write_haufe_stability(peak_df, haufe_ch_names)
         plot_haufe_stability(stability_df)
+    peak_latency_path = None
+    if not peak_df.empty:
+        peak_latency_path = plot_peak_latency_trajectory(peak_df, figures_dir)
+    haufe_topo_peak_path = None
+    if (not peak_df.empty) and (not haufe_df.empty) and (not pos_df.empty):
+        haufe_topo_peak_path = plot_haufe_topo_at_peak(
+            peak_df, haufe_df, pos_df, figures_dir
+        )
 
     days = sorted(day_means_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 5.2), sharey=True, squeeze=False)
@@ -845,6 +1084,8 @@ def save_fig_mvpa_time_resolved(
             "day_panels": fig_day_panels,
             "day_slope": fig_day_slope,
             "haufe_stability": fig_haufe_stability,
+            "peak_latency_trajectory": peak_latency_path,
+            "haufe_topo_at_peak": haufe_topo_peak_path,
         },
         "haufe_stability_subject_csv": haufe_stability_subject_csv,
         "haufe_stability_summary_csv": haufe_stability_summary_csv,

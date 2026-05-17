@@ -73,7 +73,8 @@ def prepare_epoch_caches(session_item: dict, output_dir: Path):
 
 def process_cross_epoch_pair(pair_item: dict, random_state: int):
     subject = int(pair_item["subject"])
-    day = int(pair_item["day"])
+    train_day = int(pair_item["train_day"])
+    test_day = int(pair_item["test_day"])
     direction = str(pair_item["direction"])
     train_kind = str(pair_item["train_kind"])
     test_kind = str(pair_item["test_kind"])
@@ -100,7 +101,7 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
             "qc": {
                 "session_file": f"{train_session_file}->{test_session_file}",
                 "subject": subject,
-                "day": day,
+                "day": train_day,
                 "stage": "cross_epoch_channels",
                 "reason": "channel_mismatch",
                 "detail": f"train_n={len(ch_train)}, test_n={len(ch_test)}",
@@ -121,7 +122,7 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
             "qc": {
                 "session_file": f"{train_session_file}->{test_session_file}",
                 "subject": subject,
-                "day": day,
+                "day": train_day,
                 "stage": "cross_epoch_balance",
                 "reason": "insufficient_balanced_trials",
                 "detail": f"n_per_class={n_per_class}",
@@ -149,7 +150,7 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
             "qc": {
                 "session_file": f"{train_session_file}->{test_session_file}",
                 "subject": subject,
-                "day": day,
+                "day": train_day,
                 "stage": "cross_epoch_tg",
                 "reason": "compute_error",
                 "detail": str(exc),
@@ -160,7 +161,8 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
         "ok": True,
         "row": {
             "subject": subject,
-            "day": day,
+            "train_day": train_day,
+            "test_day": test_day,
             "direction": direction,
             "train_kind": train_kind,
             "test_kind": test_kind,
@@ -195,12 +197,17 @@ def save_fig_mvpa_temporal_generalization_cross_epoch(
     figures_dir.mkdir(parents=True, exist_ok=True)
     subject_csv = output_dir / "tg_cross_epoch_subject_level.csv"
     matrix_csv = output_dir / "tg_cross_epoch_timegen_day_mean.csv"
+    matrix_day_pair_csv = output_dir / "tg_cross_epoch_timegen_day_pair_mean.csv"
     if not subject_csv.exists() or not matrix_csv.exists():
         raise FileNotFoundError(
-            f"Missing TG cross-epoch output in {output_dir}. Run run_mvpa_tg_cross_epoch() first."
+            "Missing TG cross-epoch output in "
+            f"{output_dir}. Run run_mvpa_tg_cross_epoch() first."
         )
     subject_df = pd.read_csv(subject_csv)
     matrix_df = pd.read_csv(matrix_csv)
+    matrix_day_pair_df = (
+        pd.read_csv(matrix_day_pair_csv) if matrix_day_pair_csv.exists() else pd.DataFrame()
+    )
     if subject_df.empty or matrix_df.empty:
         return {"figure_path": None}
 
@@ -222,7 +229,12 @@ def save_fig_mvpa_temporal_generalization_cross_epoch(
             np.ma.masked_invalid(mat),
             origin="lower",
             aspect="auto",
-            extent=[float(test_times.min()), float(test_times.max()), float(train_times.min()), float(train_times.max())],
+            extent=[
+                float(test_times.min()),
+                float(test_times.max()),
+                float(train_times.min()),
+                float(train_times.max()),
+            ],
             vmin=vmin,
             vmax=vmax,
             cmap="viridis",
@@ -239,7 +251,87 @@ def save_fig_mvpa_temporal_generalization_cross_epoch(
     fig_path = figures_dir / "tg_cross_epoch_timegen_2panel.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    return {"figure_path": fig_path}
+    fig_5x5_path = figures_dir / "tg_cross_epoch_timegen_matrices_5x5.png"
+    if not matrix_day_pair_df.empty:
+        fig = plt.figure(figsize=(18.5, 14.0))
+        gs = fig.add_gridspec(
+            10,
+            5,
+            left=0.06,
+            right=0.90,
+            top=0.94,
+            bottom=0.05,
+            wspace=0.28,
+            hspace=0.40,
+        )
+        day_grid = [1, 2, 3, 4, 5]
+        direction_order = ["stim_to_feedback", "feedback_to_stim"]
+        vmin = float(matrix_day_pair_df["auc_mean"].min())
+        vmax = float(matrix_day_pair_df["auc_mean"].max())
+        im = None
+        for block_i, direction in enumerate(direction_order):
+            d_dir = matrix_day_pair_df[matrix_day_pair_df["direction"] == direction].copy()
+            for i, train_day in enumerate(day_grid):
+                for j, test_day in enumerate(day_grid):
+                    ax = fig.add_subplot(gs[block_i * 5 + i, j])
+                    g = d_dir[
+                        (d_dir["train_day"] == train_day)
+                        & (d_dir["test_day"] == test_day)
+                    ].copy()
+                    if g.empty:
+                        ax.axis("off")
+                        continue
+                    train_times = np.sort(g["train_time_sec"].unique().astype(float))
+                    test_times = np.sort(g["test_time_sec"].unique().astype(float))
+                    mat = np.full((len(train_times), len(test_times)), np.nan)
+                    for _, row in g.iterrows():
+                        ii = int(
+                            np.where(train_times == float(row["train_time_sec"]))[0][0]
+                        )
+                        jj = int(
+                            np.where(test_times == float(row["test_time_sec"]))[0][0]
+                        )
+                        mat[ii, jj] = float(row["auc_mean"])
+                    im = ax.imshow(
+                        np.ma.masked_invalid(mat),
+                        origin="lower",
+                        aspect="auto",
+                        extent=[
+                            float(test_times.min()),
+                            float(test_times.max()),
+                            float(train_times.min()),
+                            float(train_times.max()),
+                        ],
+                        vmin=vmin,
+                        vmax=vmax,
+                        cmap="viridis",
+                    )
+                    ax.axvline(0.0, color="white", linestyle=":", linewidth=0.8)
+                    ax.axhline(0.0, color="white", linestyle=":", linewidth=0.8)
+                    if i == 0:
+                        ax.set_title(f"Test D{test_day}", fontsize=9)
+                    if j == 0:
+                        ax.set_ylabel(
+                            f"{_direction_label(direction)}\nTrain D{train_day}",
+                            fontsize=8,
+                        )
+                    if i == 4:
+                        ax.set_xlabel("Test Time (s)")
+                    else:
+                        ax.set_xticklabels([])
+                    if j != 0:
+                        ax.set_yticklabels([])
+        fig.suptitle("Cross-Epoch Temporal Generalization by Day Pair (A/B)")
+        cax = fig.add_axes([0.92, 0.15, 0.015, 0.72])
+        if im is not None:
+            fig.colorbar(im, cax=cax, label="AUC")
+        else:
+            cax.axis("off")
+        fig.savefig(fig_5x5_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        fig_5x5_path = None
+    return {"figure_path": fig_path, "timegen_figure_path": fig_5x5_path}
 
 
 def run_mvpa_tg_cross_epoch(
@@ -259,6 +351,8 @@ def run_mvpa_tg_cross_epoch(
     subject_csv = output_dir / "tg_cross_epoch_subject_level.csv"
     day_mean_csv = output_dir / "tg_cross_epoch_day_mean.csv"
     matrix_csv = output_dir / "tg_cross_epoch_timegen_day_mean.csv"
+    day_pair_csv = output_dir / "tg_cross_epoch_day_pair_mean.csv"
+    matrix_day_pair_csv = output_dir / "tg_cross_epoch_timegen_day_pair_mean.csv"
     qc_csv = output_dir / "tg_cross_epoch_qc_log.csv"
 
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
@@ -287,35 +381,45 @@ def run_mvpa_tg_cross_epoch(
     pair_items = []
     for subject in sorted({k[0] for k in prepared_map}):
         days = sorted({k[1] for k in prepared_map if k[0] == subject})
-        for day in days:
-            if (subject, day, "stim") not in prepared_map or (subject, day, "feedback") not in prepared_map:
-                continue
-            stim_item = prepared_map[(subject, day, "stim")]
-            fb_item = prepared_map[(subject, day, "feedback")]
-            for direction, train_kind, test_kind in [
-                ("stim_to_feedback", "stim", "feedback"),
-                ("feedback_to_stim", "feedback", "stim"),
-            ]:
-                train_item = prepared_map[(subject, day, train_kind)]
-                test_item = prepared_map[(subject, day, test_kind)]
-                pair_items.append(
-                    {
-                        "subject": subject,
-                        "day": day,
-                        "direction": direction,
-                        "train_kind": train_kind,
-                        "test_kind": test_kind,
-                        "train_cache_path": train_item["cache_path"],
-                        "test_cache_path": test_item["cache_path"],
-                        "train_session_file": train_item["session_file"],
-                        "test_session_file": test_item["session_file"],
-                        "pair_seed": int(np.random.default_rng(random_state + subject * 100 + day).integers(0, 2**31 - 1)),
-                    }
-                )
+        for train_day in days:
+            for test_day in days:
+                for direction, train_kind, test_kind in [
+                    ("stim_to_feedback", "stim", "feedback"),
+                    ("feedback_to_stim", "feedback", "stim"),
+                ]:
+                    if (
+                        (subject, train_day, train_kind) not in prepared_map
+                        or (subject, test_day, test_kind) not in prepared_map
+                    ):
+                        continue
+                    train_item = prepared_map[(subject, train_day, train_kind)]
+                    test_item = prepared_map[(subject, test_day, test_kind)]
+                    pair_items.append(
+                        {
+                            "subject": subject,
+                            "train_day": train_day,
+                            "test_day": test_day,
+                            "direction": direction,
+                            "train_kind": train_kind,
+                            "test_kind": test_kind,
+                            "train_cache_path": train_item["cache_path"],
+                            "test_cache_path": test_item["cache_path"],
+                            "train_session_file": train_item["session_file"],
+                            "test_session_file": test_item["session_file"],
+                            "pair_seed": int(
+                                np.random.default_rng(
+                                    random_state
+                                    + subject * 1000
+                                    + train_day * 100
+                                    + test_day
+                                ).integers(0, 2**31 - 1)
+                            ),
+                        }
+                    )
 
     print(
-        f"[TG cross-epoch] Starting cross-epoch transfer on {len(prepared_map)//2} sessions, "
-        f"{len(pair_items)} pairs (n_workers={n_workers})...",
+        f"[TG cross-epoch] Starting cross-epoch transfer on {len(prepared_map)} cached "
+        f"session entries, {len(pair_items)} pairs (n_workers={n_workers})...",
         flush=True,
     )
 
@@ -331,7 +435,7 @@ def run_mvpa_tg_cross_epoch(
     elif pair_items:
         if threadpool_limits is None:
             result_iter = Parallel(
-                n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
+                n_jobs=n_workers, backend="threading", verbose=0, return_as="generator_unordered"
             )(
                 delayed(process_cross_epoch_pair)(item, random_state=random_state)
                 for item in pair_items
@@ -340,7 +444,10 @@ def run_mvpa_tg_cross_epoch(
         else:
             with threadpool_limits(limits=1):
                 result_iter = Parallel(
-                    n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
+                    n_jobs=n_workers,
+                    backend="threading",
+                    verbose=0,
+                    return_as="generator_unordered",
                 )(
                     delayed(process_cross_epoch_pair)(item, random_state=random_state)
                     for item in pair_items
@@ -350,10 +457,14 @@ def run_mvpa_tg_cross_epoch(
     row_frames = []
     matrix_accum: dict[str, dict[str, np.ndarray]] = {}
     matrix_times: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    day_pair_accum: dict[tuple[str, int, int], dict[str, np.ndarray]] = {}
+    day_pair_times: dict[tuple[str, int, int], tuple[np.ndarray, np.ndarray]] = {}
     for result in results:
         if result["ok"]:
             row_frames.append(pd.DataFrame([result["row"]]))
             direction = result["row"]["direction"]
+            train_day = int(result["row"]["train_day"])
+            test_day = int(result["row"]["test_day"])
             train_time = result["train_time"]
             test_time = result["test_time"]
             mat = result["mat"]
@@ -366,6 +477,15 @@ def run_mvpa_tg_cross_epoch(
             valid = np.isfinite(mat)
             matrix_accum[direction]["sum"][valid] += mat[valid]
             matrix_accum[direction]["count"][valid] += 1.0
+            key = (direction, train_day, test_day)
+            if key not in day_pair_accum:
+                day_pair_accum[key] = {
+                    "sum": np.zeros_like(mat, dtype=float),
+                    "count": np.zeros_like(mat, dtype=float),
+                }
+                day_pair_times[key] = (train_time, test_time)
+            day_pair_accum[key]["sum"][valid] += mat[valid]
+            day_pair_accum[key]["count"][valid] += 1.0
         else:
             qc_rows.append(result["qc"])
             if len(qc_rows) >= max(progress_every, 1):
@@ -395,6 +515,25 @@ def run_mvpa_tg_cross_epoch(
         day_mean_df = pd.DataFrame(columns=["direction", "auc_mean", "auc_sem", "n_subjects"])
     day_mean_df.to_csv(day_mean_csv, index=False)
 
+    if not subject_df.empty:
+        day_pair_df = (
+            subject_df.groupby(["direction", "train_day", "test_day"], as_index=False)
+            .agg(
+                auc_mean=("diag_mean_auc", "mean"),
+                auc_sem=(
+                    "diag_mean_auc",
+                    lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+                ),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values(["direction", "train_day", "test_day"])
+        )
+    else:
+        day_pair_df = pd.DataFrame(
+            columns=["direction", "train_day", "test_day", "auc_mean", "auc_sem", "n_subjects"]
+        )
+    day_pair_df.to_csv(day_pair_csv, index=False)
+
     matrix_rows = []
     for direction, acc in sorted(matrix_accum.items()):
         train_time, test_time = matrix_times[direction]
@@ -415,6 +554,29 @@ def run_mvpa_tg_cross_epoch(
                     )
     matrix_df = pd.DataFrame(matrix_rows)
     matrix_df.to_csv(matrix_csv, index=False)
+
+    matrix_day_pair_rows = []
+    for (direction, train_day, test_day), acc in sorted(day_pair_accum.items()):
+        train_time, test_time = day_pair_times[(direction, train_day, test_day)]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean_mat = acc["sum"] / acc["count"]
+        for i, tt in enumerate(train_time):
+            for j, te in enumerate(test_time):
+                val = mean_mat[i, j]
+                if np.isfinite(val):
+                    matrix_day_pair_rows.append(
+                        {
+                            "direction": direction,
+                            "train_day": int(train_day),
+                            "test_day": int(test_day),
+                            "train_time_sec": float(tt),
+                            "test_time_sec": float(te),
+                            "auc_mean": float(val),
+                            "n_subjects": int(acc["count"][i, j]),
+                        }
+                    )
+    matrix_day_pair_df = pd.DataFrame(matrix_day_pair_rows)
+    matrix_day_pair_df.to_csv(matrix_day_pair_csv, index=False)
     qc_df = pd.read_csv(qc_csv) if qc_csv.exists() else pd.DataFrame(columns=qc_columns)
 
     if save_figures:
@@ -434,13 +596,18 @@ def run_mvpa_tg_cross_epoch(
     return {
         "subject_df": subject_df,
         "day_mean_df": day_mean_df,
+        "day_pair_df": day_pair_df,
         "matrix_df": matrix_df,
+        "matrix_day_pair_df": matrix_day_pair_df,
         "qc_df": qc_df,
         "subject_csv": subject_csv,
         "day_mean_csv": day_mean_csv,
+        "day_pair_csv": day_pair_csv,
         "matrix_csv": matrix_csv,
+        "matrix_day_pair_csv": matrix_day_pair_csv,
         "qc_csv": qc_csv,
         "figure_path": fig_result.get("figure_path"),
+        "timegen_figure_path": fig_result.get("timegen_figure_path"),
     }
 
 
