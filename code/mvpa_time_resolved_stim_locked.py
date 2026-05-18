@@ -62,6 +62,18 @@ def build_clf(random_state: int):
     )
 
 
+def vector_corr(x_vec, y_vec):
+    valid = np.isfinite(x_vec) & np.isfinite(y_vec)
+    if int(np.sum(valid)) < 3:
+        return np.nan
+    x_use = x_vec[valid] - np.nanmean(x_vec[valid])
+    y_use = y_vec[valid] - np.nanmean(y_vec[valid])
+    denom = np.sqrt(np.sum(x_use**2) * np.sum(y_use**2))
+    if (not np.isfinite(denom)) or denom <= np.finfo(float).eps:
+        return np.nan
+    return float(np.sum(x_use * y_use) / denom)
+
+
 def make_haufe_info_from_pos_df(pos_df):
     ch_names = pos_df["channel"].tolist()
     ch_pos = {
@@ -290,6 +302,120 @@ def plot_haufe_topo_at_peak(peak_df, haufe_day_mean_df, pos_df, figures_dir):
     else:
         cax.axis("off")
     fig.tight_layout(rect=[0, 0, 0.90, 0.95])
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = figures_dir / "mvpa_haufe_similarity_timegen_matrices_5x5.png"
+
+    if haufe_day_mean_df.empty:
+        fig = plt.figure(figsize=(10, 4))
+        fig.text(0.5, 0.5, "No Haufe similarity data available", ha="center", va="center")
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return fig_path
+
+    day_grid = [1, 2, 3, 4, 5]
+    channel_order = sorted(haufe_day_mean_df["channel"].dropna().unique().tolist())
+    similarity_maps = {}
+    time_maps = {}
+    for day in day_grid:
+        d_day = haufe_day_mean_df[haufe_day_mean_df["day"] == day].copy()
+        if d_day.empty:
+            continue
+        times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
+        time_maps[day] = times
+        vec_map = {}
+        for t in times:
+            d_time = d_day[np.isclose(d_day["time_sec"], t)]
+            vec_map[float(t)] = (
+                d_time.set_index("channel").reindex(channel_order)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+        similarity_maps[day] = vec_map
+
+    peak_medians = {}
+    if not peak_df.empty:
+        peak_medians = {
+            (int(r["day"]), str(r["peak"])): float(r["peak_time_sec"])
+            for _, r in (
+                peak_df.groupby(["day", "peak"], as_index=False)["peak_time_sec"]
+                .median()
+                .iterrows()
+            )
+        }
+
+    fig, axes = plt.subplots(5, 5, figsize=(18.0, 16.0), squeeze=False)
+    im = None
+    for i, train_day in enumerate(day_grid):
+        for j, test_day in enumerate(day_grid):
+            ax = axes[i, j]
+            train_times = time_maps.get(train_day)
+            test_times = time_maps.get(test_day)
+            if train_times is None or test_times is None:
+                ax.axis("off")
+                continue
+            mat = np.full((len(train_times), len(test_times)), np.nan)
+            train_vecs = similarity_maps[train_day]
+            test_vecs = similarity_maps[test_day]
+            for ti, t_train in enumerate(train_times):
+                x_vec = train_vecs[float(t_train)]
+                for tj, t_test in enumerate(test_times):
+                    y_vec = test_vecs[float(t_test)]
+                    mat[ti, tj] = vector_corr(x_vec, y_vec)
+            im = ax.imshow(
+                np.ma.masked_invalid(mat),
+                origin="lower",
+                aspect="auto",
+                extent=[
+                    float(test_times.min()),
+                    float(test_times.max()),
+                    float(train_times.min()),
+                    float(train_times.max()),
+                ],
+                vmin=-1.0,
+                vmax=1.0,
+                cmap="RdBu_r",
+            )
+            ax.axvline(0.0, color="white", linestyle=":", linewidth=0.8)
+            ax.axhline(0.0, color="white", linestyle=":", linewidth=0.8)
+            for peak_label, color in [("early", "#b22222"), ("late", "#ff7f0e")]:
+                if (test_day, peak_label) in peak_medians:
+                    ax.axvline(
+                        peak_medians[(test_day, peak_label)],
+                        color=color,
+                        linestyle="--",
+                        linewidth=0.9,
+                    )
+                if (train_day, peak_label) in peak_medians:
+                    ax.axhline(
+                        peak_medians[(train_day, peak_label)],
+                        color=color,
+                        linestyle="--",
+                        linewidth=0.9,
+                    )
+            if i == 0:
+                ax.set_title(f"Test D{test_day}", fontsize=9)
+            if j == 0:
+                ax.set_ylabel(f"Train D{train_day}", fontsize=9)
+            if i == 4:
+                ax.set_xlabel("Test Time (s)")
+            else:
+                ax.set_xticklabels([])
+            if j != 0:
+                ax.set_yticklabels([])
+
+    fig.suptitle("Haufe Pattern Similarity by Day Pair (A/B)", y=0.98)
+    fig.subplots_adjust(top=0.94, bottom=0.06, left=0.06, right=0.90, wspace=0.26, hspace=0.36)
+    cax = fig.add_axes([0.92, 0.14, 0.015, 0.72])
+    if im is not None:
+        fig.colorbar(im, cax=cax, label="Pattern correlation")
+    else:
+        cax.axis("off")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -638,21 +764,50 @@ def run_stimulus_locked_mvpa_analysis(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ConvergenceWarning)
             warnings.simplefilter("ignore", UserWarning)
-            model = smf.mixedlm("auc ~ day", data=g, groups=g["subject"]).fit(
-                reml=False, method="lbfgs", disp=False
-            )
-            effect_rows.append(
-                {
-                    "time_sec": float(t),
-                    "n_rows": int(len(g)),
-                    "n_subjects": int(g["subject"].nunique()),
-                    "day_coef": float(model.params["day"]),
-                    "day_se": float(model.bse["day"]),
-                    "day_pvalue": float(model.pvalues["day"]),
-                    "status": "ok",
-                    "detail": "",
-                }
-            )
+            try:
+                model = smf.mixedlm("auc ~ day", data=g, groups=g["subject"]).fit(
+                    reml=False, method="lbfgs", disp=False
+                )
+                effect_rows.append(
+                    {
+                        "time_sec": float(t),
+                        "n_rows": int(len(g)),
+                        "n_subjects": int(g["subject"].nunique()),
+                        "day_coef": float(model.params["day"]),
+                        "day_se": float(model.bse["day"]),
+                        "day_pvalue": float(model.pvalues["day"]),
+                        "status": "ok",
+                        "detail": "",
+                    }
+                )
+            except Exception as exc:
+                try:
+                    model = smf.ols("auc ~ day", data=g).fit()
+                    effect_rows.append(
+                        {
+                            "time_sec": float(t),
+                            "n_rows": int(len(g)),
+                            "n_subjects": int(g["subject"].nunique()),
+                            "day_coef": float(model.params["day"]),
+                            "day_se": float(model.bse["day"]),
+                            "day_pvalue": float(model.pvalues["day"]),
+                            "status": "ols_fallback",
+                            "detail": str(exc),
+                        }
+                    )
+                except Exception as exc2:
+                    effect_rows.append(
+                        {
+                            "time_sec": float(t),
+                            "n_rows": int(len(g)),
+                            "n_subjects": int(g["subject"].nunique()),
+                            "day_coef": np.nan,
+                            "day_se": np.nan,
+                            "day_pvalue": np.nan,
+                            "status": "fit_error",
+                            "detail": f"{exc}; fallback={exc2}",
+                        }
+                    )
 
     day_effect_df = pd.DataFrame(effect_rows).sort_values("time_sec")
     day_effect_df["p_fdr"] = np.nan
@@ -738,6 +893,7 @@ def save_fig_mvpa_time_resolved(
     fig_day_panels = figures_dir / "mvpa_auc_by_day_panels.png"
     fig_day_slope = figures_dir / "mvpa_day_slope_timecourse.png"
     fig_haufe_stability = figures_dir / "mvpa_haufe_peak_stability.png"
+    fig_haufe_similarity = figures_dir / "mvpa_haufe_similarity_timegen_matrices_5x5.png"
 
     if (not day_means_csv.exists()) or (not day_effect_csv.exists()):
         raise FileNotFoundError(
@@ -776,17 +932,6 @@ def save_fig_mvpa_time_resolved(
         peak_df = pd.DataFrame(rows).sort_values(["day", "peak", "subject"])
         peak_df.to_csv(haufe_peak_times_csv, index=False)
         return peak_df
-
-    def vector_corr(x_vec, y_vec):
-        valid = np.isfinite(x_vec) & np.isfinite(y_vec)
-        if int(np.sum(valid)) < 3:
-            return np.nan
-        x_use = x_vec[valid] - np.nanmean(x_vec[valid])
-        y_use = y_vec[valid] - np.nanmean(y_vec[valid])
-        denom = np.sqrt(np.sum(x_use**2) * np.sum(y_use**2))
-        if (not np.isfinite(denom)) or denom <= np.finfo(float).eps:
-            return np.nan
-        return float(np.sum(x_use * y_use) / denom)
 
     def write_haufe_stability(peak_df, haufe_ch_names):
         if (not haufe_session_csv.exists()) or peak_df.empty:
@@ -973,6 +1118,11 @@ def save_fig_mvpa_time_resolved(
         haufe_topo_peak_path = plot_haufe_topo_at_peak(
             peak_df, haufe_df, pos_df, figures_dir
         )
+    haufe_similarity_path = None
+    if not haufe_df.empty:
+        haufe_similarity_path = plot_haufe_similarity_day_pairs(
+            peak_df, haufe_df, figures_dir
+        )
 
     days = sorted(day_means_df["day"].unique())
     fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 5.2), sharey=True, squeeze=False)
@@ -1084,8 +1234,10 @@ def save_fig_mvpa_time_resolved(
             "day_panels": fig_day_panels,
             "day_slope": fig_day_slope,
             "haufe_stability": fig_haufe_stability,
+            "haufe_similarity": fig_haufe_similarity,
             "peak_latency_trajectory": peak_latency_path,
             "haufe_topo_at_peak": haufe_topo_peak_path,
+            "haufe_similarity_day_pairs": haufe_similarity_path,
         },
         "haufe_stability_subject_csv": haufe_stability_subject_csv,
         "haufe_stability_summary_csv": haufe_stability_summary_csv,

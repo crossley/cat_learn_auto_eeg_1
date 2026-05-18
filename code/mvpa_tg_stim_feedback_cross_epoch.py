@@ -36,7 +36,7 @@ from mvpa_tg_within_day import balanced_day_subset, build_clf, prepare_session_c
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
-N_JOBS = 8
+N_JOBS = 2
 
 TRAIN_TEST_DIRECTIONS = {
     "stim_to_feedback": ("stim", "feedback"),
@@ -435,7 +435,7 @@ def run_mvpa_tg_cross_epoch(
     elif pair_items:
         if threadpool_limits is None:
             result_iter = Parallel(
-                n_jobs=n_workers, backend="threading", verbose=0, return_as="generator_unordered"
+                n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
             )(
                 delayed(process_cross_epoch_pair)(item, random_state=random_state)
                 for item in pair_items
@@ -445,7 +445,7 @@ def run_mvpa_tg_cross_epoch(
             with threadpool_limits(limits=1):
                 result_iter = Parallel(
                     n_jobs=n_workers,
-                    backend="threading",
+                    backend="loky",
                     verbose=0,
                     return_as="generator_unordered",
                 )(
