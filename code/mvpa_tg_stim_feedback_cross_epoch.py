@@ -270,21 +270,11 @@ def save_fig_mvpa_temporal_generalization_cross_epoch(
         vmax = float(matrix_day_pair_df["auc_mean"].max())
         for direction in direction_order:
             d_dir = matrix_day_pair_df[matrix_day_pair_df["direction"] == direction].copy()
-            fig = plt.figure(figsize=(18.5, 8.2))
-            gs = fig.add_gridspec(
-                5,
-                5,
-                left=0.06,
-                right=0.90,
-                top=0.92,
-                bottom=0.08,
-                wspace=0.28,
-                hspace=0.40,
-            )
+            fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False)
             im = None
             for i, train_day in enumerate(day_grid):
                 for j, test_day in enumerate(day_grid):
-                    ax = fig.add_subplot(gs[i, j])
+                    ax = axes[i, j]
                     g = d_dir[
                         (d_dir["train_day"] == train_day)
                         & (d_dir["test_day"] == test_day)
@@ -333,7 +323,10 @@ def save_fig_mvpa_temporal_generalization_cross_epoch(
                 f"Cross-Epoch Temporal Generalization by Day Pair (A/B) - "
                 f"{_direction_label(direction)}"
             )
-            cax = fig.add_axes([0.92, 0.15, 0.015, 0.72])
+            fig.subplots_adjust(
+                top=0.94, bottom=0.05, left=0.05, right=0.90, wspace=0.30, hspace=0.35
+            )
+            cax = fig.add_axes([0.92, 0.12, 0.015, 0.74])
             if im is not None:
                 fig.colorbar(im, cax=cax, label="AUC")
             else:
