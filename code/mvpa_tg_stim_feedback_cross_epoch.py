@@ -37,7 +37,7 @@ from mvpa_tg_within_day import balanced_day_subset, build_clf, prepare_session_c
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
-N_JOBS = 2
+N_JOBS = 8
 
 TRAIN_TEST_DIRECTIONS = {
     "stim_to_feedback": ("stim", "feedback"),

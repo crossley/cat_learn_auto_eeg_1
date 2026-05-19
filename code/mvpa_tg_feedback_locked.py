@@ -334,10 +334,6 @@ def save_fig_mvpa_temporal_generalization_feedback_cross_day(
             for i, train_day in enumerate(day_grid):
                 for j, test_day in enumerate(day_grid):
                     ax = axes[i, j]
-                    if train_day == test_day:
-                        ax.axis("off")
-                        ax.text(0.5, 0.5, f"D{train_day}=D{test_day}", ha="center", va="center")
-                        continue
                     g = d_mat[
                         (d_mat["train_day"] == train_day) & (d_mat["test_day"] == test_day)
                     ]
@@ -611,8 +607,6 @@ def run_mvpa_tg_feedback_locked(
             continue
         for d_train in subject_days:
             for d_test in subject_days:
-                if d_test == d_train:
-                    continue
                 train_item = prepared_map[(subject, d_train)]
                 test_item = prepared_map[(subject, d_test)]
                 pair_items.append(
