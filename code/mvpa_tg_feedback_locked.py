@@ -23,6 +23,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 from sklearn.exceptions import ConvergenceWarning as SklearnConvergenceWarning
 from mne.decoding import GeneralizingEstimator
+from sklearn.model_selection import StratifiedKFold
 
 try:
     from threadpoolctl import threadpool_limits
@@ -42,6 +43,60 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
+
+
+def vector_corr(x_vec, y_vec):
+    valid = np.isfinite(x_vec) & np.isfinite(y_vec)
+    if int(np.sum(valid)) < 3:
+        return np.nan
+    x_use = x_vec[valid] - np.nanmean(x_vec[valid])
+    y_use = y_vec[valid] - np.nanmean(y_vec[valid])
+    denom = np.sqrt(np.sum(x_use**2) * np.sum(y_use**2))
+    if (not np.isfinite(denom)) or denom <= np.finfo(float).eps:
+        return np.nan
+    return float(np.sum(x_use * y_use) / denom)
+
+
+def compute_haufe_patterns_from_xy(X, y, random_state: int):
+    n_times = X.shape[2]
+    n_ch = X.shape[1]
+    patterns = np.full((n_ch, n_times), np.nan, dtype=float)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    for ti in range(n_times):
+        Xt = X[:, :, ti]
+        fold_patterns = []
+        for tr, _ in cv.split(Xt, y):
+            Xt_tr = Xt[tr]
+            y_tr = y[tr]
+            clf = build_clf(random_state=random_state)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SklearnConvergenceWarning)
+                    clf.fit(Xt_tr, y_tr)
+            except Exception:
+                continue
+            scaler = clf.named_steps["scaler"]
+            logreg = clf.named_steps["logreg"]
+            w_scaled = logreg.coef_.ravel().astype(float)
+            scale = np.asarray(scaler.scale_, dtype=float)
+            scale[scale == 0] = 1.0
+            w_sensor = w_scaled / scale
+            if Xt_tr.shape[0] < 2:
+                continue
+            cov_x = np.cov(Xt_tr, rowvar=False, ddof=1)
+            fold_patterns.append(cov_x @ w_sensor)
+        if fold_patterns:
+            patterns[:, ti] = np.nanmean(np.vstack(fold_patterns), axis=0)
+    return patterns
+
+
+def _extract_channel_positions(epochs):
+    rows = []
+    for ch in epochs.ch_names:
+        idx = epochs.info.ch_names.index(ch)
+        loc = epochs.info["chs"][idx]["loc"][:3]
+        rows.append({"channel": ch, "x": float(loc[0]), "y": float(loc[1]), "z": float(loc[2])})
+    return rows
 
 
 def prepare_feedback_data(epochs, behaviour):
@@ -323,6 +378,94 @@ def save_fig_mvpa_temporal_generalization_feedback_cross_day(
     return {"figure_path": fig_cross, "timegen_figure_path": fig_cross_timegen}
 
 
+def save_feedback_haufe_figures(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    haufe_day_mean_csv = output_dir / "tg_feedback_cat_haufe_day_mean_channel_time.csv"
+    haufe_channel_pos_csv = output_dir / "tg_feedback_cat_haufe_channel_positions.csv"
+    similarity_fig = figures_dir / "tg_feedback_cat_haufe_similarity_timegen_matrices_5x5.png"
+
+    if (not haufe_day_mean_csv.exists()) or (not haufe_channel_pos_csv.exists()):
+        return {"similarity_figure_path": None}
+
+    haufe_df = pd.read_csv(haufe_day_mean_csv)
+    pos_df = pd.read_csv(haufe_channel_pos_csv)
+    if haufe_df.empty or pos_df.empty:
+        return {"similarity_figure_path": None}
+
+    ch_names = pos_df["channel"].tolist()
+    by_day = {}
+    for day, d_day in haufe_df.groupby("day"):
+        times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
+        vecs = {}
+        for t in times:
+            d_t = d_day[np.isclose(d_day["time_sec"], t)]
+            vecs[float(t)] = (
+                d_t.set_index("channel").reindex(ch_names)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+        by_day[int(day)] = (times, vecs)
+
+    fig, axes = plt.subplots(5, 5, figsize=(18.0, 16.0), squeeze=False)
+    im = None
+    day_grid = [1, 2, 3, 4, 5]
+    for i, train_day in enumerate(day_grid):
+        for j, test_day in enumerate(day_grid):
+            ax = axes[i, j]
+            if train_day not in by_day or test_day not in by_day:
+                ax.axis("off")
+                continue
+            train_times, train_vecs = by_day[train_day]
+            test_times, test_vecs = by_day[test_day]
+            mat = np.full((len(train_times), len(test_times)), np.nan)
+            for ti, t_train in enumerate(train_times):
+                x_vec = train_vecs[float(t_train)]
+                for tj, t_test in enumerate(test_times):
+                    y_vec = test_vecs[float(t_test)]
+                    mat[ti, tj] = vector_corr(x_vec, y_vec)
+            im = ax.imshow(
+                np.ma.masked_invalid(mat),
+                origin="lower",
+                aspect="auto",
+                extent=[
+                    float(test_times.min()),
+                    float(test_times.max()),
+                    float(train_times.min()),
+                    float(train_times.max()),
+                ],
+                vmin=-1.0,
+                vmax=1.0,
+                cmap="RdBu_r",
+            )
+            ax.axvline(0.0, color="white", linestyle=":", linewidth=0.8)
+            ax.axhline(0.0, color="white", linestyle=":", linewidth=0.8)
+            if i == 0:
+                ax.set_title(f"Test D{test_day}", fontsize=9)
+            if j == 0:
+                ax.set_ylabel(f"Train-day time on D{train_day} (s)", fontsize=9)
+            if i == 4:
+                ax.set_xlabel("Test-day time (s)")
+            else:
+                ax.set_xticklabels([])
+            if j != 0:
+                ax.set_yticklabels([])
+
+    fig.suptitle("Feedback Haufe Pattern Similarity by Day Pair (A/B)", y=0.98)
+    fig.subplots_adjust(top=0.94, bottom=0.06, left=0.06, right=0.90, wspace=0.26, hspace=0.36)
+    cax = fig.add_axes([0.92, 0.14, 0.015, 0.72])
+    if im is not None:
+        fig.colorbar(im, cax=cax, label="Pattern correlation")
+    else:
+        cax.axis("off")
+    fig.savefig(similarity_fig, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return {"similarity_figure_path": similarity_fig}
+
+
 def run_mvpa_tg_feedback_locked(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -342,6 +485,9 @@ def run_mvpa_tg_feedback_locked(
     cross_day_mean_csv = output_dir / "tg_feedback_cat_day_mean.csv"
     cross_matrix_dir = output_dir
     cross_matrix_day_mean_csv = output_dir / "tg_feedback_cat_timegen_day_mean.csv"
+    haufe_session_csv = output_dir / "tg_feedback_cat_haufe_session_channel_time.csv"
+    haufe_day_mean_csv = output_dir / "tg_feedback_cat_haufe_day_mean_channel_time.csv"
+    haufe_channel_pos_csv = output_dir / "tg_feedback_cat_haufe_channel_positions.csv"
     qc_csv = output_dir / "tg_feedback_cat_qc_log.csv"
 
     qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
@@ -369,10 +515,87 @@ def run_mvpa_tg_feedback_locked(
         if not result["ok"]:
             qc_rows.append(result["qc"])
         else:
-            prepared_map[(result["subject"], result["day"])] = result
+            item = next(
+                x
+                for x in session_items
+                if int(x["subject"]) == int(result["subject"]) and int(x["day"]) == int(result["day"])
+            )
+            prepared_map[(result["subject"], result["day"])] = {
+                **result,
+                "epochs": item["epochs"],
+            }
     if qc_rows:
         wrote_qc = append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
         qc_rows = []
+
+    haufe_rows = []
+    channel_pos_rows = {}
+    for key in sorted(prepared_map):
+        item = prepared_map[key]
+        try:
+            with np.load(item["cache_path"], allow_pickle=False) as z:
+                X = z["X"]
+                y = z["y"]
+                t = z["t"]
+                ch_names = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
+            if len(ch_names) == 0:
+                continue
+            patterns = compute_haufe_patterns_from_xy(X, y, random_state=random_state)
+            for ci, ch in enumerate(ch_names):
+                loc = item["epochs"].info["chs"][item["epochs"].info.ch_names.index(ch)]["loc"][:3]
+                channel_pos_rows.setdefault(
+                    ch,
+                    {"channel": ch, "x": float(loc[0]), "y": float(loc[1]), "z": float(loc[2])},
+                )
+                for ti, tsec in enumerate(t):
+                    val = float(patterns[ci, ti])
+                    haufe_rows.append(
+                        {
+                            "subject": int(item["subject"]),
+                            "day": int(item["day"]),
+                            "session_file": item["session_file"],
+                            "channel": ch,
+                            "time_sec": float(tsec),
+                            "pattern": val,
+                            "abs_pattern": float(np.abs(val)),
+                        }
+                    )
+        except Exception as exc:
+            qc_rows.append(
+                {
+                    "session_file": item["session_file"],
+                    "subject": int(item["subject"]),
+                    "day": int(item["day"]),
+                    "stage": "haufe",
+                    "reason": "compute_error",
+                    "detail": str(exc),
+                }
+            )
+    if haufe_rows:
+        haufe_session_df = pd.DataFrame(haufe_rows)
+        haufe_day_mean_df = (
+            haufe_session_df.groupby(["day", "channel", "time_sec"], as_index=False)
+            .agg(
+                pattern_mean=("pattern", "mean"),
+                pattern_sem=(
+                    "pattern",
+                    lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+                ),
+                abs_pattern_mean=("abs_pattern", "mean"),
+                n_subjects=("subject", "nunique"),
+            )
+            .sort_values(["day", "channel", "time_sec"])
+        )
+        haufe_pos_df = pd.DataFrame(
+            [channel_pos_rows[ch] for ch in sorted(channel_pos_rows)]
+        )
+        haufe_session_df.to_csv(haufe_session_csv, index=False)
+        haufe_day_mean_df.to_csv(haufe_day_mean_csv, index=False)
+        haufe_pos_df.to_csv(haufe_channel_pos_csv, index=False)
+    else:
+        pd.DataFrame().to_csv(haufe_session_csv, index=False)
+        pd.DataFrame().to_csv(haufe_day_mean_csv, index=False)
+        pd.DataFrame().to_csv(haufe_channel_pos_csv, index=False)
 
     if n_workers is None:
         n_workers = N_JOBS
@@ -503,9 +726,15 @@ def run_mvpa_tg_feedback_locked(
     qc_df = pd.read_csv(qc_csv) if qc_csv.exists() else pd.DataFrame(columns=qc_columns)
 
     if save_figures:
-        save_fig_mvpa_temporal_generalization_feedback_cross_day(
+        fig_result = save_fig_mvpa_temporal_generalization_feedback_cross_day(
             output_dir=output_dir, figures_dir=figures_dir
         )
+        haufe_fig_result = save_feedback_haufe_figures(
+            output_dir=output_dir, figures_dir=figures_dir
+        )
+    else:
+        fig_result = {}
+        haufe_fig_result = {}
 
     return {
         "cross_subject_df": cross_subject_df,
@@ -515,6 +744,12 @@ def run_mvpa_tg_feedback_locked(
         "cross_day_mean_csv": cross_day_mean_csv,
         "cross_matrix_day_mean_csv": cross_matrix_day_mean_csv,
         "qc_csv": qc_csv,
+        "figure_path": fig_result.get("figure_path"),
+        "timegen_figure_path": fig_result.get("timegen_figure_path"),
+        "haufe_similarity_figure_path": haufe_fig_result.get("similarity_figure_path"),
+        "haufe_session_csv": haufe_session_csv,
+        "haufe_day_mean_csv": haufe_day_mean_csv,
+        "haufe_channel_pos_csv": haufe_channel_pos_csv,
     }
 
 

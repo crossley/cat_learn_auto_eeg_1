@@ -401,9 +401,9 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
             if i == 0:
                 ax.set_title(f"Test D{test_day}", fontsize=9)
             if j == 0:
-                ax.set_ylabel(f"Train D{train_day}", fontsize=9)
+                ax.set_ylabel(f"Train-day time on D{train_day} (s)", fontsize=9)
             if i == 4:
-                ax.set_xlabel("Test Time (s)")
+                ax.set_xlabel("Test-day time (s)")
             else:
                 ax.set_xticklabels([])
             if j != 0:

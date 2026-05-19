@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import gc
 import time
 import warnings
 from pathlib import Path
@@ -84,66 +85,89 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
     test_cache_path = pair_item["test_cache_path"]
     pair_seed = int(pair_item["pair_seed"])
 
-    with np.load(train_cache_path, allow_pickle=False) as z:
-        X_train_all = z["X"]
-        y_train_all = z["y"]
-        t_train = z["t"]
-        ch_train = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
-    with np.load(test_cache_path, allow_pickle=False) as z:
-        X_test_all = z["X"]
-        y_test_all = z["y"]
-        t_test = z["t"]
-        ch_test = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
+    X_train_all = y_train_all = t_train = ch_train = None
+    X_test_all = y_test_all = t_test = ch_test = None
+    X_train = y_train = X_test = y_test = mat_transfer = None
+    out = None
 
-    if len(ch_train) == 0 or len(ch_test) == 0 or ch_train.tolist() != ch_test.tolist():
-        return {
-            "ok": False,
-            "qc": {
-                "session_file": f"{train_session_file}->{test_session_file}",
-                "subject": subject,
-                "day": train_day,
-                "stage": "cross_epoch_channels",
-                "reason": "channel_mismatch",
-                "detail": f"train_n={len(ch_train)}, test_n={len(ch_test)}",
-            },
-        }
-
-    n_per_class = int(
-        min(
-            np.sum(y_train_all == 0),
-            np.sum(y_train_all == 1),
-            np.sum(y_test_all == 0),
-            np.sum(y_test_all == 1),
-        )
-    )
-    if n_per_class < 5:
-        return {
-            "ok": False,
-            "qc": {
-                "session_file": f"{train_session_file}->{test_session_file}",
-                "subject": subject,
-                "day": train_day,
-                "stage": "cross_epoch_balance",
-                "reason": "insufficient_balanced_trials",
-                "detail": f"n_per_class={n_per_class}",
-            },
-        }
-
-    rng_pair = np.random.default_rng(pair_seed)
-    X_train, y_train = balanced_day_subset(
-        X_train_all, y_train_all, n_per_class=n_per_class, rng=rng_pair
-    )
-    X_test, y_test = balanced_day_subset(
-        X_test_all, y_test_all, n_per_class=n_per_class, rng=rng_pair
-    )
-
-    clf = build_clf(random_state=random_state)
-    ge = GeneralizingEstimator(clf, scoring="roc_auc", n_jobs=1, verbose=False)
     try:
+        with np.load(train_cache_path, allow_pickle=False) as z:
+            X_train_all = z["X"]
+            y_train_all = z["y"]
+            t_train = z["t"]
+            ch_train = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
+        with np.load(test_cache_path, allow_pickle=False) as z:
+            X_test_all = z["X"]
+            y_test_all = z["y"]
+            t_test = z["t"]
+            ch_test = z["ch_names"] if "ch_names" in z.files else np.array([], dtype=str)
+
+        if len(ch_train) == 0 or len(ch_test) == 0 or ch_train.tolist() != ch_test.tolist():
+            return {
+                "ok": False,
+                "qc": {
+                    "session_file": f"{train_session_file}->{test_session_file}",
+                    "subject": subject,
+                    "day": train_day,
+                    "stage": "cross_epoch_channels",
+                    "reason": "channel_mismatch",
+                    "detail": f"train_n={len(ch_train)}, test_n={len(ch_test)}",
+                },
+            }
+
+        n_per_class = int(
+            min(
+                np.sum(y_train_all == 0),
+                np.sum(y_train_all == 1),
+                np.sum(y_test_all == 0),
+                np.sum(y_test_all == 1),
+            )
+        )
+        if n_per_class < 5:
+            return {
+                "ok": False,
+                "qc": {
+                    "session_file": f"{train_session_file}->{test_session_file}",
+                    "subject": subject,
+                    "day": train_day,
+                    "stage": "cross_epoch_balance",
+                    "reason": "insufficient_balanced_trials",
+                    "detail": f"n_per_class={n_per_class}",
+                },
+            }
+
+        rng_pair = np.random.default_rng(pair_seed)
+        X_train, y_train = balanced_day_subset(
+            X_train_all, y_train_all, n_per_class=n_per_class, rng=rng_pair
+        )
+        X_test, y_test = balanced_day_subset(
+            X_test_all, y_test_all, n_per_class=n_per_class, rng=rng_pair
+        )
+
+        clf = build_clf(random_state=random_state)
+        ge = GeneralizingEstimator(clf, scoring="roc_auc", n_jobs=1, verbose=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SklearnConvergenceWarning)
             ge.fit(X_train, y_train)
             mat_transfer = ge.score(X_test, y_test)
+        out = {
+            "ok": True,
+            "row": {
+                "subject": subject,
+                "train_day": train_day,
+                "test_day": test_day,
+                "direction": direction,
+                "train_kind": train_kind,
+                "test_kind": test_kind,
+                "n_per_class": int(n_per_class),
+                "n_train_trials_used": int(len(y_train)),
+                "n_test_trials_used": int(len(y_test)),
+                "diag_mean_auc": float(np.nanmean(np.diag(mat_transfer))),
+            },
+            "train_time": np.asarray(t_train, dtype=float),
+            "test_time": np.asarray(t_test, dtype=float),
+            "mat": np.asarray(mat_transfer, dtype=float),
+        }
     except Exception as exc:
         return {
             "ok": False,
@@ -156,25 +180,12 @@ def process_cross_epoch_pair(pair_item: dict, random_state: int):
                 "detail": str(exc),
             },
         }
-
-    return {
-        "ok": True,
-        "row": {
-            "subject": subject,
-            "train_day": train_day,
-            "test_day": test_day,
-            "direction": direction,
-            "train_kind": train_kind,
-            "test_kind": test_kind,
-            "n_per_class": int(n_per_class),
-            "n_train_trials_used": int(len(y_train)),
-            "n_test_trials_used": int(len(y_test)),
-            "diag_mean_auc": float(np.nanmean(np.diag(mat_transfer))),
-        },
-        "train_time": np.asarray(t_train, dtype=float),
-        "test_time": np.asarray(t_test, dtype=float),
-        "mat": np.asarray(mat_transfer, dtype=float),
-    }
+    finally:
+        X_train_all = y_train_all = t_train = ch_train = None
+        X_test_all = y_test_all = t_test = ch_test = None
+        X_train = y_train = X_test = y_test = mat_transfer = None
+        gc.collect()
+    return out
 
 
 def _append_csv(df: pd.DataFrame, path: Path, wrote_flag: bool):
@@ -373,93 +384,23 @@ def run_mvpa_tg_cross_epoch(
     if qc_rows:
         wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
         qc_rows = []
+    del sessions
+    gc.collect()
 
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
-
-    pair_items = []
-    for subject in sorted({k[0] for k in prepared_map}):
-        days = sorted({k[1] for k in prepared_map if k[0] == subject})
-        for train_day in days:
-            for test_day in days:
-                for direction, train_kind, test_kind in [
-                    ("stim_to_feedback", "stim", "feedback"),
-                    ("feedback_to_stim", "feedback", "stim"),
-                ]:
-                    if (
-                        (subject, train_day, train_kind) not in prepared_map
-                        or (subject, test_day, test_kind) not in prepared_map
-                    ):
-                        continue
-                    train_item = prepared_map[(subject, train_day, train_kind)]
-                    test_item = prepared_map[(subject, test_day, test_kind)]
-                    pair_items.append(
-                        {
-                            "subject": subject,
-                            "train_day": train_day,
-                            "test_day": test_day,
-                            "direction": direction,
-                            "train_kind": train_kind,
-                            "test_kind": test_kind,
-                            "train_cache_path": train_item["cache_path"],
-                            "test_cache_path": test_item["cache_path"],
-                            "train_session_file": train_item["session_file"],
-                            "test_session_file": test_item["session_file"],
-                            "pair_seed": int(
-                                np.random.default_rng(
-                                    random_state
-                                    + subject * 1000
-                                    + train_day * 100
-                                    + test_day
-                                ).integers(0, 2**31 - 1)
-                            ),
-                        }
-                    )
-
-    print(
-        f"[TG cross-epoch] Starting cross-epoch transfer on {len(prepared_map)} cached "
-        f"session entries, {len(pair_items)} pairs (n_workers={n_workers})...",
-        flush=True,
-    )
-
-    results = []
-    if n_workers == 1:
-        if threadpool_limits is None:
-            for item in pair_items:
-                results.append(process_cross_epoch_pair(item, random_state=random_state))
-        else:
-            with threadpool_limits(limits=1):
-                for item in pair_items:
-                    results.append(process_cross_epoch_pair(item, random_state=random_state))
-    elif pair_items:
-        if threadpool_limits is None:
-            result_iter = Parallel(
-                n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(
-                delayed(process_cross_epoch_pair)(item, random_state=random_state)
-                for item in pair_items
-            )
-            results.extend(list(result_iter))
-        else:
-            with threadpool_limits(limits=1):
-                result_iter = Parallel(
-                    n_jobs=n_workers,
-                    backend="loky",
-                    verbose=0,
-                    return_as="generator_unordered",
-                )(
-                    delayed(process_cross_epoch_pair)(item, random_state=random_state)
-                    for item in pair_items
-                )
-                results.extend(list(result_iter))
 
     row_frames = []
     matrix_accum: dict[str, dict[str, np.ndarray]] = {}
     matrix_times: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     day_pair_accum: dict[tuple[str, int, int], dict[str, np.ndarray]] = {}
     day_pair_times: dict[tuple[str, int, int], tuple[np.ndarray, np.ndarray]] = {}
-    for result in results:
+    total_pairs = 0
+    subjects = sorted({k[0] for k in prepared_map})
+
+    def handle_result(result: dict):
+        nonlocal wrote_qc, qc_rows
         if result["ok"]:
             row_frames.append(pd.DataFrame([result["row"]]))
             direction = result["row"]["direction"]
@@ -491,6 +432,83 @@ def run_mvpa_tg_cross_epoch(
             if len(qc_rows) >= max(progress_every, 1):
                 wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
                 qc_rows = []
+
+    for direction, (train_kind, test_kind) in TRAIN_TEST_DIRECTIONS.items():
+        pair_items = []
+        for subject in subjects:
+            days = sorted({k[1] for k in prepared_map if k[0] == subject})
+            for train_day in days:
+                for test_day in days:
+                    if (
+                        (subject, train_day, train_kind) not in prepared_map
+                        or (subject, test_day, test_kind) not in prepared_map
+                    ):
+                        continue
+                    train_item = prepared_map[(subject, train_day, train_kind)]
+                    test_item = prepared_map[(subject, test_day, test_kind)]
+                    pair_items.append(
+                        {
+                            "subject": subject,
+                            "train_day": train_day,
+                            "test_day": test_day,
+                            "direction": direction,
+                            "train_kind": train_kind,
+                            "test_kind": test_kind,
+                            "train_cache_path": train_item["cache_path"],
+                            "test_cache_path": test_item["cache_path"],
+                            "train_session_file": train_item["session_file"],
+                            "test_session_file": test_item["session_file"],
+                            "pair_seed": int(
+                                np.random.default_rng(
+                                    random_state
+                                    + subject * 1000
+                                    + train_day * 100
+                                    + test_day
+                                ).integers(0, 2**31 - 1)
+                            ),
+                        }
+                    )
+        total_pairs += len(pair_items)
+        print(
+            f"[TG cross-epoch] Processing {direction} on {len(pair_items)} pairs "
+            f"(n_workers={n_workers})...",
+            flush=True,
+        )
+        if not pair_items:
+            continue
+        if n_workers == 1:
+            if threadpool_limits is None:
+                for item in pair_items:
+                    handle_result(process_cross_epoch_pair(item, random_state=random_state))
+            else:
+                with threadpool_limits(limits=1):
+                    for item in pair_items:
+                        handle_result(process_cross_epoch_pair(item, random_state=random_state))
+        else:
+            if threadpool_limits is None:
+                result_iter = Parallel(
+                    n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
+                )(
+                    delayed(process_cross_epoch_pair)(item, random_state=random_state)
+                    for item in pair_items
+                )
+                for result in result_iter:
+                    handle_result(result)
+            else:
+                with threadpool_limits(limits=1):
+                    result_iter = Parallel(
+                        n_jobs=n_workers,
+                        backend="loky",
+                        verbose=0,
+                        return_as="generator_unordered",
+                    )(
+                        delayed(process_cross_epoch_pair)(item, random_state=random_state)
+                        for item in pair_items
+                    )
+                    for result in result_iter:
+                        handle_result(result)
+        del pair_items
+        gc.collect()
 
     if qc_rows:
         wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
@@ -589,7 +607,7 @@ def run_mvpa_tg_cross_epoch(
     elapsed = time.time() - t0
     print(
         f"[TG cross-epoch] Done: {len(subject_df)} subject-direction rows, "
-        f"{len(matrix_df)} matrix rows, elapsed {elapsed/60:.1f} min.",
+        f"{len(matrix_df)} matrix rows, {total_pairs} pairs, elapsed {elapsed/60:.1f} min.",
         flush=True,
     )
 
