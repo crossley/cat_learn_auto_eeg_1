@@ -397,10 +397,11 @@ def run_mvpa_tg_cross_epoch(
     day_pair_accum: dict[tuple[str, int, int], dict[str, np.ndarray]] = {}
     day_pair_times: dict[tuple[str, int, int], tuple[np.ndarray, np.ndarray]] = {}
     total_pairs = 0
+    cross_done = 0
     subjects = sorted({k[0] for k in prepared_map})
 
     def handle_result(result: dict):
-        nonlocal wrote_qc, qc_rows
+        nonlocal wrote_qc, qc_rows, cross_done
         if result["ok"]:
             row_frames.append(pd.DataFrame([result["row"]]))
             direction = result["row"]["direction"]
@@ -432,6 +433,14 @@ def run_mvpa_tg_cross_epoch(
             if len(qc_rows) >= max(progress_every, 1):
                 wrote_qc = _append_csv(pd.DataFrame(qc_rows, columns=qc_columns), qc_csv, wrote_qc)
                 qc_rows = []
+        cross_done += 1
+        if (cross_done % max(progress_every * 2, 1)) == 0:
+            elapsed = time.time() - t0
+            print(
+                f"[TG cross-epoch] processed {cross_done}/{total_pairs} pairs "
+                f"(elapsed {elapsed/60:.1f} min)",
+                flush=True,
+            )
 
     for direction, (train_kind, test_kind) in TRAIN_TEST_DIRECTIONS.items():
         pair_items = []
