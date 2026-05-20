@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -129,7 +130,9 @@ def process_rsa_session(task):
     try:
         epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
         stim_epochs, beh_aligned = align_behaviour_to_epochs(
-            task["beh"], epochs, event_names=("Stim/A", "Stim/B")
+            task["beh"],
+            epochs,
+            event_names=tuple(task.get("event_names", ("Stim/A", "Stim/B"))),
         )
         stim_epochs = stim_epochs.copy()
         stim_epochs.load_data()
@@ -237,7 +240,9 @@ def process_windowed_rsa_session(task):
     try:
         epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
         stim_epochs, beh_aligned = align_behaviour_to_epochs(
-            task["beh"], epochs, event_names=("Stim/A", "Stim/B")
+            task["beh"],
+            epochs,
+            event_names=tuple(task.get("event_names", ("Stim/A", "Stim/B"))),
         )
         stim_epochs = stim_epochs.copy()
         stim_epochs.load_data()
@@ -787,12 +792,126 @@ def save_fig_rsa_windowed(
     }
 
 
+def _copy_with_backup(src, dst, backups):
+    dst = Path(dst)
+    if dst.exists():
+        backup = dst.with_suffix(dst.suffix + ".rsa_backup")
+        dst.replace(backup)
+        backups[dst] = backup
+    shutil.copy2(src, dst)
+
+
+def _restore_backups(backups):
+    for dst, backup in backups.items():
+        if dst.exists():
+            dst.unlink()
+        backup.replace(dst)
+
+
+def _save_fig_rsa_prefixed(
+    output_dir,
+    figures_dir,
+    data_prefix,
+    figure_prefix,
+    windowed=False,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    if windowed:
+        rdm_csv = output_dir / f"{data_prefix}_rdms.csv"
+    else:
+        rdm_csv = output_dir / f"{data_prefix}_time_resolved_rdms.csv"
+    model_fit_csv = output_dir / f"{data_prefix}_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / f"{data_prefix}_cross_day_geometry_similarity.csv"
+    if not rdm_csv.exists() or not model_fit_csv.exists():
+        raise FileNotFoundError(f"Missing RSA outputs for prefix {data_prefix}.")
+
+    temp_paths = {
+        "rdm": output_dir / "rsa_stim_time_resolved_rdms.csv",
+        "fit": output_dir / "rsa_stim_model_fit_timecourses.csv",
+        "cross": output_dir / "rsa_stim_cross_day_geometry_similarity.csv",
+    }
+    original_figs = {
+        "fit": figures_dir / "rsa_stim_model_fit_timecourses.png",
+        "snapshot": figures_dir / "rsa_stim_neural_rdm_snapshots.png",
+        "cross_matrix": figures_dir / "rsa_stim_cross_day_geometry_similarity.png",
+        "cross_time": figures_dir / "rsa_stim_cross_day_geometry_timecourse.png",
+        "cross_pair": figures_dir / "rsa_stim_cross_day_geometry_timecourse_5x5.png",
+    }
+    target_figs = {
+        "fit": figures_dir / f"{figure_prefix}_model_fit_timecourses.png",
+        "snapshot": figures_dir / f"{figure_prefix}_neural_rdm_snapshots.png",
+        "cross_matrix": figures_dir / f"{figure_prefix}_cross_day_geometry_similarity.png",
+        "cross_time": figures_dir / f"{figure_prefix}_cross_day_geometry_timecourse.png",
+        "cross_pair": figures_dir / f"{figure_prefix}_cross_day_geometry_timecourse_pairs.png",
+    }
+
+    backups = {}
+    fig_backups = {}
+    try:
+        _copy_with_backup(rdm_csv, temp_paths["rdm"], backups)
+        _copy_with_backup(model_fit_csv, temp_paths["fit"], backups)
+        if cross_day_csv.exists():
+            _copy_with_backup(cross_day_csv, temp_paths["cross"], backups)
+        for path in original_figs.values():
+            if path.exists():
+                backup = path.with_suffix(path.suffix + ".rsa_backup")
+                path.replace(backup)
+                fig_backups[path] = backup
+        save_fig_rsa_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
+        for key, original_path in original_figs.items():
+            if original_path.exists():
+                original_path.replace(target_figs[key])
+    finally:
+        _restore_backups(backups)
+        for path, backup in fig_backups.items():
+            if path.exists():
+                path.unlink()
+            backup.replace(path)
+
+    return {
+        "model_fit_figure": target_figs["fit"],
+        "snapshot_figure": target_figs["snapshot"],
+        "cross_day_geometry_figure": target_figs["cross_matrix"],
+        "cross_day_geometry_timecourse_figure": target_figs["cross_time"],
+        "cross_day_geometry_timecourse_5x5_figure": target_figs["cross_pair"],
+    }
+
+
+def save_fig_rsa_feedback_time_resolved(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    return _save_fig_rsa_prefixed(
+        output_dir=output_dir,
+        figures_dir=figures_dir,
+        data_prefix="rsa_feedback",
+        figure_prefix="rsa_feedback",
+    )
+
+
+def save_fig_rsa_feedback_windowed(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    return _save_fig_rsa_prefixed(
+        output_dir=output_dir,
+        figures_dir=figures_dir,
+        data_prefix="rsa_feedback_windowed",
+        figure_prefix="rsa_feedback_windowed",
+        windowed=True,
+    )
+
+
 def run_rsa_time_resolved(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
     n_workers: int | None = None,
     progress_every: int = 5,
     save_figures: bool = True,
+    output_prefix: str = "rsa_stim",
+    event_names: tuple[str, str] = ("Stim/A", "Stim/B"),
+    log_label: str = "RSA stim",
 ):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
@@ -800,11 +919,11 @@ def run_rsa_time_resolved(
     figures_dir.mkdir(parents=True, exist_ok=True)
     mne.set_log_level("ERROR")
 
-    rdm_csv = output_dir / "rsa_stim_time_resolved_rdms.csv"
-    count_csv = output_dir / "rsa_stim_bin_epoch_counts.csv"
-    model_fit_csv = output_dir / "rsa_stim_model_fit_timecourses.csv"
-    cross_day_csv = output_dir / "rsa_stim_cross_day_geometry_similarity.csv"
-    qc_csv = output_dir / "rsa_stim_time_resolved_qc_log.csv"
+    rdm_csv = output_dir / f"{output_prefix}_time_resolved_rdms.csv"
+    count_csv = output_dir / f"{output_prefix}_bin_epoch_counts.csv"
+    model_fit_csv = output_dir / f"{output_prefix}_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / f"{output_prefix}_cross_day_geometry_similarity.csv"
+    qc_csv = output_dir / f"{output_prefix}_time_resolved_qc_log.csv"
     for path in [rdm_csv, count_csv, model_fit_csv, cross_day_csv, qc_csv]:
         if path.exists():
             path.unlink()
@@ -813,7 +932,7 @@ def run_rsa_time_resolved(
         output_dir
     )
     model_vec_df = _make_model_vectors(model_rdms)
-    model_vec_csv = output_dir / "rsa_stim_model_vectors.csv"
+    model_vec_csv = output_dir / f"{output_prefix}_model_vectors.csv"
     model_vec_df.to_csv(model_vec_csv, index=False)
 
     sessions = load_sessions(load_epochs=False)
@@ -823,6 +942,7 @@ def run_rsa_time_resolved(
             "retained_keys": retained_keys,
             "x_edges": x_edges,
             "y_edges": y_edges,
+            "event_names": event_names,
         }
         for session in sessions
     ]
@@ -831,7 +951,7 @@ def run_rsa_time_resolved(
     n_workers = max(1, int(n_workers))
     t0 = time.time()
     print(
-        f"[RSA stim] Processing {len(tasks)} sessions "
+        f"[{log_label}] Processing {len(tasks)} sessions "
         f"({len(retained_bins)} bins, n_workers={n_workers})...",
         flush=True,
     )
@@ -859,7 +979,7 @@ def run_rsa_time_resolved(
         if done % max(progress_every, 1) == 0:
             elapsed = time.time() - t0
             print(
-                f"[RSA stim] complete {done}/{len(tasks)} sessions "
+                f"[{log_label}] complete {done}/{len(tasks)} sessions "
                 f"(elapsed {elapsed/60:.1f} min)",
                 flush=True,
             )
@@ -898,7 +1018,7 @@ def run_rsa_time_resolved(
         else {}
     )
     elapsed = time.time() - t0
-    print(f"[RSA stim] Done in {elapsed/60:.1f} min.", flush=True)
+    print(f"[{log_label}] Done in {elapsed/60:.1f} min.", flush=True)
 
     return {
         "rdm_csv": rdm_csv,
@@ -927,6 +1047,9 @@ def run_rsa_windowed(
     window_width_sec: float = WINDOW_WIDTH_SEC,
     center_step_sec: float = WINDOW_CENTER_STEP_SEC,
     save_figures: bool = True,
+    output_prefix: str = "rsa_stim_windowed",
+    event_names: tuple[str, str] = ("Stim/A", "Stim/B"),
+    log_label: str = "RSA stim windowed",
 ):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
@@ -934,11 +1057,11 @@ def run_rsa_windowed(
     figures_dir.mkdir(parents=True, exist_ok=True)
     mne.set_log_level("ERROR")
 
-    rdm_csv = output_dir / "rsa_stim_windowed_rdms.csv"
-    count_csv = output_dir / "rsa_stim_windowed_bin_epoch_counts.csv"
-    model_fit_csv = output_dir / "rsa_stim_windowed_model_fit_timecourses.csv"
-    cross_day_csv = output_dir / "rsa_stim_windowed_cross_day_geometry_similarity.csv"
-    qc_csv = output_dir / "rsa_stim_windowed_qc_log.csv"
+    rdm_csv = output_dir / f"{output_prefix}_rdms.csv"
+    count_csv = output_dir / f"{output_prefix}_bin_epoch_counts.csv"
+    model_fit_csv = output_dir / f"{output_prefix}_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / f"{output_prefix}_cross_day_geometry_similarity.csv"
+    qc_csv = output_dir / f"{output_prefix}_qc_log.csv"
     for path in [rdm_csv, count_csv, model_fit_csv, cross_day_csv, qc_csv]:
         if path.exists():
             path.unlink()
@@ -947,7 +1070,7 @@ def run_rsa_windowed(
         output_dir
     )
     model_vec_df = _make_model_vectors(model_rdms)
-    model_vec_csv = output_dir / "rsa_stim_windowed_model_vectors.csv"
+    model_vec_csv = output_dir / f"{output_prefix}_model_vectors.csv"
     model_vec_df.to_csv(model_vec_csv, index=False)
 
     sessions = load_sessions(load_epochs=False)
@@ -959,6 +1082,7 @@ def run_rsa_windowed(
             "y_edges": y_edges,
             "window_width_sec": window_width_sec,
             "center_step_sec": center_step_sec,
+            "event_names": event_names,
         }
         for session in sessions
     ]
@@ -967,7 +1091,7 @@ def run_rsa_windowed(
     n_workers = max(1, int(n_workers))
     t0 = time.time()
     print(
-        f"[RSA stim windowed] Processing {len(tasks)} sessions "
+        f"[{log_label}] Processing {len(tasks)} sessions "
         f"({len(retained_bins)} bins, {window_width_sec*1000:.0f} ms windows, "
         f"n_workers={n_workers})...",
         flush=True,
@@ -996,7 +1120,7 @@ def run_rsa_windowed(
         if done % max(progress_every, 1) == 0:
             elapsed = time.time() - t0
             print(
-                f"[RSA stim windowed] complete {done}/{len(tasks)} sessions "
+                f"[{log_label}] complete {done}/{len(tasks)} sessions "
                 f"(elapsed {elapsed/60:.1f} min)",
                 flush=True,
             )
@@ -1033,7 +1157,7 @@ def run_rsa_windowed(
     if save_figures:
         fig_result = save_fig_rsa_windowed(output_dir=output_dir, figures_dir=figures_dir)
     elapsed = time.time() - t0
-    print(f"[RSA stim windowed] Done in {elapsed/60:.1f} min.", flush=True)
+    print(f"[{log_label}] Done in {elapsed/60:.1f} min.", flush=True)
 
     return {
         "rdm_csv": rdm_csv,
