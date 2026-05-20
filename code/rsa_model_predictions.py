@@ -232,8 +232,17 @@ def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
 
 
 def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
-    fig = plt.figure(figsize=(16, 7.8))
-    gs = fig.add_gridspec(2, 4, left=0.06, right=0.92, top=0.90, bottom=0.08)
+    fig = plt.figure(figsize=(18, 9.4))
+    gs = fig.add_gridspec(
+        2,
+        4,
+        left=0.06,
+        right=0.90,
+        top=0.88,
+        bottom=0.09,
+        wspace=0.38,
+        hspace=0.38,
+    )
     ax_space = fig.add_subplot(gs[:, 0])
     colors = {"A": "tab:blue", "B": "tab:orange"}
     for label, group in all_bins.groupby("category_label"):
@@ -264,8 +273,8 @@ def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
             va="center",
             color="white",
         )
-    ax_space.set_xlabel("Transformed spatial frequency (xt)")
-    ax_space.set_ylabel("Transformed orientation (yt)")
+    ax_space.set_xlabel("x")
+    ax_space.set_ylabel("y")
     ax_space.set_title("Retained stimulus bins")
     ax_space.legend(frameon=False, loc="best")
 
