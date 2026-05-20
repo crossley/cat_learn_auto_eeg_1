@@ -323,8 +323,20 @@ def save_cross_day_geometry_figures(
         | set(similarity_df["test_day"].dropna().astype(int))
     )
     fig, axes = plt.subplots(1, len(GEOMETRY_WINDOWS), figsize=(10.5, 4.4), squeeze=False)
-    vmin = float(similarity_df["rho"].quantile(0.02))
-    vmax = float(similarity_df["rho"].quantile(0.98))
+    plot_values = []
+    for _window_name, (tmin, tmax) in GEOMETRY_WINDOWS.items():
+        g = similarity_df[
+            (similarity_df["time_sec"] >= tmin) & (similarity_df["time_sec"] <= tmax)
+        ]
+        summary = (
+            g.groupby(["train_day", "test_day"], as_index=False)
+            .agg(rho=("rho", "mean"))
+        )
+        plot_values.extend(summary["rho"].dropna().tolist())
+    vmin = float(np.nanquantile(plot_values, 0.02))
+    vmax = float(np.nanquantile(plot_values, 0.98))
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="0.82")
     im = None
     for ax, (window_name, (tmin, tmax)) in zip(axes.ravel(), GEOMETRY_WINDOWS.items()):
         g = similarity_df[
@@ -343,7 +355,7 @@ def save_cross_day_geometry_figures(
         im = ax.imshow(
             np.ma.masked_invalid(mat),
             origin="upper",
-            cmap="viridis",
+            cmap=cmap,
             vmin=vmin,
             vmax=vmax,
         )
@@ -359,8 +371,6 @@ def save_cross_day_geometry_figures(
                 if np.isfinite(mat[i, j]):
                     color = "white" if mat[i, j] < (vmin + vmax) / 2 else "black"
                     ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center", color=color)
-                elif i == j:
-                    ax.text(j, i, "self", ha="center", va="center", color="0.45", fontsize=8)
     fig.suptitle("Cross-day neural RDM similarity")
     fig.subplots_adjust(top=0.84, bottom=0.16, left=0.08, right=0.88, wspace=0.35)
     cax = fig.add_axes([0.90, 0.20, 0.015, 0.58])
@@ -409,44 +419,50 @@ def save_cross_day_geometry_figures(
     fig.savefig(timecourse_fig, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False, sharex=True, sharey=True)
+    fig, ax = plt.subplots(figsize=(10.5, 5.4))
     ymin = float(similarity_df["rho"].quantile(0.02))
     ymax = float(similarity_df["rho"].quantile(0.98))
-    for i, train_day in enumerate(day_grid):
-        for j, test_day in enumerate(day_grid):
-            ax = axes[i, j]
-            if train_day == test_day:
-                ax.axis("off")
-                ax.text(0.5, 0.5, "self", ha="center", va="center", transform=ax.transAxes)
-                continue
+    root_colors = {
+        1: ["#08306b", "#2171b5", "#6baed6", "#bdd7e7"],
+        2: ["#006d2c", "#31a354", "#a1d99b"],
+        3: ["#a50f15", "#ef3b2c"],
+        4: ["#54278f"],
+    }
+    for root_day in day_grid[:-1]:
+        partners = [day for day in day_grid if day > root_day]
+        for color, test_day in zip(root_colors[root_day], partners):
             g = similarity_df[
-                (similarity_df["train_day"] == train_day)
-                & (similarity_df["test_day"] == test_day)
+                (
+                    (similarity_df["train_day"] == root_day)
+                    & (similarity_df["test_day"] == test_day)
+                )
+                | (
+                    (similarity_df["train_day"] == test_day)
+                    & (similarity_df["test_day"] == root_day)
+                )
             ]
             if g.empty:
-                ax.axis("off")
                 continue
             summary = (
                 g.groupby("time_sec", as_index=False)
                 .agg(rho=("rho", "mean"))
                 .sort_values("time_sec")
             )
-            ax.plot(summary["time_sec"], summary["rho"], color="black", linewidth=1.2)
-            ax.axvline(0.0, color="0.5", linestyle=":", linewidth=0.8)
-            ax.axhline(0.0, color="0.5", linestyle=":", linewidth=0.8)
-            ax.set_ylim(ymin, ymax)
-            if i == 0:
-                ax.set_title(f"Test D{test_day}", fontsize=9)
-            if j == 0:
-                ax.set_ylabel(f"Train D{train_day}", fontsize=8)
-            if i == len(day_grid) - 1:
-                ax.set_xlabel("Time (s)", fontsize=8)
-            else:
-                ax.set_xticklabels([])
-            if j != 0:
-                ax.set_yticklabels([])
-    fig.suptitle("Cross-day RDM similarity timecourses by day pair")
-    fig.subplots_adjust(top=0.94, bottom=0.06, left=0.06, right=0.98, wspace=0.22, hspace=0.32)
+            ax.plot(
+                summary["time_sec"],
+                summary["rho"],
+                color=color,
+                linewidth=1.5,
+                label=f"D{root_day}-D{test_day}",
+            )
+    ax.axvline(0.0, color="0.5", linestyle=":", linewidth=0.9)
+    ax.axhline(0.0, color="0.5", linestyle=":", linewidth=0.9)
+    ax.set_ylim(ymin, ymax)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("RDM similarity")
+    ax.set_title("Cross-day RDM similarity by day pair")
+    ax.legend(frameon=False, fontsize=8, ncol=5)
+    fig.tight_layout()
     fig.savefig(timecourse_5x5_fig, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
