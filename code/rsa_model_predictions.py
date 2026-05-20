@@ -45,13 +45,13 @@ def _normalize_rdm(mat):
 
 def assign_grid_bins(beh, n_bins):
     d = beh.copy()
-    x_edges = np.linspace(d["xt"].min(), d["xt"].max(), n_bins + 1)
-    y_edges = np.linspace(d["yt"].min(), d["yt"].max(), n_bins + 1)
+    x_edges = np.linspace(d["x"].min(), d["x"].max(), n_bins + 1)
+    y_edges = np.linspace(d["y"].min(), d["y"].max(), n_bins + 1)
     d["sf_bin"] = pd.cut(
-        d["xt"], bins=x_edges, labels=False, include_lowest=True
+        d["x"], bins=x_edges, labels=False, include_lowest=True
     ).astype(int)
     d["ori_bin"] = pd.cut(
-        d["yt"], bins=y_edges, labels=False, include_lowest=True
+        d["y"], bins=y_edges, labels=False, include_lowest=True
     ).astype(int)
     d["stim_bin"] = d["sf_bin"].astype(str) + "_" + d["ori_bin"].astype(str)
     return d, x_edges, y_edges
@@ -149,6 +149,8 @@ def make_bin_table(beh, boundary, n_bins):
     summary = (
         d.groupby(["sf_bin", "ori_bin"], as_index=False)
         .agg(
+            x_mean=("x", "mean"),
+            y_mean=("y", "mean"),
             xt_mean=("xt", "mean"),
             yt_mean=("yt", "mean"),
             n_trials=("trial", "size"),
@@ -176,8 +178,8 @@ def make_bin_table(beh, boundary, n_bins):
     w = np.array([boundary["coef_xt"], boundary["coef_yt"]], dtype=float)
     b = float(boundary["intercept"])
     norm = float(boundary["norm"])
-    centers = summary[["x_center", "y_center"]].to_numpy(dtype=float)
-    summary["boundary_signed_center"] = (centers @ w + b) / norm
+    centers_transformed = summary[["xt_mean", "yt_mean"]].to_numpy(dtype=float)
+    summary["boundary_signed_center"] = (centers_transformed @ w + b) / norm
     summary["boundary_abs_center"] = np.abs(summary["boundary_signed_center"])
     retained = summary[summary["retained"]].copy()
     retained = retained.sort_values(
