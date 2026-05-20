@@ -310,10 +310,12 @@ def save_cross_day_geometry_figures(
     figures_dir.mkdir(parents=True, exist_ok=True)
     matrix_fig = figures_dir / "rsa_stim_cross_day_geometry_similarity.png"
     timecourse_fig = figures_dir / "rsa_stim_cross_day_geometry_timecourse.png"
+    timecourse_5x5_fig = figures_dir / "rsa_stim_cross_day_geometry_timecourse_5x5.png"
     if similarity_df.empty:
         return {
             "cross_day_geometry_figure": None,
             "cross_day_geometry_timecourse_figure": None,
+            "cross_day_geometry_timecourse_5x5_figure": None,
         }
 
     day_grid = sorted(
@@ -337,7 +339,7 @@ def save_cross_day_geometry_figures(
             i = day_grid.index(int(row.train_day))
             j = day_grid.index(int(row.test_day))
             mat[i, j] = float(row.rho)
-        np.fill_diagonal(mat, 1.0)
+        np.fill_diagonal(mat, np.nan)
         im = ax.imshow(
             np.ma.masked_invalid(mat),
             origin="upper",
@@ -357,6 +359,8 @@ def save_cross_day_geometry_figures(
                 if np.isfinite(mat[i, j]):
                     color = "white" if mat[i, j] < (vmin + vmax) / 2 else "black"
                     ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center", color=color)
+                elif i == j:
+                    ax.text(j, i, "self", ha="center", va="center", color="0.45", fontsize=8)
     fig.suptitle("Cross-day neural RDM similarity")
     fig.subplots_adjust(top=0.84, bottom=0.16, left=0.08, right=0.88, wspace=0.35)
     cax = fig.add_axes([0.90, 0.20, 0.015, 0.58])
@@ -405,9 +409,51 @@ def save_cross_day_geometry_figures(
     fig.savefig(timecourse_fig, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+    fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False, sharex=True, sharey=True)
+    ymin = float(similarity_df["rho"].quantile(0.02))
+    ymax = float(similarity_df["rho"].quantile(0.98))
+    for i, train_day in enumerate(day_grid):
+        for j, test_day in enumerate(day_grid):
+            ax = axes[i, j]
+            if train_day == test_day:
+                ax.axis("off")
+                ax.text(0.5, 0.5, "self", ha="center", va="center", transform=ax.transAxes)
+                continue
+            g = similarity_df[
+                (similarity_df["train_day"] == train_day)
+                & (similarity_df["test_day"] == test_day)
+            ]
+            if g.empty:
+                ax.axis("off")
+                continue
+            summary = (
+                g.groupby("time_sec", as_index=False)
+                .agg(rho=("rho", "mean"))
+                .sort_values("time_sec")
+            )
+            ax.plot(summary["time_sec"], summary["rho"], color="black", linewidth=1.2)
+            ax.axvline(0.0, color="0.5", linestyle=":", linewidth=0.8)
+            ax.axhline(0.0, color="0.5", linestyle=":", linewidth=0.8)
+            ax.set_ylim(ymin, ymax)
+            if i == 0:
+                ax.set_title(f"Test D{test_day}", fontsize=9)
+            if j == 0:
+                ax.set_ylabel(f"Train D{train_day}", fontsize=8)
+            if i == len(day_grid) - 1:
+                ax.set_xlabel("Time (s)", fontsize=8)
+            else:
+                ax.set_xticklabels([])
+            if j != 0:
+                ax.set_yticklabels([])
+    fig.suptitle("Cross-day RDM similarity timecourses by day pair")
+    fig.subplots_adjust(top=0.94, bottom=0.06, left=0.06, right=0.98, wspace=0.22, hspace=0.32)
+    fig.savefig(timecourse_5x5_fig, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
     return {
         "cross_day_geometry_figure": matrix_fig,
         "cross_day_geometry_timecourse_figure": timecourse_fig,
+        "cross_day_geometry_timecourse_5x5_figure": timecourse_5x5_fig,
     }
 
 
@@ -543,6 +589,9 @@ def save_fig_rsa_time_resolved(
         "cross_day_geometry_timecourse_figure": cross_day_figs.get(
             "cross_day_geometry_timecourse_figure"
         ),
+        "cross_day_geometry_timecourse_5x5_figure": cross_day_figs.get(
+            "cross_day_geometry_timecourse_5x5_figure"
+        ),
     }
 
 
@@ -671,6 +720,9 @@ def run_rsa_time_resolved(
         "cross_day_geometry_figure": fig_result.get("cross_day_geometry_figure"),
         "cross_day_geometry_timecourse_figure": fig_result.get(
             "cross_day_geometry_timecourse_figure"
+        ),
+        "cross_day_geometry_timecourse_5x5_figure": fig_result.get(
+            "cross_day_geometry_timecourse_5x5_figure"
         ),
     }
 
