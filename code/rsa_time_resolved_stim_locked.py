@@ -304,16 +304,14 @@ def save_fig_rsa_time_resolved(
         fig, axes = plt.subplots(
             len(days), len(SNAPSHOT_TIMES), figsize=(14, 3.0 * len(days)), squeeze=False
         )
-        vmin = float(rdm_df["dissimilarity"].quantile(0.02))
-        vmax = float(rdm_df["dissimilarity"].quantile(0.98))
-        im = None
-        for i, day in enumerate(days):
+        snapshot_mats = []
+        snapshot_items = []
+        for day in days:
             g_day = rdm_df[rdm_df["day"] == day]
             day_times = np.sort(g_day["time_sec"].dropna().unique())
-            for j, target_time in enumerate(SNAPSHOT_TIMES):
-                ax = axes[i, j]
+            for target_time in SNAPSHOT_TIMES:
                 if len(day_times) == 0:
-                    ax.axis("off")
+                    snapshot_items.append((day, None, None))
                     continue
                 time_sec = float(day_times[np.argmin(np.abs(day_times - target_time))])
                 g = (
@@ -327,6 +325,21 @@ def save_fig_rsa_time_resolved(
                 for row in g.itertuples():
                     mat[int(row.bin_i), int(row.bin_j)] = float(row.dissimilarity)
                     mat[int(row.bin_j), int(row.bin_i)] = float(row.dissimilarity)
+                snapshot_mats.append(mat)
+                snapshot_items.append((day, time_sec, mat))
+        finite_snapshot = np.concatenate(
+            [mat[np.isfinite(mat)] for mat in snapshot_mats if np.any(np.isfinite(mat))]
+        )
+        vmin = float(np.nanquantile(finite_snapshot, 0.02))
+        vmax = float(np.nanquantile(finite_snapshot, 0.98))
+        im = None
+        for i, day in enumerate(days):
+            for j, _target_time in enumerate(SNAPSHOT_TIMES):
+                ax = axes[i, j]
+                _, time_sec, mat = snapshot_items[i * len(SNAPSHOT_TIMES) + j]
+                if mat is None:
+                    ax.axis("off")
+                    continue
                 im = ax.imshow(
                     np.ma.masked_invalid(mat),
                     origin="lower",
