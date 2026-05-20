@@ -303,6 +303,7 @@ def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
 def run_rsa_model_predictions(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
+    save_figures: bool = True,
 ):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
@@ -336,8 +337,9 @@ def run_rsa_model_predictions(
 
     diagnostics_fig = figures_dir / "rsa_model_grid_diagnostics.png"
     prediction_fig = figures_dir / "rsa_model_prediction_rdms.png"
-    plot_grid_diagnostics(diagnostics, selected_n, diagnostics_fig)
-    plot_model_predictions(all_bins, retained_bins, rdms, prediction_fig)
+    if save_figures:
+        plot_grid_diagnostics(diagnostics, selected_n, diagnostics_fig)
+        plot_model_predictions(all_bins, retained_bins, rdms, prediction_fig)
 
     print(
         f"[RSA models] Selected {selected_n}x{selected_n} grid with "
@@ -360,5 +362,58 @@ def run_rsa_model_predictions(
     }
 
 
+def save_fig_rsa_model_predictions(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_csv = output_dir / "rsa_model_grid_diagnostics.csv"
+    bins_csv = output_dir / "rsa_model_stimulus_bins.csv"
+    rdm_csv = output_dir / "rsa_model_rdms.csv"
+    if not diagnostics_csv.exists() or not bins_csv.exists() or not rdm_csv.exists():
+        raise FileNotFoundError(
+            "Missing RSA model outputs. Run rsa_model_prediction_analysis.py first."
+        )
+    diagnostics = pd.read_csv(diagnostics_csv)
+    all_bins = pd.read_csv(bins_csv)
+    retained_bins = all_bins[all_bins["retained"]].copy()
+    retained_bins = retained_bins.sort_values(
+        ["category_label", "boundary_signed_center", "sf_bin", "ori_bin"]
+    ).reset_index(drop=True)
+    retained_bins["rdm_order"] = np.arange(len(retained_bins))
+    rdm_df = pd.read_csv(rdm_csv)
+    rdms = {}
+    for model, g in rdm_df.groupby("model", sort=False):
+        n_bins = int(max(g["bin_i"].max(), g["bin_j"].max()) + 1)
+        mat = np.full((n_bins, n_bins), np.nan)
+        for row in g.itertuples():
+            mat[int(row.bin_i), int(row.bin_j)] = float(row.dissimilarity)
+        rdms[model] = mat
+    selected_n = int(
+        diagnostics.sort_values(
+            ["n_retained_bins", "n_bins"], ascending=[False, False]
+        ).iloc[0]["n_bins"]
+    )
+    selected_rows = diagnostics[
+        (diagnostics["n_retained_bins"] >= MIN_RETAINED_BINS)
+        & (diagnostics["retained_bin_prop"] >= MIN_RETAINED_BIN_PROP)
+    ]
+    if not selected_rows.empty:
+        selected_n = int(selected_rows.sort_values("n_bins", ascending=False).iloc[0]["n_bins"])
+    diagnostics_fig = figures_dir / "rsa_model_grid_diagnostics.png"
+    prediction_fig = figures_dir / "rsa_model_prediction_rdms.png"
+    plot_grid_diagnostics(diagnostics, selected_n, diagnostics_fig)
+    plot_model_predictions(all_bins, retained_bins, rdms, prediction_fig)
+    return {
+        "diagnostics_figure": diagnostics_fig,
+        "prediction_figure": prediction_fig,
+    }
+
+
 if __name__ == "__main__":
-    run_rsa_model_predictions()
+    raise SystemExit(
+        "Use rsa_model_prediction_analysis.py to write outputs or "
+        "rsa_model_prediction_figures.py to plot figures."
+    )

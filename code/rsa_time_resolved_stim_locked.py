@@ -44,6 +44,8 @@ FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 MIN_EPOCHS_PER_BIN = 5
 SNAPSHOT_TIMES = [0.10, 0.20, 0.35, 0.60]
+WINDOW_CENTER_STEP_SEC = 0.025
+WINDOW_WIDTH_SEC = 0.050
 GEOMETRY_WINDOWS = {
     "early": (0.06, 0.18),
     "late": (0.30, 0.60),
@@ -219,6 +221,112 @@ def process_rsa_session(task):
         "rdm_df": pd.DataFrame(rdm_rows),
         "count_df": pd.DataFrame(count_rows),
         "time_df": pd.DataFrame(corr_rows),
+    }
+
+
+def process_windowed_rsa_session(task):
+    subject = int(task["subject"])
+    day = int(task["day"])
+    session_file = task["epo_file"]
+    retained_keys = task["retained_keys"]
+    x_edges = task["x_edges"]
+    y_edges = task["y_edges"]
+    window_width_sec = float(task["window_width_sec"])
+    center_step_sec = float(task["center_step_sec"])
+
+    try:
+        epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
+        stim_epochs, beh_aligned = align_behaviour_to_epochs(
+            task["beh"], epochs, event_names=("Stim/A", "Stim/B")
+        )
+        stim_epochs = stim_epochs.copy()
+        stim_epochs.load_data()
+        pick_eeg_interpolate_bads(stim_epochs)
+        stim_epochs.resample(128, npad="auto")
+        beh_aligned = _assign_existing_grid_bins(beh_aligned, x_edges, y_edges)
+        X = stim_epochs.get_data()
+        times = stim_epochs.times.copy()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "preprocess",
+                "reason": "prep_error",
+                "detail": str(exc),
+            },
+        }
+
+    bin_patterns = []
+    bin_counts = []
+    for sf_bin, ori_bin in retained_keys:
+        keep = (
+            (beh_aligned["sf_bin"].astype("Int64") == sf_bin)
+            & (beh_aligned["ori_bin"].astype("Int64") == ori_bin)
+        ).to_numpy()
+        n_epochs = int(np.sum(keep))
+        bin_counts.append(n_epochs)
+        if n_epochs < MIN_EPOCHS_PER_BIN:
+            bin_patterns.append(np.full((X.shape[1], X.shape[2]), np.nan))
+        else:
+            bin_patterns.append(np.nanmean(X[keep], axis=0))
+
+    patterns = np.stack(bin_patterns, axis=0)
+    n_bins = patterns.shape[0]
+    centers = np.arange(
+        float(times.min()) + window_width_sec / 2.0,
+        float(times.max()) - window_width_sec / 2.0 + center_step_sec / 2.0,
+        center_step_sec,
+    )
+    rdm_rows = []
+    for center in centers:
+        keep_time = (times >= center - window_width_sec / 2.0) & (
+            times <= center + window_width_sec / 2.0
+        )
+        if int(np.sum(keep_time)) < 2:
+            continue
+        for i in range(n_bins):
+            x_vec = patterns[i, :, keep_time].reshape(-1)
+            for j in range(i + 1, n_bins):
+                sim = _vector_corr(x_vec, patterns[j, :, keep_time].reshape(-1))
+                if not np.isfinite(sim):
+                    continue
+                rdm_rows.append(
+                    {
+                        "session_file": session_file,
+                        "subject": subject,
+                        "day": day,
+                        "time_sec": float(center),
+                        "window_start_sec": float(center - window_width_sec / 2.0),
+                        "window_end_sec": float(center + window_width_sec / 2.0),
+                        "window_width_sec": window_width_sec,
+                        "bin_i": int(i),
+                        "bin_j": int(j),
+                        "dissimilarity": float(1.0 - sim),
+                        "n_i": int(bin_counts[i]),
+                        "n_j": int(bin_counts[j]),
+                    }
+                )
+
+    count_rows = [
+        {
+            "session_file": session_file,
+            "subject": subject,
+            "day": day,
+            "bin_i": int(i),
+            "sf_bin": int(retained_keys[i][0]),
+            "ori_bin": int(retained_keys[i][1]),
+            "n_epochs": int(bin_counts[i]),
+            "usable": bool(bin_counts[i] >= MIN_EPOCHS_PER_BIN),
+        }
+        for i in range(n_bins)
+    ]
+    return {
+        "ok": True,
+        "rdm_df": pd.DataFrame(rdm_rows),
+        "count_df": pd.DataFrame(count_rows),
     }
 
 
@@ -611,6 +719,74 @@ def save_fig_rsa_time_resolved(
     }
 
 
+def save_fig_rsa_windowed(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    rdm_csv = output_dir / "rsa_stim_windowed_rdms.csv"
+    model_fit_csv = output_dir / "rsa_stim_windowed_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / "rsa_stim_windowed_cross_day_geometry_similarity.csv"
+    if not rdm_csv.exists() or not model_fit_csv.exists():
+        raise FileNotFoundError(
+            "Missing windowed RSA outputs. Run run_rsa_windowed() first."
+        )
+
+    original_paths = {
+        "fit": figures_dir / "rsa_stim_model_fit_timecourses.png",
+        "snapshot": figures_dir / "rsa_stim_neural_rdm_snapshots.png",
+        "cross_matrix": figures_dir / "rsa_stim_cross_day_geometry_similarity.png",
+        "cross_time": figures_dir / "rsa_stim_cross_day_geometry_timecourse.png",
+        "cross_pair": figures_dir / "rsa_stim_cross_day_geometry_timecourse_5x5.png",
+    }
+    windowed_paths = {
+        "fit": figures_dir / "rsa_stim_windowed_model_fit_timecourses.png",
+        "snapshot": figures_dir / "rsa_stim_windowed_neural_rdm_snapshots.png",
+        "cross_matrix": figures_dir / "rsa_stim_windowed_cross_day_geometry_similarity.png",
+        "cross_time": figures_dir / "rsa_stim_windowed_cross_day_geometry_timecourse.png",
+        "cross_pair": figures_dir / "rsa_stim_windowed_cross_day_geometry_timecourse_pairs.png",
+    }
+
+    temp_rdm = output_dir / "rsa_stim_time_resolved_rdms.csv"
+    temp_fit = output_dir / "rsa_stim_model_fit_timecourses.csv"
+    temp_cross = output_dir / "rsa_stim_cross_day_geometry_similarity.csv"
+    saved_temp = {}
+    for path in [temp_rdm, temp_fit, temp_cross]:
+        if path.exists():
+            backup = path.with_suffix(path.suffix + ".single_time_backup")
+            path.replace(backup)
+            saved_temp[path] = backup
+    rdm_csv.replace(temp_rdm)
+    model_fit_csv.replace(temp_fit)
+    if cross_day_csv.exists():
+        cross_day_csv.replace(temp_cross)
+
+    try:
+        save_fig_rsa_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
+        for key, original_path in original_paths.items():
+            if original_path.exists():
+                original_path.replace(windowed_paths[key])
+    finally:
+        temp_rdm.replace(rdm_csv)
+        temp_fit.replace(model_fit_csv)
+        if temp_cross.exists():
+            temp_cross.replace(cross_day_csv)
+        for path, backup in saved_temp.items():
+            backup.replace(path)
+        if saved_temp:
+            save_fig_rsa_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
+
+    return {
+        "model_fit_figure": windowed_paths["fit"],
+        "snapshot_figure": windowed_paths["snapshot"],
+        "cross_day_geometry_figure": windowed_paths["cross_matrix"],
+        "cross_day_geometry_timecourse_figure": windowed_paths["cross_time"],
+        "cross_day_geometry_timecourse_5x5_figure": windowed_paths["cross_pair"],
+    }
+
+
 def run_rsa_time_resolved(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -743,5 +919,143 @@ def run_rsa_time_resolved(
     }
 
 
+def run_rsa_windowed(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+    n_workers: int | None = None,
+    progress_every: int = 5,
+    window_width_sec: float = WINDOW_WIDTH_SEC,
+    center_step_sec: float = WINDOW_CENTER_STEP_SEC,
+    save_figures: bool = True,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    mne.set_log_level("ERROR")
+
+    rdm_csv = output_dir / "rsa_stim_windowed_rdms.csv"
+    count_csv = output_dir / "rsa_stim_windowed_bin_epoch_counts.csv"
+    model_fit_csv = output_dir / "rsa_stim_windowed_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / "rsa_stim_windowed_cross_day_geometry_similarity.csv"
+    qc_csv = output_dir / "rsa_stim_windowed_qc_log.csv"
+    for path in [rdm_csv, count_csv, model_fit_csv, cross_day_csv, qc_csv]:
+        if path.exists():
+            path.unlink()
+
+    _, retained_bins, retained_keys, model_rdms, x_edges, y_edges = _load_or_build_bins(
+        output_dir
+    )
+    model_vec_df = _make_model_vectors(model_rdms)
+    model_vec_csv = output_dir / "rsa_stim_windowed_model_vectors.csv"
+    model_vec_df.to_csv(model_vec_csv, index=False)
+
+    sessions = load_sessions(load_epochs=False)
+    tasks = [
+        {
+            **session,
+            "retained_keys": retained_keys,
+            "x_edges": x_edges,
+            "y_edges": y_edges,
+            "window_width_sec": window_width_sec,
+            "center_step_sec": center_step_sec,
+        }
+        for session in sessions
+    ]
+    if n_workers is None:
+        n_workers = N_JOBS
+    n_workers = max(1, int(n_workers))
+    t0 = time.time()
+    print(
+        f"[RSA stim windowed] Processing {len(tasks)} sessions "
+        f"({len(retained_bins)} bins, {window_width_sec*1000:.0f} ms windows, "
+        f"n_workers={n_workers})...",
+        flush=True,
+    )
+
+    wrote_rdm = False
+    wrote_count = False
+    wrote_qc = False
+    qc_columns = ["session_file", "subject", "day", "stage", "reason", "detail"]
+    fit_frames = []
+    done = 0
+
+    def handle_result(result):
+        nonlocal wrote_rdm, wrote_count, wrote_qc, done
+        done += 1
+        if result["ok"]:
+            wrote_rdm = _append_csv(result["rdm_df"], rdm_csv, wrote_rdm)
+            wrote_count = _append_csv(result["count_df"], count_csv, wrote_count)
+            fit_frames.append(
+                compute_model_fit_timecourses(result["rdm_df"], model_vec_df)
+            )
+        else:
+            wrote_qc = _append_csv(
+                pd.DataFrame([result["qc"]], columns=qc_columns), qc_csv, wrote_qc
+            )
+        if done % max(progress_every, 1) == 0:
+            elapsed = time.time() - t0
+            print(
+                f"[RSA stim windowed] complete {done}/{len(tasks)} sessions "
+                f"(elapsed {elapsed/60:.1f} min)",
+                flush=True,
+            )
+
+    if n_workers == 1:
+        for task in tasks:
+            handle_result(process_windowed_rsa_session(task))
+    elif threadpool_limits is None:
+        result_iter = Parallel(
+            n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
+        )(delayed(process_windowed_rsa_session)(task) for task in tasks)
+        for result in result_iter:
+            handle_result(result)
+    else:
+        with threadpool_limits(limits=1):
+            result_iter = Parallel(
+                n_jobs=n_workers,
+                backend="loky",
+                verbose=0,
+                return_as="generator_unordered",
+            )(delayed(process_windowed_rsa_session)(task) for task in tasks)
+            for result in result_iter:
+                handle_result(result)
+
+    fit_df = pd.concat(fit_frames, ignore_index=True) if fit_frames else pd.DataFrame()
+    fit_df.to_csv(model_fit_csv, index=False)
+    rdm_df = pd.read_csv(rdm_csv) if rdm_csv.exists() else pd.DataFrame()
+    cross_day_df = compute_cross_day_geometry_similarity(rdm_df)
+    cross_day_df.to_csv(cross_day_csv, index=False)
+    if not qc_csv.exists():
+        pd.DataFrame(columns=qc_columns).to_csv(qc_csv, index=False)
+
+    fig_result = {}
+    if save_figures:
+        fig_result = save_fig_rsa_windowed(output_dir=output_dir, figures_dir=figures_dir)
+    elapsed = time.time() - t0
+    print(f"[RSA stim windowed] Done in {elapsed/60:.1f} min.", flush=True)
+
+    return {
+        "rdm_csv": rdm_csv,
+        "count_csv": count_csv,
+        "model_fit_csv": model_fit_csv,
+        "cross_day_csv": cross_day_csv,
+        "model_vec_csv": model_vec_csv,
+        "qc_csv": qc_csv,
+        "model_fit_figure": fig_result.get("model_fit_figure"),
+        "snapshot_figure": fig_result.get("snapshot_figure"),
+        "cross_day_geometry_figure": fig_result.get("cross_day_geometry_figure"),
+        "cross_day_geometry_timecourse_figure": fig_result.get(
+            "cross_day_geometry_timecourse_figure"
+        ),
+        "cross_day_geometry_timecourse_5x5_figure": fig_result.get(
+            "cross_day_geometry_timecourse_5x5_figure"
+        ),
+    }
+
+
 if __name__ == "__main__":
-    run_rsa_time_resolved()
+    raise SystemExit(
+        "Use rsa_stim_time_resolved_analysis.py, rsa_stim_time_resolved_figures.py, "
+        "rsa_stim_windowed_analysis.py, or rsa_stim_windowed_figures.py."
+    )
