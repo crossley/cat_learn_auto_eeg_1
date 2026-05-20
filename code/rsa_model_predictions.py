@@ -194,20 +194,17 @@ def make_model_rdms(bin_df):
     signed = bin_df["boundary_signed_center"].to_numpy(dtype=float)
     abs_boundary = bin_df["boundary_abs_center"].to_numpy(dtype=float)
     category = bin_df["category_label"].to_numpy(dtype=str)
-    response = bin_df["response_label"].to_numpy(dtype=str)
 
     physical = np.sqrt(((xy[:, None, :] - xy[None, :, :]) ** 2).sum(axis=2))
     category_same = (category[:, None] != category[None, :]).astype(float)
     boundary_difficulty = np.abs(abs_boundary[:, None] - abs_boundary[None, :])
     signed_boundary = np.abs(signed[:, None] - signed[None, :])
-    response_mapping = (response[:, None] != response[None, :]).astype(float)
 
     return {
         "Physical distance": _normalize_rdm(physical),
-        "Category membership": category_same,
+        "Category / response": category_same,
         "Boundary difficulty": _normalize_rdm(boundary_difficulty),
         "Signed boundary position": _normalize_rdm(signed_boundary),
-        "Response mapping": response_mapping,
     }
 
 
@@ -234,67 +231,69 @@ def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
 
 
 def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
-    fig = plt.figure(figsize=(18, 9.4))
+    fig = plt.figure(figsize=(15.5, 9.0))
     gs = fig.add_gridspec(
         2,
-        4,
+        3,
         left=0.06,
         right=0.90,
         top=0.88,
         bottom=0.09,
-        wspace=0.38,
-        hspace=0.38,
+        wspace=0.36,
+        hspace=0.42,
     )
-    ax_space = fig.add_subplot(gs[:, 0])
-    colors = {"A": "tab:blue", "B": "tab:orange"}
-    for label, group in all_bins.groupby("category_label"):
+    ax_space = fig.add_subplot(gs[0, 0])
+    bin_colors = plt.cm.tab20(
+        np.linspace(0, 1, max(len(retained_bins), 2), endpoint=False)
+    )
+    for _, row in all_bins.iterrows():
         ax_space.scatter(
-            group["x_center"],
-            group["y_center"],
-            s=120 * np.sqrt(group["n_trials"] / group["n_trials"].max()),
-            alpha=0.20,
-            color=colors[label],
-            edgecolor="none",
-        )
-    for label, group in retained_bins.groupby("category_label"):
-        ax_space.scatter(
-            group["x_center"],
-            group["y_center"],
-            s=42,
-            alpha=0.95,
-            color=colors[label],
-            label=f"Category {label}",
-        )
-    for _, row in retained_bins.iterrows():
-        ax_space.text(
             row["x_center"],
             row["y_center"],
-            str(int(row["rdm_order"])),
-            fontsize=6,
-            ha="center",
-            va="center",
+            s=25,
+            alpha=0.18,
+            color="0.55",
+            edgecolor="none",
+        )
+    for _, row in retained_bins.iterrows():
+        idx = int(row["rdm_order"])
+        ax_space.scatter(
+            row["x_center"],
+            row["y_center"],
+            s=70,
+            alpha=0.95,
+            color=bin_colors[idx],
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        ax_space.annotate(
+            str(idx),
+            (row["x_center"], row["y_center"]),
+            xytext=(3, 3),
+            textcoords="offset points",
+            fontsize=8,
             color="white",
+            bbox={"boxstyle": "round,pad=0.12", "facecolor": "black", "edgecolor": "none"},
         )
     ax_space.set_xlabel("x")
     ax_space.set_ylabel("y")
     ax_space.set_title("Retained stimulus bins")
-    ax_space.legend(frameon=False, loc="best")
+    ax_space.set_aspect("equal", adjustable="box")
 
     axes = [
         fig.add_subplot(gs[0, 1]),
         fig.add_subplot(gs[0, 2]),
-        fig.add_subplot(gs[0, 3]),
+        fig.add_subplot(gs[1, 0]),
         fig.add_subplot(gs[1, 1]),
-        fig.add_subplot(gs[1, 2]),
     ]
     for ax, (name, mat) in zip(axes, rdms.items()):
         im = ax.imshow(mat, origin="lower", cmap="viridis", vmin=0, vmax=1)
         ax.set_title(name)
         ax.set_xlabel("Stimulus bin")
         ax.set_ylabel("Stimulus bin")
-    ax_empty = fig.add_subplot(gs[1, 3])
+    ax_empty = fig.add_subplot(gs[1, 2])
     ax_empty.axis("off")
-    cax = fig.add_axes([0.94, 0.18, 0.012, 0.62])
+    cax = fig.add_axes([0.93, 0.22, 0.012, 0.56])
     fig.colorbar(im, cax=cax, label="Model dissimilarity")
     fig.suptitle("RSA model RDM predictions")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
