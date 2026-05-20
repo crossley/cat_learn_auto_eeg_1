@@ -44,6 +44,10 @@ FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
 MIN_EPOCHS_PER_BIN = 5
 SNAPSHOT_TIMES = [0.10, 0.20, 0.35, 0.60]
+GEOMETRY_WINDOWS = {
+    "early": (0.06, 0.18),
+    "late": (0.30, 0.60),
+}
 
 
 def _vector_corr(x_vec, y_vec):
@@ -245,6 +249,168 @@ def compute_model_fit_timecourses(rdm_df, model_vec_df):
     return pd.DataFrame(rows)
 
 
+def compute_cross_day_geometry_similarity(rdm_df):
+    if rdm_df.empty:
+        return pd.DataFrame()
+    vec_map = {}
+    for key, g in rdm_df.groupby(["subject", "day", "time_sec"], sort=False):
+        g = g.sort_values(["bin_i", "bin_j"])
+        vec_map[key] = g[["bin_i", "bin_j", "dissimilarity"]].reset_index(drop=True)
+
+    rows = []
+    for subject in sorted(rdm_df["subject"].dropna().unique().astype(int)):
+        days = sorted(rdm_df.loc[rdm_df["subject"] == subject, "day"].dropna().unique().astype(int))
+        times = sorted(
+            rdm_df.loc[rdm_df["subject"] == subject, "time_sec"].dropna().unique().astype(float)
+        )
+        for d_train in days:
+            for d_test in days:
+                if d_train == d_test:
+                    continue
+                for time_sec in times:
+                    key_train = (subject, d_train, time_sec)
+                    key_test = (subject, d_test, time_sec)
+                    if key_train not in vec_map or key_test not in vec_map:
+                        continue
+                    merged = vec_map[key_train].merge(
+                        vec_map[key_test],
+                        on=["bin_i", "bin_j"],
+                        suffixes=("_train", "_test"),
+                    )
+                    if len(merged) < 8:
+                        rho = np.nan
+                    else:
+                        rho = merged["dissimilarity_train"].corr(
+                            merged["dissimilarity_test"], method="spearman"
+                        )
+                    rows.append(
+                        {
+                            "subject": int(subject),
+                            "train_day": int(d_train),
+                            "test_day": int(d_test),
+                            "day_distance": int(abs(d_train - d_test)),
+                            "day_pair_type": (
+                                "day1_involving"
+                                if d_train == 1 or d_test == 1
+                                else "later_only"
+                            ),
+                            "time_sec": float(time_sec),
+                            "rho": float(rho) if np.isfinite(rho) else np.nan,
+                            "n_pairs": int(len(merged)),
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+def save_cross_day_geometry_figures(
+    similarity_df,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    matrix_fig = figures_dir / "rsa_stim_cross_day_geometry_similarity.png"
+    timecourse_fig = figures_dir / "rsa_stim_cross_day_geometry_timecourse.png"
+    if similarity_df.empty:
+        return {
+            "cross_day_geometry_figure": None,
+            "cross_day_geometry_timecourse_figure": None,
+        }
+
+    day_grid = sorted(
+        set(similarity_df["train_day"].dropna().astype(int))
+        | set(similarity_df["test_day"].dropna().astype(int))
+    )
+    fig, axes = plt.subplots(1, len(GEOMETRY_WINDOWS), figsize=(10.5, 4.4), squeeze=False)
+    vmin = float(similarity_df["rho"].quantile(0.02))
+    vmax = float(similarity_df["rho"].quantile(0.98))
+    im = None
+    for ax, (window_name, (tmin, tmax)) in zip(axes.ravel(), GEOMETRY_WINDOWS.items()):
+        g = similarity_df[
+            (similarity_df["time_sec"] >= tmin) & (similarity_df["time_sec"] <= tmax)
+        ]
+        summary = (
+            g.groupby(["train_day", "test_day"], as_index=False)
+            .agg(rho=("rho", "mean"))
+        )
+        mat = np.full((len(day_grid), len(day_grid)), np.nan)
+        for row in summary.itertuples():
+            i = day_grid.index(int(row.train_day))
+            j = day_grid.index(int(row.test_day))
+            mat[i, j] = float(row.rho)
+        np.fill_diagonal(mat, 1.0)
+        im = ax.imshow(
+            np.ma.masked_invalid(mat),
+            origin="upper",
+            cmap="viridis",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.set_title(f"{window_name}: {tmin*1000:.0f}-{tmax*1000:.0f} ms")
+        ax.set_xticks(range(len(day_grid)))
+        ax.set_yticks(range(len(day_grid)))
+        ax.set_xticklabels([f"D{d}" for d in day_grid])
+        ax.set_yticklabels([f"D{d}" for d in day_grid])
+        ax.set_xlabel("Test day")
+        ax.set_ylabel("Train day")
+        for i in range(len(day_grid)):
+            for j in range(len(day_grid)):
+                if np.isfinite(mat[i, j]):
+                    color = "white" if mat[i, j] < (vmin + vmax) / 2 else "black"
+                    ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center", color=color)
+    fig.suptitle("Cross-day neural RDM similarity")
+    fig.subplots_adjust(top=0.84, bottom=0.16, left=0.08, right=0.88, wspace=0.35)
+    cax = fig.add_axes([0.90, 0.20, 0.015, 0.58])
+    fig.colorbar(im, cax=cax, label="Spearman rho")
+    fig.savefig(matrix_fig, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.4), squeeze=False, sharex=True)
+    ax = axes[0, 0]
+    for distance, g_distance in similarity_df.groupby("day_distance"):
+        if int(distance) == 0:
+            continue
+        summary = (
+            g_distance.groupby("time_sec", as_index=False)
+            .agg(rho=("rho", "mean"))
+            .sort_values("time_sec")
+        )
+        ax.plot(summary["time_sec"], summary["rho"], label=f"Distance {int(distance)}")
+    ax.axvline(0.0, color="0.4", linestyle=":", linewidth=1)
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1)
+    ax.set_title("By day distance")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("RDM similarity")
+    ax.legend(frameon=False, fontsize=8)
+
+    ax = axes[0, 1]
+    for pair_type, label in [
+        ("day1_involving", "Day 1 involving"),
+        ("later_only", "Later only"),
+    ]:
+        g_type = similarity_df[similarity_df["day_pair_type"] == pair_type]
+        summary = (
+            g_type.groupby("time_sec", as_index=False)
+            .agg(rho=("rho", "mean"))
+            .sort_values("time_sec")
+        )
+        ax.plot(summary["time_sec"], summary["rho"], label=label)
+    ax.axvline(0.0, color="0.4", linestyle=":", linewidth=1)
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1)
+    ax.set_title("Day 1 vs later-only pairs")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("RDM similarity")
+    ax.legend(frameon=False, fontsize=8)
+    fig.suptitle("Cross-day RDM similarity over time")
+    fig.tight_layout()
+    fig.savefig(timecourse_fig, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return {
+        "cross_day_geometry_figure": matrix_fig,
+        "cross_day_geometry_timecourse_figure": timecourse_fig,
+    }
+
+
 def save_fig_rsa_time_resolved(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -260,6 +426,7 @@ def save_fig_rsa_time_resolved(
         )
     rdm_df = pd.read_csv(rdm_csv)
     fit_df = pd.read_csv(model_fit_csv)
+    cross_day_csv = output_dir / "rsa_stim_cross_day_geometry_similarity.csv"
 
     fit_fig = figures_dir / "rsa_stim_model_fit_timecourses.png"
     if not fit_df.empty:
@@ -362,9 +529,20 @@ def save_fig_rsa_time_resolved(
         fig.savefig(snapshot_fig, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
+    if cross_day_csv.exists():
+        cross_day_figs = save_cross_day_geometry_figures(
+            pd.read_csv(cross_day_csv), figures_dir=figures_dir
+        )
+    else:
+        cross_day_figs = {}
+
     return {
         "model_fit_figure": fit_fig,
         "snapshot_figure": snapshot_fig,
+        "cross_day_geometry_figure": cross_day_figs.get("cross_day_geometry_figure"),
+        "cross_day_geometry_timecourse_figure": cross_day_figs.get(
+            "cross_day_geometry_timecourse_figure"
+        ),
     }
 
 
@@ -384,8 +562,9 @@ def run_rsa_time_resolved(
     rdm_csv = output_dir / "rsa_stim_time_resolved_rdms.csv"
     count_csv = output_dir / "rsa_stim_bin_epoch_counts.csv"
     model_fit_csv = output_dir / "rsa_stim_model_fit_timecourses.csv"
+    cross_day_csv = output_dir / "rsa_stim_cross_day_geometry_similarity.csv"
     qc_csv = output_dir / "rsa_stim_time_resolved_qc_log.csv"
-    for path in [rdm_csv, count_csv, model_fit_csv, qc_csv]:
+    for path in [rdm_csv, count_csv, model_fit_csv, cross_day_csv, qc_csv]:
         if path.exists():
             path.unlink()
 
@@ -466,6 +645,9 @@ def run_rsa_time_resolved(
 
     fit_df = pd.concat(fit_frames, ignore_index=True) if fit_frames else pd.DataFrame()
     fit_df.to_csv(model_fit_csv, index=False)
+    rdm_df = pd.read_csv(rdm_csv) if rdm_csv.exists() else pd.DataFrame()
+    cross_day_df = compute_cross_day_geometry_similarity(rdm_df)
+    cross_day_df.to_csv(cross_day_csv, index=False)
     if not qc_csv.exists():
         pd.DataFrame(columns=qc_columns).to_csv(qc_csv, index=False)
 
@@ -481,10 +663,15 @@ def run_rsa_time_resolved(
         "rdm_csv": rdm_csv,
         "count_csv": count_csv,
         "model_fit_csv": model_fit_csv,
+        "cross_day_csv": cross_day_csv,
         "model_vec_csv": model_vec_csv,
         "qc_csv": qc_csv,
         "model_fit_figure": fig_result.get("model_fit_figure"),
         "snapshot_figure": fig_result.get("snapshot_figure"),
+        "cross_day_geometry_figure": fig_result.get("cross_day_geometry_figure"),
+        "cross_day_geometry_timecourse_figure": fig_result.get(
+            "cross_day_geometry_timecourse_figure"
+        ),
     }
 
 
