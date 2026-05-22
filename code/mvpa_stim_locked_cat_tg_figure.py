@@ -55,20 +55,8 @@ def save_fig_mvpa_stim_locked_cat_tg(
             f"Missing day-pair rows in {cross_day_mean_csv}:\n"
             + "\n".join(missing_pairs)
         )
-    diag_mat = np.full_like(mat, np.nan)
-    offdiag_mat = np.full_like(mat, np.nan)
-    for i in range(len(day_grid)):
-        for j in range(len(day_grid)):
-            if i == j:
-                diag_mat[i, j] = mat[i, j]
-            else:
-                offdiag_mat[i, j] = mat[i, j]
-    im_offdiag = ax.imshow(
-        np.ma.masked_invalid(offdiag_mat), cmap="viridis", aspect="equal"
-    )
-    im_diag = ax.imshow(
-        np.ma.masked_invalid(diag_mat), cmap="Greys", aspect="equal"
-    )
+    masked = np.ma.masked_invalid(mat)
+    im = ax.imshow(masked, cmap="viridis", aspect="equal")
     ax.set_xticks(range(len(day_grid)))
     ax.set_yticks(range(len(day_grid)))
     x_labels = []
@@ -86,28 +74,15 @@ def save_fig_mvpa_stim_locked_cat_tg(
         for j in range(len(day_grid)):
             if np.isfinite(mat[i, j]):
                 ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
-    cax_offdiag = fig.add_axes([0.82, 0.18, 0.03, 0.66])
-    cax_diag = fig.add_axes([0.90, 0.18, 0.03, 0.66])
-    fig.colorbar(im_offdiag, cax=cax_offdiag, label="AUC cross-day")
-    fig.colorbar(im_diag, cax=cax_diag, label="AUC same-day")
-    fig.tight_layout(rect=[0, 0, 0.80, 1])
+    fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
+    fig.tight_layout()
     fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    d_diag = d_mat[d_mat["train_day"] == d_mat["test_day"]]
-    d_offdiag = d_mat[d_mat["train_day"] != d_mat["test_day"]]
-    if d_diag.empty:
-        raise ValueError(f"Missing same-day TG matrix rows in {cross_matrix_day_mean_csv}")
-    if d_offdiag.empty:
-        raise ValueError(f"Missing cross-day TG matrix rows in {cross_matrix_day_mean_csv}")
-    diag_vmin = float(d_diag["auc_mean"].min())
-    diag_vmax = float(d_diag["auc_mean"].max())
-    offdiag_vmin = float(d_offdiag["auc_mean"].min())
-    offdiag_vmax = float(d_offdiag["auc_mean"].max())
-
-    fig, axes = plt.subplots(5, 5, figsize=(19.5, 16), squeeze=False)
-    im_diag = None
-    im_offdiag = None
+    fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False)
+    vmin = float(d_mat["auc_mean"].min())
+    vmax = float(d_mat["auc_mean"].max())
+    im = None
     for i, train_day in enumerate(day_grid):
         for j, test_day in enumerate(day_grid):
             ax = axes[i, j]
@@ -123,12 +98,6 @@ def save_fig_mvpa_stim_locked_cat_tg(
             pivot = g.pivot(
                 index="train_time_sec", columns="test_time_sec", values="auc_mean"
             )
-            if train_day == test_day:
-                vmin = diag_vmin
-                vmax = diag_vmax
-            else:
-                vmin = offdiag_vmin
-                vmax = offdiag_vmax
             im = ax.imshow(
                 pivot.to_numpy(),
                 origin="lower",
@@ -141,12 +110,8 @@ def save_fig_mvpa_stim_locked_cat_tg(
                 ],
                 vmin=vmin,
                 vmax=vmax,
-                cmap="Greys" if train_day == test_day else "viridis",
+                cmap="viridis",
             )
-            if train_day == test_day:
-                im_diag = im
-            else:
-                im_offdiag = im
             ax.axvline(0.0, color="white", linestyle=":", linewidth=0.8)
             ax.axhline(0.0, color="white", linestyle=":", linewidth=0.8)
             ax.set_title(f"Train D{train_day} -> Test D{test_day}", fontsize=9)
@@ -159,14 +124,12 @@ def save_fig_mvpa_stim_locked_cat_tg(
         top=0.94,
         bottom=0.05,
         left=0.05,
-        right=0.86,
+        right=0.90,
         wspace=0.30,
         hspace=0.35,
     )
-    cax_diag = fig.add_axes([0.88, 0.12, 0.015, 0.74])
-    cax_offdiag = fig.add_axes([0.93, 0.12, 0.015, 0.74])
-    fig.colorbar(im_diag, cax=cax_diag, label="AUC same-day")
-    fig.colorbar(im_offdiag, cax=cax_offdiag, label="AUC cross-day")
+    cax = fig.add_axes([0.92, 0.12, 0.015, 0.74])
+    fig.colorbar(im, cax=cax, label="AUC")
     fig.savefig(fig_cross_timegen, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
