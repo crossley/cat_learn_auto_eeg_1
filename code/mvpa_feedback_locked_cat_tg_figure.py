@@ -67,8 +67,20 @@ def save_fig_mvpa_feedback_locked_cat_tg(
             f"Missing day-pair rows in {cross_day_mean_csv}:\n"
             + "\n".join(missing_pairs)
         )
-    masked = np.ma.masked_invalid(mat)
-    im = ax.imshow(masked, cmap="magma", aspect="equal")
+    diag_mat = np.full_like(mat, np.nan)
+    offdiag_mat = np.full_like(mat, np.nan)
+    for i in range(len(day_grid)):
+        for j in range(len(day_grid)):
+            if i == j:
+                diag_mat[i, j] = mat[i, j]
+            else:
+                offdiag_mat[i, j] = mat[i, j]
+    im_offdiag = ax.imshow(
+        np.ma.masked_invalid(offdiag_mat), cmap="magma", aspect="equal"
+    )
+    im_diag = ax.imshow(
+        np.ma.masked_invalid(diag_mat), cmap="magma", aspect="equal"
+    )
     ax.set_xticks(range(len(day_grid)))
     ax.set_yticks(range(len(day_grid)))
     x_labels = []
@@ -86,8 +98,11 @@ def save_fig_mvpa_feedback_locked_cat_tg(
         for j in range(len(day_grid)):
             if np.isfinite(mat[i, j]):
                 ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
-    fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
-    fig.tight_layout()
+    cax_offdiag = fig.add_axes([0.82, 0.18, 0.03, 0.66])
+    cax_diag = fig.add_axes([0.90, 0.18, 0.03, 0.66])
+    fig.colorbar(im_offdiag, cax=cax_offdiag, label="AUC cross-day")
+    fig.colorbar(im_diag, cax=cax_diag, label="AUC same-day")
+    fig.tight_layout(rect=[0, 0, 0.80, 1])
     fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
