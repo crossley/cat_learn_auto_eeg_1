@@ -49,11 +49,7 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
     fig_path = figures_dir / "mvpa_stim_locked_cat_haufe_similarity_timegen_matrices_5x5.png"
 
     if haufe_day_mean_df.empty:
-        fig = plt.figure(figsize=(10, 4))
-        fig.text(0.5, 0.5, "No Haufe similarity data available", ha="center", va="center")
-        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return fig_path
+        raise ValueError("Empty Haufe day-mean table for pattern-similarity figure")
 
     day_grid = [1, 2, 3, 4, 5]
     channel_order = sorted(haufe_day_mean_df["channel"].dropna().unique().tolist())
@@ -62,7 +58,7 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
     for day in day_grid:
         d_day = haufe_day_mean_df[haufe_day_mean_df["day"] == day].copy()
         if d_day.empty:
-            continue
+            raise ValueError(f"Missing Haufe day in day-mean table: day={day}")
         times = np.sort(d_day["time_sec"].dropna().unique().astype(float))
         time_maps[day] = times
         vec_map = {}
@@ -75,12 +71,13 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
         similarity_maps[day] = vec_map
 
     peak_medians = {}
-    if not peak_df.empty:
-        peak_summary = peak_df.groupby(["day", "peak"], as_index=False)[
-            "peak_time_sec"
-        ].median()
-        for _, r in peak_summary.iterrows():
-            peak_medians[(int(r["day"]), str(r["peak"]))] = float(r["peak_time_sec"])
+    if peak_df.empty:
+        raise ValueError("Empty peak-time table for Haufe pattern-similarity figure")
+    peak_summary = peak_df.groupby(["day", "peak"], as_index=False)[
+        "peak_time_sec"
+    ].median()
+    for _, r in peak_summary.iterrows():
+        peak_medians[(int(r["day"]), str(r["peak"]))] = float(r["peak_time_sec"])
 
     fig, axes = plt.subplots(5, 5, figsize=(18.0, 16.0), squeeze=False)
     im = None
@@ -90,8 +87,10 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
             train_times = time_maps.get(train_day)
             test_times = time_maps.get(test_day)
             if train_times is None or test_times is None:
-                ax.axis("off")
-                continue
+                raise ValueError(
+                    "Missing Haufe time map for day pair: "
+                    f"train_day={train_day}, test_day={test_day}"
+                )
             mat = np.full((len(train_times), len(test_times)), np.nan)
             train_vecs = similarity_maps[train_day]
             test_vecs = similarity_maps[test_day]
@@ -145,10 +144,7 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
     fig.suptitle("Haufe Pattern Similarity by Day Pair (A/B)", y=0.98)
     fig.subplots_adjust(top=0.94, bottom=0.06, left=0.06, right=0.90, wspace=0.26, hspace=0.36)
     cax = fig.add_axes([0.92, 0.14, 0.015, 0.72])
-    if im is not None:
-        fig.colorbar(im, cax=cax, label="Pattern correlation")
-    else:
-        cax.axis("off")
+    fig.colorbar(im, cax=cax, label="Pattern correlation")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -169,27 +165,42 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
     haufe_peak_times_csv = output_dir / "mvpa_stim_locked_cat_haufe_subject_day_peak_times.csv"
     fig_day_panels = figures_dir / "mvpa_stim_locked_cat_auc_by_day_panels.png"
 
-    if not day_means_csv.exists():
+    required_paths = [
+        session_csv,
+        day_means_csv,
+        haufe_day_mean_csv,
+        haufe_channel_pos_csv,
+    ]
+    missing_paths = []
+    for path in required_paths:
+        if not path.exists():
+            missing_paths.append(str(path))
+    if len(missing_paths) > 0:
         raise FileNotFoundError(
             "Missing MVPA outputs in "
-            f"{output_dir}. Run mvpa_stim_locked_cat_time_resolved_analysis.py first."
+            f"{output_dir}. Run mvpa_stim_locked_cat_time_resolved_analysis.py first.\n"
+            + "\n".join(missing_paths)
         )
 
     day_means_df = pd.read_csv(day_means_csv)
+    if day_means_df.empty:
+        raise ValueError(f"Empty stimulus time-resolved MVPA output: {day_means_csv}")
 
     def detect_subject_day_peak_times():
-        if not session_csv.exists():
-            return pd.DataFrame()
         d_session = pd.read_csv(session_csv)
         if d_session.empty:
-            return pd.DataFrame()
+            raise ValueError(f"Empty stimulus MVPA session table: {session_csv}")
         rows = []
         for (subject, day), d_sd in d_session.groupby(["subject", "day"]):
             d_sd = d_sd.sort_values("time_sec")
             for lo, hi, label in [(0.0, 0.20, "early"), (0.35, 0.80, "late")]:
                 d_win = d_sd[(d_sd["time_sec"] >= lo) & (d_sd["time_sec"] <= hi)]
                 if d_win.empty:
-                    continue
+                    raise ValueError(
+                        f"Missing MVPA peak window in {session_csv}: "
+                        f"subject={subject}, day={day}, peak={label}, "
+                        f"window={lo}-{hi}"
+                    )
                 row = d_win.loc[d_win["auc"].idxmax()]
                 rows.append(
                     {
@@ -212,31 +223,40 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
     peak_df = pd.DataFrame()
     peak_medians = {}
     pos_df = pd.DataFrame()
-    if haufe_day_mean_csv.exists() and haufe_channel_pos_csv.exists():
-        haufe_df = pd.read_csv(haufe_day_mean_csv)
-        pos_df = pd.read_csv(haufe_channel_pos_csv)
-        if (not haufe_df.empty) and (not pos_df.empty):
-            haufe_info, haufe_ch_names = make_haufe_info_from_pos_df(pos_df)
-            peak_df = detect_subject_day_peak_times()
-            if not peak_df.empty:
-                d_peak_median = (
-                    peak_df.groupby(["day", "peak"], as_index=False)["peak_time_sec"]
-                    .median()
-                    .rename(columns={"peak_time_sec": "median_peak_time_sec"})
-                )
-                peak_medians = {}
-                for _, r in d_peak_median.iterrows():
-                    peak_medians[(int(r["day"]), str(r["peak"]))] = float(
-                        r["median_peak_time_sec"]
-                    )
-
-    haufe_similarity_path = None
-    if not haufe_df.empty:
-        haufe_similarity_path = plot_haufe_similarity_day_pairs(
-            peak_df, haufe_df, figures_dir
+    haufe_df = pd.read_csv(haufe_day_mean_csv)
+    pos_df = pd.read_csv(haufe_channel_pos_csv)
+    if haufe_df.empty or pos_df.empty:
+        raise ValueError(
+            f"Empty Haufe output table: {haufe_day_mean_csv} "
+            f"or {haufe_channel_pos_csv}"
+        )
+    haufe_info, haufe_ch_names = make_haufe_info_from_pos_df(pos_df)
+    peak_df = detect_subject_day_peak_times()
+    d_peak_median = (
+        peak_df.groupby(["day", "peak"], as_index=False)["peak_time_sec"]
+        .median()
+        .rename(columns={"peak_time_sec": "median_peak_time_sec"})
+    )
+    peak_medians = {}
+    for _, r in d_peak_median.iterrows():
+        peak_medians[(int(r["day"]), str(r["peak"]))] = float(
+            r["median_peak_time_sec"]
         )
 
+    haufe_similarity_path = plot_haufe_similarity_day_pairs(
+        peak_df, haufe_df, figures_dir
+    )
+
     days = sorted(day_means_df["day"].unique())
+    missing_days = []
+    for day in [1, 2, 3, 4, 5]:
+        if day not in days:
+            missing_days.append(str(day))
+    if len(missing_days) > 0:
+        raise ValueError(
+            f"Missing stimulus time-resolved MVPA days in {day_means_csv}: "
+            + ", ".join(missing_days)
+        )
     fig, axes = plt.subplots(1, len(days), figsize=(5 * len(days), 5.2), sharey=True, squeeze=False)
     x_all = day_means_df["time_sec"].to_numpy(dtype=float)
     x_min = float(np.nanmin(x_all))
@@ -245,11 +265,8 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
     y_lower = float(np.nanmin(day_means_df["auc_mean"] - day_means_df["auc_sem"].fillna(0.0)))
     y_pad = max(0.02, 0.20 * (y_upper - y_lower))
     topomap_ims = []
-    if not haufe_df.empty:
-        lim = float(np.nanmax(np.abs(haufe_df["pattern_mean"].to_numpy(dtype=float))))
-        if not np.isfinite(lim) or lim <= 0:
-            lim = 1e-12
-    else:
+    lim = float(np.nanmax(np.abs(haufe_df["pattern_mean"].to_numpy(dtype=float))))
+    if not np.isfinite(lim) or lim <= 0:
         lim = 1e-12
     for ax, day in zip(axes.ravel(), days):
         g = day_means_df[day_means_df["day"] == day].sort_values("time_sec")
@@ -268,9 +285,17 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
         for peak_label in ["early", "late"]:
             if (int(day), peak_label) in peak_medians:
                 day_peak_times.append((peak_medians[(int(day), peak_label)], peak_label))
+            else:
+                raise ValueError(
+                    f"Missing stimulus MVPA peak median: day={day}, "
+                    f"peak={peak_label}"
+                )
         for peak_time, peak_label in day_peak_times:
             if x_max <= x_min:
-                continue
+                raise ValueError(
+                    f"Invalid stimulus MVPA time axis in {day_means_csv}: "
+                    f"x_min={x_min}, x_max={x_max}"
+                )
             y_peak = float(np.interp(peak_time, x, y))
             ax.axvline(peak_time, color="#b22222", linestyle=":", linewidth=1.2)
             ax.scatter(
@@ -287,13 +312,9 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
                 [max(0.01, min(0.99 - width, x_frac - width / 2.0)), 1.04, width, 0.36],
                 transform=ax.transAxes,
             )
-            if haufe_df.empty or haufe_info is None:
-                inset.axis("off")
-                continue
             d_day = haufe_df[haufe_df["day"] == day]
             if d_day.empty:
-                inset.axis("off")
-                continue
+                raise ValueError(f"Missing Haufe data for topomap inset: day={day}")
             times = np.sort(d_day["time_sec"].unique().astype(float))
             t_show = float(times[int(np.argmin(np.abs(times - peak_time)))])
             d_topo = d_day[np.isclose(d_day["time_sec"], t_show)]

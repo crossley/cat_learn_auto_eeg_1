@@ -19,7 +19,10 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
         mats = day_data[day]["mats"]
         times = day_data[day]["times"]
         if len(mats) == 0:
-            continue
+            raise ValueError(
+                f"Missing sensorwide carpet matrices: lock={lock_name}, "
+                f"band={band_name}, day={day}"
+            )
         vals = []
         for mat in mats:
             pair_vals = []
@@ -30,7 +33,9 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
         rows.append((day, times, d))
 
     if not rows:
-        return None
+        raise ValueError(
+            f"No sensorwide carpet data available for lock={lock_name}, band={band_name}"
+        )
 
     n_pairs = len(pair_idx)
     fig, axes = plt.subplots(len(rows), 1, figsize=(10, 2.1 * len(rows)), sharex=True)
@@ -83,7 +88,7 @@ def save_fig_sensorwide_connectivity(
         )
     d_carpet = pd.read_csv(carpet_path)
     if d_carpet.empty:
-        return {"figure_paths": []}
+        raise ValueError(f"Empty sensorwide carpet output table: {carpet_path}")
     n_channels = len(channel_subset)
     pair_idx = []
     for i in range(n_channels):
@@ -116,12 +121,16 @@ def save_fig_sensorwide_connectivity(
                         mat[j, i] = float(row["conn_val"])
                     np.fill_diagonal(mat, 0.0)
                     mats.append(mat)
+                if len(times_this) == 0:
+                    raise ValueError(
+                        f"Missing sensorwide carpet data in {carpet_path}: "
+                        f"lock={lock_name}, band={band_name}, day={day}"
+                    )
                 day_data[day] = {"times": np.array(times_this, dtype=float), "mats": mats}
             fig_path = plot_sensor_pair_carpet(
                 day_data, pair_idx, lock_name, band_name, figures_dir
             )
-            if fig_path is not None:
-                figure_paths.append(fig_path)
+            figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
 
 

@@ -20,6 +20,8 @@ from rsa_model_prediction_analysis import (
 
 
 def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
+    if diagnostics.empty:
+        raise ValueError("Empty RSA model grid diagnostics table")
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), squeeze=False)
     axes = axes.ravel()
     x = diagnostics["n_bins"].to_numpy()
@@ -42,6 +44,12 @@ def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
 
 
 def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
+    if all_bins.empty:
+        raise ValueError("Empty RSA model stimulus-bin table")
+    if retained_bins.empty:
+        raise ValueError("No retained RSA model stimulus bins")
+    if len(rdms) == 0:
+        raise ValueError("No RSA model RDMs available for plotting")
     fig = plt.figure(figsize=(15.5, 9.0))
     gs = fig.add_gridspec(
         2,
@@ -133,6 +141,12 @@ def save_fig_rsa_model_predictions(
     ).reset_index(drop=True)
     retained_bins["rdm_order"] = np.arange(len(retained_bins))
     rdm_df = pd.read_csv(rdm_csv)
+    if diagnostics.empty:
+        raise ValueError(f"Empty RSA model diagnostics table: {diagnostics_csv}")
+    if all_bins.empty:
+        raise ValueError(f"Empty RSA model bins table: {bins_csv}")
+    if rdm_df.empty:
+        raise ValueError(f"Empty RSA model RDM table: {rdm_csv}")
     rdms = {}
     for model, g in rdm_df.groupby("model", sort=False):
         n_bins = int(max(g["bin_i"].max(), g["bin_j"].max()) + 1)

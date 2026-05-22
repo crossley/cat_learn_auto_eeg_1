@@ -15,8 +15,14 @@ from mvpa_stim_locked_cat_tg_window_structure_analysis import FIGURES_DIR, OUTPU
 
 
 def plot_tg_window_gradients(window_df, slope_df, fig_path):
+    if window_df.empty:
+        raise ValueError("Empty TG window-structure AUC table")
+    if slope_df.empty:
+        raise ValueError("Empty TG window-structure slope table")
     d = window_df.dropna(subset=["mean_auc"]).copy()
     d = d[d["day_distance"] > 0]
+    if d.empty:
+        raise ValueError("No off-diagonal TG window-structure rows to plot")
     subject_distance = (
         d.groupby(["subject", "window", "day_distance"], as_index=False)["mean_auc"]
         .mean()
@@ -53,13 +59,12 @@ def plot_tg_window_gradients(window_df, slope_df, fig_path):
             pred = model.predict(pd.DataFrame({"day_distance": x}))
             ax.plot(x, pred, color=color, linestyle="--", linewidth=1.6)
         s = slope_df[slope_df["window"] == window_name]
-        if not s.empty:
-            slope = float(s["estimate"].iloc[0])
-            lo = float(s["ci_low"].iloc[0])
-            hi = float(s["ci_high"].iloc[0])
-            ax.set_title(f"{window_name.title()} ({slope:.4f} [{lo:.4f}, {hi:.4f}])")
-        else:
-            ax.set_title(window_name.title())
+        if s.empty:
+            raise ValueError(f"Missing TG window slope row: window={window_name}")
+        slope = float(s["estimate"].iloc[0])
+        lo = float(s["ci_low"].iloc[0])
+        hi = float(s["ci_high"].iloc[0])
+        ax.set_title(f"{window_name.title()} ({slope:.4f} [{lo:.4f}, {hi:.4f}])")
         ax.axhline(0.5, color="0.35", linestyle=":", linewidth=1)
         ax.set_xlabel("Day distance")
         ax.grid(alpha=0.25)

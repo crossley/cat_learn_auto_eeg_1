@@ -14,12 +14,16 @@ from mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis import FIGURES_DIR, O
 
 
 def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
+    if matrix_df.empty:
+        raise ValueError("Empty Day-1 distinctiveness matrix table")
     summaries = ["square_mean", "diagonal_mean", "top10_mean"]
     retained_summaries = []
     summary_set = set(matrix_df["summary"])
     for s in summaries:
         if s in summary_set:
             retained_summaries.append(s)
+        else:
+            raise ValueError(f"Missing Day-1 distinctiveness summary: {s}")
     summaries = retained_summaries
     days = [1, 2, 3, 4, 5]
     fig, axes = plt.subplots(
@@ -27,16 +31,38 @@ def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
     )
     for r, summary in enumerate(summaries):
         d_summary = matrix_df[matrix_df["summary"] == summary]
-        vmin = float(d_summary["auc_mean"].min()) if not d_summary.empty else 0.45
-        vmax = float(d_summary["auc_mean"].max()) if not d_summary.empty else 0.55
+        if d_summary.empty:
+            raise ValueError(f"Missing Day-1 distinctiveness summary rows: {summary}")
+        vmin = float(d_summary["auc_mean"].min())
+        vmax = float(d_summary["auc_mean"].max())
         for c, window_name in enumerate(["early", "late"]):
             ax = axes[r, c]
             mat = np.full((len(days), len(days)), np.nan)
             g = d_summary[d_summary["window"] == window_name]
+            if g.empty:
+                raise ValueError(
+                    "Missing Day-1 distinctiveness window rows: "
+                    f"summary={summary}, window={window_name}"
+                )
             for _, row in g.iterrows():
                 i = days.index(int(row["train_day"]))
                 j = days.index(int(row["test_day"]))
                 mat[i, j] = float(row["auc_mean"])
+            missing_pairs = []
+            for train_day in days:
+                for test_day in days:
+                    i = days.index(train_day)
+                    j = days.index(test_day)
+                    if not np.isfinite(mat[i, j]):
+                        missing_pairs.append(
+                            f"train_day={train_day}, test_day={test_day}"
+                        )
+            if len(missing_pairs) > 0:
+                raise ValueError(
+                    "Missing Day-1 distinctiveness matrix cells: "
+                    f"summary={summary}, window={window_name}\n"
+                    + "\n".join(missing_pairs)
+                )
             im = ax.imshow(
                 np.ma.masked_invalid(mat),
                 origin="upper",

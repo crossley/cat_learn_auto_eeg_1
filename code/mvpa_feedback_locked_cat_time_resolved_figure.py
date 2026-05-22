@@ -30,13 +30,18 @@ def save_fig_mvpa_feedback_locked_cat_time_resolved(
 
     day_means_df = pd.read_csv(day_means_csv)
     if day_means_df.empty:
-        fig = plt.figure(figsize=(8, 4))
-        fig.text(0.5, 0.5, "No feedback time-resolved MVPA data", ha="center", va="center")
-        fig.savefig(fig_day_panels, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        return {"figure_paths": {"day_panels": fig_day_panels}}
+        raise ValueError(f"Empty feedback time-resolved MVPA output: {day_means_csv}")
 
     days = sorted(day_means_df["day"].unique())
+    missing_days = []
+    for day in [1, 2, 3, 4, 5]:
+        if day not in days:
+            missing_days.append(str(day))
+    if len(missing_days) > 0:
+        raise ValueError(
+            f"Missing feedback time-resolved MVPA days in {day_means_csv}: "
+            + ", ".join(missing_days)
+        )
     fig, axes = plt.subplots(
         1, len(days), figsize=(5 * len(days), 5.2), sharey=True, squeeze=False
     )
