@@ -158,7 +158,7 @@ The active figure scripts generate these retained figure families:
 
 | Script | Figure files |
 |---|---|
-| `erp_grand_average_figure.py` | `erp_grand_average_stim_all.png`, `erp_grand_average_stim_correct_vs_incorrect.png`, `erp_grand_average_stim_cat_a_vs_cat_b.png`, `erp_grand_average_feedback_all.png`, `erp_grand_average_feedback_correct_vs_incorrect.png`, `erp_grand_average_feedback_A_vs_B.png` |
+| `erp_grand_average_figure.py` | `erp_grand_average_stim_all.png`, `erp_grand_average_stim_correct_vs_incorrect.png`, `erp_grand_average_stim_cat_a_vs_cat_b.png`, `erp_grand_average_feedback_all.png`, `erp_grand_average_feedback_correct_vs_incorrect.png`, `erp_grand_average_feedback_cat_a_vs_cat_b.png` |
 | `mvpa_stim_locked_cat_time_resolved_figure.py` | `mvpa_stim_locked_cat_auc_by_day_panels.png`, `mvpa_stim_locked_cat_haufe_similarity_timegen_matrices_5x5.png` |
 | `mvpa_feedback_locked_cat_time_resolved_figure.py` | `mvpa_feedback_locked_cat_time_resolved_auc_by_day_panels.png` |
 | `mvpa_stim_locked_cat_tg_figure.py` | `mvpa_stim_locked_cat_tg_transfer_5x4.png`, `mvpa_stim_locked_cat_tg_timegen_matrices_5x5.png` |

@@ -22,6 +22,15 @@ OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
 
 
+def available_conditions_message(df):
+    d_available = df[["lock_type", "condition"]].drop_duplicates()
+    d_available = d_available.sort_values(["lock_type", "condition"])
+    lines = []
+    for _, row in d_available.iterrows():
+        lines.append(f"{row['lock_type']} {row['condition']}")
+    return "\n".join(lines)
+
+
 def long_to_evoked_map(df, lock_type, condition):
     d_sel = df[(df["lock_type"] == lock_type) & (df["condition"] == condition)].copy()
     if d_sel.empty:
@@ -53,10 +62,25 @@ def long_to_evoked_map(df, lock_type, condition):
     return evoked_map
 
 
+def require_evoked_map(df, lock_type, condition):
+    evoked_map = long_to_evoked_map(df, lock_type, condition)
+    if len(evoked_map) == 0:
+        available = available_conditions_message(df)
+        raise ValueError(
+            "Missing ERP condition in "
+            "erp_grand_average_by_day_lock_condition.csv: "
+            f"lock_type={lock_type}, condition={condition}.\n"
+            "Rerun code/erp_grand_average_analysis.py so the output table "
+            "contains this condition before plotting.\n"
+            f"Available conditions:\n{available}"
+        )
+    return evoked_map
+
+
 def plot_day_grid(evoked_map, title, fig_path):
     days_sorted = sorted(evoked_map.keys())
     if len(days_sorted) == 0:
-        return None
+        raise ValueError(f"No ERP data available for figure: {fig_path}")
     fig, axes = plt.subplots(
         1, len(days_sorted), figsize=(5 * len(days_sorted), 4), squeeze=False
     )
@@ -80,7 +104,18 @@ def plot_day_condition_grid(
         days.add(k[0])
     days_sorted = sorted(days)
     if len(days_sorted) == 0:
-        return None
+        raise ValueError(f"No ERP data available for figure: {fig_path}")
+    missing = []
+    for day in days_sorted:
+        for cond in conds:
+            key = (day, cond)
+            if key not in evoked_by_day_cond:
+                missing.append(f"day={day}, condition={cond}")
+    if len(missing) > 0:
+        raise ValueError(
+            f"Missing ERP day/condition cells for figure {fig_path}:\n"
+            + "\n".join(missing)
+        )
     fig, axes = plt.subplots(
         len(conds),
         len(days_sorted),
@@ -91,9 +126,6 @@ def plot_day_condition_grid(
         for c, day in enumerate(days_sorted):
             ax = axes[r, c]
             key = (day, cond)
-            if key not in evoked_by_day_cond:
-                ax.set_axis_off()
-                continue
             evoked_by_day_cond[key].plot(
                 axes=ax,
                 show=False,
@@ -123,14 +155,14 @@ def save_fig_erp_grand_average(
     d_grand_plot = pd.read_csv(d_grand_path)
     paths = {}
     paths["stim_all"] = plot_day_grid(
-        long_to_evoked_map(d_grand_plot, "stim", "all"),
+        require_evoked_map(d_grand_plot, "stim", "all"),
         title="Grand Average ERP: stim_all",
         fig_path=figures_dir / "erp_grand_average_stim_all.png",
     )
     stim_correct_incorrect = {}
-    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "correct").items():
+    for day, ev in require_evoked_map(d_grand_plot, "stim", "correct").items():
         stim_correct_incorrect[(day, "correct")] = ev
-    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "incorrect").items():
+    for day, ev in require_evoked_map(d_grand_plot, "stim", "incorrect").items():
         stim_correct_incorrect[(day, "incorrect")] = ev
     paths["stim_correct_vs_incorrect"] = plot_day_condition_grid(
         stim_correct_incorrect,
@@ -138,9 +170,9 @@ def save_fig_erp_grand_average(
         fig_path=figures_dir / "erp_grand_average_stim_correct_vs_incorrect.png",
     )
     stim_cat = {}
-    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_a").items():
+    for day, ev in require_evoked_map(d_grand_plot, "stim", "cat_a").items():
         stim_cat[(day, "cat_a")] = ev
-    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_b").items():
+    for day, ev in require_evoked_map(d_grand_plot, "stim", "cat_b").items():
         stim_cat[(day, "cat_b")] = ev
     paths["stim_cat_a_vs_cat_b"] = plot_day_condition_grid(
         stim_cat,
@@ -149,16 +181,14 @@ def save_fig_erp_grand_average(
         conds=("cat_a", "cat_b"),
     )
     paths["feedback_all"] = plot_day_grid(
-        long_to_evoked_map(d_grand_plot, "feedback", "all"),
+        require_evoked_map(d_grand_plot, "feedback", "all"),
         title="Grand Average ERP: feedback locked",
         fig_path=figures_dir / "erp_grand_average_feedback_all.png",
     )
     feedback_correct_incorrect = {}
-    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "correct").items():
+    for day, ev in require_evoked_map(d_grand_plot, "feedback", "correct").items():
         feedback_correct_incorrect[(day, "correct")] = ev
-    for day, ev in long_to_evoked_map(
-        d_grand_plot, "feedback", "incorrect"
-    ).items():
+    for day, ev in require_evoked_map(d_grand_plot, "feedback", "incorrect").items():
         feedback_correct_incorrect[(day, "incorrect")] = ev
     paths["feedback_correct_vs_incorrect"] = plot_day_condition_grid(
         feedback_correct_incorrect,
@@ -166,21 +196,17 @@ def save_fig_erp_grand_average(
         fig_path=figures_dir / "erp_grand_average_feedback_correct_vs_incorrect.png",
     )
     feedback_cat = {}
-    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_a").items():
+    for day, ev in require_evoked_map(d_grand_plot, "feedback", "cat_a").items():
         feedback_cat[(day, "cat_a")] = ev
-    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_b").items():
+    for day, ev in require_evoked_map(d_grand_plot, "feedback", "cat_b").items():
         feedback_cat[(day, "cat_b")] = ev
-    paths["feedback_A_vs_B"] = plot_day_condition_grid(
+    paths["feedback_cat_a_vs_cat_b"] = plot_day_condition_grid(
         feedback_cat,
         title="Grand Average ERP: feedback locked by category",
-        fig_path=figures_dir / "erp_grand_average_feedback_A_vs_B.png",
+        fig_path=figures_dir / "erp_grand_average_feedback_cat_a_vs_cat_b.png",
         conds=("cat_a", "cat_b"),
     )
-    retained_paths = {}
-    for k, v in paths.items():
-        if v is not None:
-            retained_paths[k] = v
-    return retained_paths
+    return paths
 
 
 if __name__ == "__main__":
