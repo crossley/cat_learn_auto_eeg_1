@@ -45,7 +45,10 @@ def save_fig_mvpa_feedback_locked_cat_time_resolved(
     fig_day_panels = figures_dir / "mvpa_feedback_locked_cat_auc_by_day_panels.png"
 
     required_paths = [day_means_csv, haufe_day_mean_csv, haufe_channel_pos_csv]
-    missing_paths = [str(p) for p in required_paths if not p.exists()]
+    missing_paths = []
+    for path in required_paths:
+        if not path.exists():
+            missing_paths.append(str(path))
     if missing_paths:
         raise FileNotFoundError(
             "Missing feedback time-resolved MVPA outputs in "
@@ -81,7 +84,10 @@ def save_fig_mvpa_feedback_locked_cat_time_resolved(
             )
 
     days = sorted(day_means_df["day"].unique())
-    missing_days = [str(d) for d in [1, 2, 3, 4, 5] if d not in days]
+    missing_days = []
+    for day in [1, 2, 3, 4, 5]:
+        if day not in days:
+            missing_days.append(str(day))
     if missing_days:
         raise ValueError(
             f"Missing feedback time-resolved MVPA days in {day_means_csv}: "

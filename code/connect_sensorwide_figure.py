@@ -32,7 +32,10 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
         times = day_data[day]["times"]
         vals = []
         for mat in mats:
-            vals.append([mat[i, j] for i, j in pair_idx])
+            pair_vals = []
+            for i, j in pair_idx:
+                pair_vals.append(mat[i, j])
+            vals.append(pair_vals)
         carpets[day] = (times, np.asarray(vals).T)
 
     if not carpets:
@@ -78,7 +81,10 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
                 continue
             t_idx = int(np.argmin(np.abs(times - snap_t)))
             mat = mats[t_idx]
-            pair_vals = np.array([mat[i, j] for i, j in pair_idx], dtype=float)
+            pair_vals_list = []
+            for i, j in pair_idx:
+                pair_vals_list.append(mat[i, j])
+            pair_vals = np.array(pair_vals_list, dtype=float)
 
             x_frac = (snap_t - x_min) / (x_max - x_min)
             width = 0.13
@@ -141,21 +147,28 @@ def save_fig_sensorwide_connectivity(
         raise ValueError(f"Empty sensorwide carpet output table: {carpet_path}")
 
     d_channels = pd.read_csv(channels_path)
-    ch_pos_map = {
-        row["channel"]: np.array([float(row["x"]), float(row["y"])])
-        for _, row in d_channels.iterrows()
-    }
-    missing_ch = [ch for ch in channel_subset if ch not in ch_pos_map]
+    ch_pos_map = {}
+    for _, row in d_channels.iterrows():
+        ch_pos_map[row["channel"]] = np.array([float(row["x"]), float(row["y"])])
+    missing_ch = []
+    for ch in channel_subset:
+        if ch not in ch_pos_map:
+            missing_ch.append(ch)
     if missing_ch:
         raise ValueError(f"Channel positions missing for: {missing_ch}")
-    ch_xy = np.array([ch_pos_map[ch] for ch in channel_subset])
+    ch_xy_rows = []
+    for ch in channel_subset:
+        ch_xy_rows.append(ch_pos_map[ch])
+    ch_xy = np.array(ch_xy_rows)
 
     n_channels = len(channel_subset)
     pair_idx = []
     for i in range(n_channels):
         for j in range(i + 1, n_channels):
             pair_idx.append((i, j))
-    ch_to_idx = {ch: i for i, ch in enumerate(channel_subset)}
+    ch_to_idx = {}
+    for i, ch in enumerate(channel_subset):
+        ch_to_idx[ch] = i
 
     all_days = sorted(d_carpet["day"].dropna().unique().astype(int).tolist())
     figure_paths = []
