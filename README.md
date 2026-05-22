@@ -89,7 +89,6 @@ There is deliberately no all-in-one runner.
 | `mvpa_stim_feedback_cat_tg_analysis.py` | Compute cross-epoch stimulus/feedback TG outputs |
 | `mvpa_stim_feedback_cat_tg_figure.py` | Plot cross-epoch stimulus/feedback TG figures |
 | `mvpa_stim_locked_cat_tg_window_structure_analysis.py` | Compute early/late AUC windows and day-distance gradients |
-| `mvpa_stim_locked_cat_tg_window_structure_figure.py` | Plot early/late TG window-gradient figures |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis.py` | Compute Day-1 distinctiveness summaries |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_figure.py` | Plot Day-1 distinctiveness figures |
 
@@ -164,7 +163,6 @@ The active figure scripts generate these retained figure families:
 | `mvpa_stim_locked_cat_tg_figure.py` | `mvpa_stim_locked_cat_tg_transfer_5x4.png`, `mvpa_stim_locked_cat_tg_timegen_matrices_5x5.png` |
 | `mvpa_feedback_locked_cat_tg_figure.py` | `mvpa_feedback_locked_cat_tg_transfer_5x4.png`, `mvpa_feedback_locked_cat_tg_timegen_matrices_5x5.png`, `mvpa_feedback_locked_cat_tg_haufe_similarity_timegen_matrices_5x5.png` |
 | `mvpa_stim_feedback_cat_tg_figure.py` | `mvpa_stim_feedback_cat_tg_timegen_matrices_stim_to_feedback_5x5.png`, `mvpa_stim_feedback_cat_tg_timegen_matrices_feedback_to_stim_5x5.png` |
-| `mvpa_stim_locked_cat_tg_window_structure_figure.py` | `mvpa_stim_locked_cat_tg_window_gradients.png` |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_figure.py` | `mvpa_stim_locked_cat_tg_day_pair_window_matrices_by_summary.png` |
 | `rsa_model_prediction_figure.py` | `rsa_model_grid_diagnostics.png`, `rsa_model_prediction_rdms.png` |
 | `rsa_*_time_resolved_figure.py` | `rsa_*_model_fit_timecourses.png`, `rsa_*_neural_rdm_snapshots.png`, `rsa_*_cross_day_geometry_similarity.png`, `rsa_*_cross_day_geometry_timecourse_pairs.png` |
