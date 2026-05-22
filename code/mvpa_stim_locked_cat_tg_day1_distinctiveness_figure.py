@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Plot Day-1 distinctiveness TG summary figures."""
+
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis import FIGURES_DIR, OUTPUT_DIR
+
+
+def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
+    summaries = ["square_mean", "diagonal_mean", "top10_mean"]
+    summaries = [s for s in summaries if s in set(matrix_df["summary"])]
+    days = [1, 2, 3, 4, 5]
+    fig, axes = plt.subplots(
+        len(summaries), 2, figsize=(9.4, 4.1 * len(summaries)), squeeze=False
+    )
+    for r, summary in enumerate(summaries):
+        d_summary = matrix_df[matrix_df["summary"] == summary]
+        vmin = float(d_summary["auc_mean"].min()) if not d_summary.empty else 0.45
+        vmax = float(d_summary["auc_mean"].max()) if not d_summary.empty else 0.55
+        for c, window_name in enumerate(["early", "late"]):
+            ax = axes[r, c]
+            mat = np.full((len(days), len(days)), np.nan)
+            g = d_summary[d_summary["window"] == window_name]
+            for _, row in g.iterrows():
+                i = days.index(int(row["train_day"]))
+                j = days.index(int(row["test_day"]))
+                mat[i, j] = float(row["auc_mean"])
+            im = ax.imshow(
+                np.ma.masked_invalid(mat),
+                origin="upper",
+                cmap="viridis",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_xticks(range(len(days)))
+            ax.set_yticks(range(len(days)))
+            ax.set_xticklabels([f"D{day}" for day in days])
+            ax.set_yticklabels([f"D{day}" for day in days])
+            ax.set_xlabel("Test day")
+            ax.set_ylabel("Train day")
+            ax.set_title(f"{summary} | {window_name}")
+            for i in range(len(days)):
+                for j in range(len(days)):
+                    if np.isfinite(mat[i, j]):
+                        color = (
+                            "black"
+                            if mat[i, j] > (vmin + 0.65 * (vmax - vmin))
+                            else "white"
+                        )
+                        ax.text(
+                            j,
+                            i,
+                            f"{mat[i, j]:.3f}",
+                            ha="center",
+                            va="center",
+                            color=color,
+                            fontsize=8,
+                        )
+            fig.colorbar(im, ax=ax, shrink=0.75, label="AUC")
+    fig.suptitle("TG Window AUC by Day Pair and Summary (Diagonal = Within-Day)", y=1.0)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_fig_mvpa_stim_locked_cat_tg_day1_distinctiveness(
+    output_dir: Path | str = OUTPUT_DIR,
+    figures_dir: Path | str = FIGURES_DIR,
+):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    summary_matrix_csv = output_dir / "mvpa_stim_locked_cat_tg_day_pair_window_auc_matrix_by_summary.csv"
+    if not summary_matrix_csv.exists():
+        raise FileNotFoundError(
+            f"Missing Day-1 distinctiveness output in {output_dir}. "
+            "Run mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis.py first."
+        )
+    fig_matrices_by_summary = figures_dir / "mvpa_stim_locked_cat_tg_day_pair_window_matrices_by_summary.png"
+    plot_day_pair_window_matrices_by_summary(
+        pd.read_csv(summary_matrix_csv), fig_matrices_by_summary
+    )
+    return {"matrices_by_summary": fig_matrices_by_summary}
+
+
+if __name__ == "__main__":
+    save_fig_mvpa_stim_locked_cat_tg_day1_distinctiveness()
