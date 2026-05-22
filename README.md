@@ -150,7 +150,7 @@ The active analyses write these output families:
 | `rsa_model_prediction_analysis.py` | `rsa_model_grid_diagnostics.csv`, `rsa_model_stimulus_bins.csv`, `rsa_model_rdms.csv` |
 | `rsa_*_time_resolved_analysis.py` | `rsa_*_time_resolved_rdms.csv`, `rsa_*_bin_epoch_counts.csv`, `rsa_*_model_fit_timecourses.csv`, `rsa_*_cross_day_geometry_similarity.csv`, `rsa_*_model_vectors.csv`, `rsa_*_time_resolved_qc_log.csv` |
 | `rsa_*_windowed_analysis.py` | `rsa_*_windowed_rdms.csv`, `rsa_*_windowed_bin_epoch_counts.csv`, `rsa_*_windowed_model_fit_timecourses.csv`, `rsa_*_windowed_cross_day_geometry_similarity.csv`, `rsa_*_windowed_model_vectors.csv`, `rsa_*_windowed_qc_log.csv` |
-| `connect_sensorwide_analysis.py` | `sensorwide_edge_timeseries.csv`, `sensorwide_edge_timeseries_checkpoint.csv`, `sensorwide_channel_layout.csv`, `connect_sensorwide_progress.json`, optional `connect_sensorwide_qc_skipped.csv` |
+| `connect_sensorwide_analysis.py` | `sensorwide_carpet_timeseries.csv`, `sensorwide_carpet_timeseries_checkpoint.csv`, `sensorwide_channel_layout.csv`, `connect_sensorwide_progress.json`, optional `connect_sensorwide_qc_skipped.csv` |
 
 ## Expected Figures
 

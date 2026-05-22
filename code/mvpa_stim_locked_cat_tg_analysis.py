@@ -220,14 +220,15 @@ def run_mvpa_stim_locked_cat_tg(
         return True
 
     session_items = load_sessions(load_epochs=True)
-    cache_results = [
-        prepare_session_cache(
-            item,
-            cache_dir=output_dir,
-            cache_prefix="mvpa_stim_locked_cat_tg_cache_interp_bads",
+    cache_results = []
+    for item in session_items:
+        cache_results.append(
+            prepare_session_cache(
+                item,
+                cache_dir=output_dir,
+                cache_prefix="mvpa_stim_locked_cat_tg_cache_interp_bads",
+            )
         )
-        for item in session_items
-    ]
     prepared_map: dict[tuple, dict] = {}
     for result in cache_results:
         if not result["ok"]:
@@ -245,9 +246,16 @@ def run_mvpa_stim_locked_cat_tg(
     rng_master = np.random.default_rng(random_state)
     pair_items = []
     cross_matrix_dir.mkdir(parents=True, exist_ok=True)
-    subjects = sorted({k[0] for k in prepared_map})
+    subject_set = set()
+    for k in prepared_map:
+        subject_set.add(k[0])
+    subjects = sorted(subject_set)
     for subject in subjects:
-        subject_days = sorted([k[1] for k in prepared_map if k[0] == subject])
+        subject_days = []
+        for k in prepared_map:
+            if k[0] == subject:
+                subject_days.append(k[1])
+        subject_days = sorted(subject_days)
         if len(subject_days) < 2:
             continue
         for d_train in subject_days:
@@ -271,6 +279,12 @@ def run_mvpa_stim_locked_cat_tg(
     cross_matrix_accum: dict = {}
     cross_time_template = None
     cross_done = 0
+
+    def iter_cross_day_pair_jobs(items):
+        for item in items:
+            yield delayed(process_cross_day_pair)(
+                pair_item=item, random_state=random_state
+            )
     wrote_cross = False
 
     def handle_cross_result(result):
@@ -332,20 +346,14 @@ def run_mvpa_stim_locked_cat_tg(
         if threadpool_limits is None:
             result_iter = Parallel(
                 n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(
-                delayed(process_cross_day_pair)(pair_item=item, random_state=random_state)
-                for item in pair_items
-            )
+            )(iter_cross_day_pair_jobs(pair_items))
             for result in result_iter:
                 handle_cross_result(result)
         else:
             with threadpool_limits(limits=1):
                 result_iter = Parallel(
                     n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-                )(
-                    delayed(process_cross_day_pair)(pair_item=item, random_state=random_state)
-                    for item in pair_items
-                )
+                )(iter_cross_day_pair_jobs(pair_items))
                 for result in result_iter:
                     handle_cross_result(result)
 

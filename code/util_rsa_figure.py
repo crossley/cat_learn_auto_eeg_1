@@ -15,6 +15,8 @@ from util_rsa_time_resolved import (
     GEOMETRY_WINDOWS,
     OUTPUT_DIR,
     SNAPSHOT_TIMES,
+    _copy_with_backup,
+    _restore_backups,
 )
 
 
@@ -78,8 +80,14 @@ def save_cross_day_geometry_figure(
         ax.set_title(f"{window_name}: {tmin*1000:.0f}-{tmax*1000:.0f} ms")
         ax.set_xticks(range(len(day_grid)))
         ax.set_yticks(range(len(day_grid)))
-        ax.set_xticklabels([f"D{d}" for d in day_grid])
-        ax.set_yticklabels([f"D{d}" for d in day_grid])
+        x_labels = []
+        for d in day_grid:
+            x_labels.append(f"D{d}")
+        y_labels = []
+        for d in day_grid:
+            y_labels.append(f"D{d}")
+        ax.set_xticklabels(x_labels)
+        ax.set_yticklabels(y_labels)
         ax.set_xlabel("Test day")
         ax.set_ylabel("Train day")
         for i in range(len(day_grid)):
@@ -145,7 +153,10 @@ def save_cross_day_geometry_figure(
         4: ["#54278f"],
     }
     for root_day in day_grid[:-1]:
-        partners = [day for day in day_grid if day > root_day]
+        partners = []
+        for day in day_grid:
+            if day > root_day:
+                partners.append(day)
         for color, test_day in zip(root_colors[root_day], partners):
             g = similarity_df[
                 (
@@ -272,9 +283,11 @@ def save_fig_rsa_time_resolved(
                     mat[int(row.bin_j), int(row.bin_i)] = float(row.dissimilarity)
                 snapshot_mats.append(mat)
                 snapshot_items.append((day, time_sec, mat))
-        finite_snapshot = np.concatenate(
-            [mat[np.isfinite(mat)] for mat in snapshot_mats if np.any(np.isfinite(mat))]
-        )
+        finite_parts = []
+        for mat in snapshot_mats:
+            if np.any(np.isfinite(mat)):
+                finite_parts.append(mat[np.isfinite(mat)])
+        finite_snapshot = np.concatenate(finite_parts)
         vmin = float(np.nanquantile(finite_snapshot, 0.02))
         vmax = float(np.nanquantile(finite_snapshot, 0.98))
         im = None
@@ -375,7 +388,10 @@ def save_fig_rsa_windowed(
         save_fig_rsa_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
         for key, original_path in original_paths.items():
             if original_path.exists():
-                original_path.replace(windowed_paths[key])
+                if key == "cross_time":
+                    original_path.unlink()
+                else:
+                    original_path.replace(windowed_paths[key])
     finally:
         temp_rdm.replace(rdm_csv)
         temp_fit.replace(model_fit_csv)
@@ -390,7 +406,7 @@ def save_fig_rsa_windowed(
         "model_fit_figure": windowed_paths["fit"],
         "snapshot_figure": windowed_paths["snapshot"],
         "cross_day_geometry_figure": windowed_paths["cross_matrix"],
-        "cross_day_geometry_timecourse_figure": windowed_paths["cross_time"],
+        "cross_day_geometry_timecourse_figure": None,
         "cross_day_geometry_timecourse_5x5_figure": windowed_paths["cross_pair"],
     }
 
@@ -448,7 +464,10 @@ def _save_fig_rsa_prefixed(
         save_fig_rsa_time_resolved(output_dir=output_dir, figures_dir=figures_dir)
         for key, original_path in original_figs.items():
             if original_path.exists():
-                original_path.replace(target_figs[key])
+                if key == "cross_time":
+                    original_path.unlink()
+                else:
+                    original_path.replace(target_figs[key])
     finally:
         _restore_backups(backups)
         for path, backup in fig_backups.items():
@@ -460,7 +479,7 @@ def _save_fig_rsa_prefixed(
         "model_fit_figure": target_figs["fit"],
         "snapshot_figure": target_figs["snapshot"],
         "cross_day_geometry_figure": target_figs["cross_matrix"],
-        "cross_day_geometry_timecourse_figure": target_figs["cross_time"],
+        "cross_day_geometry_timecourse_figure": None,
         "cross_day_geometry_timecourse_5x5_figure": target_figs["cross_pair"],
     }
 
@@ -488,4 +507,3 @@ def save_fig_rsa_feedback_windowed(
         figure_prefix="rsa_feedback_windowed",
         windowed=True,
     )
-

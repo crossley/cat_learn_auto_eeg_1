@@ -84,7 +84,10 @@ def _extract_channel_positions(epochs):
 
 
 def prepare_feedback_data(epochs, behaviour):
-    fb_events = [x for x in ["FB/Cor", "FB/Inc"] if x in epochs.event_id]
+    fb_events = []
+    for x in ["FB/Cor", "FB/Inc"]:
+        if x in epochs.event_id:
+            fb_events.append(x)
     if len(fb_events) < 2:
         raise ValueError(f"missing_feedback_labels:{','.join(fb_events)}")
     fb_epochs = epochs[fb_events].copy()
@@ -296,24 +299,37 @@ def run_mvpa_feedback_locked_cat_tg(
         return True
 
     session_items = load_sessions(load_epochs=True)
-    cache_results = [
-        prepare_feedback_session_cache(
-            item,
-            cache_dir=output_dir,
-            cache_prefix="mvpa_feedback_locked_cat_tg_cache_interp_bads",
+    cache_results = []
+    for item in session_items:
+        cache_results.append(
+            prepare_feedback_session_cache(
+                item,
+                cache_dir=output_dir,
+                cache_prefix="mvpa_feedback_locked_cat_tg_cache_interp_bads",
+            )
         )
-        for item in session_items
-    ]
     prepared_map: dict[tuple, dict] = {}
     for result in cache_results:
         if not result["ok"]:
             qc_rows.append(result["qc"])
         else:
-            item = next(
-                x
-                for x in session_items
-                if int(x["subject"]) == int(result["subject"]) and int(x["day"]) == int(result["day"])
-            )
+            item = None
+            for x in session_items:
+                if int(x["subject"]) == int(result["subject"]) and int(x["day"]) == int(result["day"]):
+                    item = x
+                    break
+            if item is None:
+                qc_rows.append(
+                    {
+                        "session_file": result["session_file"],
+                        "subject": int(result["subject"]),
+                        "day": int(result["day"]),
+                        "stage": "prepare",
+                        "reason": "session_lookup_failed",
+                        "detail": "",
+                    }
+                )
+                continue
             prepared_map[(result["subject"], result["day"])] = {
                 **result,
                 "epochs": item["epochs"],
@@ -380,9 +396,10 @@ def run_mvpa_feedback_locked_cat_tg(
             )
             .sort_values(["day", "channel", "time_sec"])
         )
-        haufe_pos_df = pd.DataFrame(
-            [channel_pos_rows[ch] for ch in sorted(channel_pos_rows)]
-        )
+        haufe_pos_rows = []
+        for ch in sorted(channel_pos_rows):
+            haufe_pos_rows.append(channel_pos_rows[ch])
+        haufe_pos_df = pd.DataFrame(haufe_pos_rows)
         haufe_session_df.to_csv(haufe_session_csv, index=False)
         haufe_day_mean_df.to_csv(haufe_day_mean_csv, index=False)
         haufe_pos_df.to_csv(haufe_channel_pos_csv, index=False)
@@ -398,9 +415,16 @@ def run_mvpa_feedback_locked_cat_tg(
     rng_master = np.random.default_rng(random_state)
     pair_items = []
     cross_matrix_dir.mkdir(parents=True, exist_ok=True)
-    subjects = sorted({k[0] for k in prepared_map})
+    subject_set = set()
+    for k in prepared_map:
+        subject_set.add(k[0])
+    subjects = sorted(subject_set)
     for subject in subjects:
-        subject_days = sorted([k[1] for k in prepared_map if k[0] == subject])
+        subject_days = []
+        for k in prepared_map:
+            if k[0] == subject:
+                subject_days.append(k[1])
+        subject_days = sorted(subject_days)
         if len(subject_days) < 2:
             continue
         for d_train in subject_days:
@@ -425,6 +449,12 @@ def run_mvpa_feedback_locked_cat_tg(
     cross_time_template = None
     cross_done = 0
     wrote_cross = False
+
+    def iter_feedback_pair_jobs(items):
+        for item in items:
+            yield delayed(process_feedback_day_pair)(
+                pair_item=item, random_state=random_state
+            )
 
     def handle_cross_result(result):
         nonlocal wrote_cross, wrote_qc, cross_done, qc_rows, cross_time_template
@@ -485,20 +515,14 @@ def run_mvpa_feedback_locked_cat_tg(
         if threadpool_limits is None:
             result_iter = Parallel(
                 n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(
-                delayed(process_feedback_day_pair)(pair_item=item, random_state=random_state)
-                for item in pair_items
-            )
+            )(iter_feedback_pair_jobs(pair_items))
             for result in result_iter:
                 handle_cross_result(result)
         else:
             with threadpool_limits(limits=1):
                 result_iter = Parallel(
                     n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-                )(
-                    delayed(process_feedback_day_pair)(pair_item=item, random_state=random_state)
-                    for item in pair_items
-                )
+                )(iter_feedback_pair_jobs(pair_items))
                 for result in result_iter:
                     handle_cross_result(result)
 

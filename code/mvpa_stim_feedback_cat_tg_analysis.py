@@ -240,7 +240,10 @@ def run_mvpa_stim_feedback_cat_tg(
     day_pair_times: dict[tuple[str, int, int], tuple[np.ndarray, np.ndarray]] = {}
     total_pairs = 0
     cross_done = 0
-    subjects = sorted({k[0] for k in prepared_map})
+    subject_set = set()
+    for k in prepared_map:
+        subject_set.add(k[0])
+    subjects = sorted(subject_set)
 
     def handle_result(result: dict):
         nonlocal wrote_qc, qc_rows, cross_done
@@ -284,10 +287,18 @@ def run_mvpa_stim_feedback_cat_tg(
                 flush=True,
             )
 
+    def iter_cross_epoch_pair_jobs(items):
+        for item in items:
+            yield delayed(process_cross_epoch_pair)(item, random_state=random_state)
+
     for direction, (train_kind, test_kind) in TRAIN_TEST_DIRECTIONS.items():
         pair_items = []
         for subject in subjects:
-            days = sorted({k[1] for k in prepared_map if k[0] == subject})
+            day_set = set()
+            for k in prepared_map:
+                if k[0] == subject:
+                    day_set.add(k[1])
+            days = sorted(day_set)
             for train_day in days:
                 for test_day in days:
                     if (
@@ -339,10 +350,7 @@ def run_mvpa_stim_feedback_cat_tg(
             if threadpool_limits is None:
                 result_iter = Parallel(
                     n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-                )(
-                    delayed(process_cross_epoch_pair)(item, random_state=random_state)
-                    for item in pair_items
-                )
+                )(iter_cross_epoch_pair_jobs(pair_items))
                 for result in result_iter:
                     handle_result(result)
             else:
@@ -352,10 +360,7 @@ def run_mvpa_stim_feedback_cat_tg(
                         backend="loky",
                         verbose=0,
                         return_as="generator_unordered",
-                    )(
-                        delayed(process_cross_epoch_pair)(item, random_state=random_state)
-                        for item in pair_items
-                    )
+                    )(iter_cross_epoch_pair_jobs(pair_items))
                     for result in result_iter:
                         handle_result(result)
         del pair_items

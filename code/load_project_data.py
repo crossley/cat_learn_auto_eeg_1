@@ -57,7 +57,10 @@ def load_sessions(load_epochs=False):
         day = day_code // 100 if day_code >= 100 else day_code
 
         behaviour = pd.read_csv(path)
-        missing_columns = [col for col in BEHAVIOURAL_COLUMNS if col not in behaviour.columns]
+        missing_columns = []
+        for col in BEHAVIOURAL_COLUMNS:
+            if col not in behaviour.columns:
+                missing_columns.append(col)
         if missing_columns:
             raise ValueError(f"{path.name} is missing columns: {missing_columns}")
 
@@ -119,7 +122,10 @@ def align_behaviour_to_epochs(behaviour, epochs, event_names=("Stim/A", "Stim/B"
     behaviour = behaviour.sort_values("trial").reset_index(drop=True)
 
     requested_event_names = list(event_names)
-    event_names = [event_name for event_name in requested_event_names if event_name in epochs.event_id]
+    event_names = []
+    for event_name in requested_event_names:
+        if event_name in epochs.event_id:
+            event_names.append(event_name)
     if len(event_names) == 0:
         raise ValueError(f"None of the requested events are present: {requested_event_names}")
 
@@ -128,11 +134,13 @@ def align_behaviour_to_epochs(behaviour, epochs, event_names=("Stim/A", "Stim/B"
         raise ValueError("No epochs remain after selecting requested events.")
 
     def observed_and_behaviour_labels(candidate):
-        event_lookup = {code: name for name, code in selected_epochs.event_id.items()}
-        event_labels = np.array(
-            [event_lookup.get(int(code), "") for code in selected_epochs.events[:, 2]],
-            dtype=object,
-        )
+        event_lookup = {}
+        for name, code in selected_epochs.event_id.items():
+            event_lookup[code] = name
+        event_label_rows = []
+        for code in selected_epochs.events[:, 2]:
+            event_label_rows.append(event_lookup.get(int(code), ""))
+        event_labels = np.array(event_label_rows, dtype=object)
         if set(event_labels).issubset({"Stim/A", "Stim/B"}):
             observed = np.where(event_labels == "Stim/A", "A", "B")
             behaviour_labels = behaviour["cat"].astype(str).to_numpy()

@@ -34,7 +34,9 @@ def process_single_subject(raw_path, epo_dir):
 
     bdf_re = re.compile(r"^P(\d+)_D([\d_]+)\.bdf$")
     cap_ch_re = re.compile(r"^[AB]\d+$")
-    aux_types = {f"EXG{i}": "eog" for i in range(1, 9)}
+    aux_types = {}
+    for i in range(1, 9):
+        aux_types[f"EXG{i}"] = "eog"
     aux_types.update(
         {
             "GSR1": "misc",
@@ -55,7 +57,10 @@ def process_single_subject(raw_path, epo_dir):
     day_token = m.group(2)
 
     raw = mne.io.read_raw_bdf(raw_path, preload=True, stim_channel="Status", verbose="ERROR")
-    cap_chs = [ch for ch in raw.ch_names if cap_ch_re.match(ch)]
+    cap_chs = []
+    for ch in raw.ch_names:
+        if cap_ch_re.match(ch):
+            cap_chs.append(ch)
     if len(cap_chs) == 64:
         raw.rename_channels(dict(zip(cap_chs, biosemi64_montage.ch_names)))
 
@@ -77,7 +82,10 @@ def process_single_subject(raw_path, epo_dir):
 
     raw, events = raw.resample(256, npad="auto", events=events, verbose="ERROR")
 
-    eeg_chans = [ch for ch, ch_type in zip(raw.ch_names, raw.get_channel_types()) if ch_type == "eeg"]
+    eeg_chans = []
+    for ch, ch_type in zip(raw.ch_names, raw.get_channel_types()):
+        if ch_type == "eeg":
+            eeg_chans.append(ch)
     prep_params = {"ref_chs": eeg_chans, "reref_chs": eeg_chans, "line_freqs": []}
     prep = PrepPipeline(
         raw,
@@ -101,7 +109,9 @@ def process_single_subject(raw_path, epo_dir):
         reject_by_annotation=True,
         verbose="ERROR",
     )
-    code_to_name = {code: name for name, code in event_id.items()}
+    code_to_name = {}
+    for name, code in event_id.items():
+        code_to_name[code] = name
     stim_codes = {event_id["Stim/A"], event_id["Stim/B"]}
     trial_index = -1
     metadata_rows = []
@@ -142,9 +152,11 @@ def preprocess_epochs():
     epo_dir.mkdir(parents=True, exist_ok=True)
 
     raw_files = sorted(raw_dir.glob("*.bdf"))
-    results = Parallel(n_jobs=N_JOBS)(
-        delayed(process_single_subject)(raw_path, epo_dir) for raw_path in raw_files
-    )
+    def iter_preprocess_jobs():
+        for raw_path in raw_files:
+            yield delayed(process_single_subject)(raw_path, epo_dir)
+
+    results = Parallel(n_jobs=N_JOBS)(iter_preprocess_jobs())
 
     for result in results:
         if result is not None:

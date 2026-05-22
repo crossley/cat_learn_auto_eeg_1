@@ -176,19 +176,24 @@ def run_erp_grand_average(
         progress_json.write_text(json.dumps(payload, indent=2))
 
     sessions = load_sessions()
-    worker_items = [
-        {
+    worker_items = []
+    for item in sessions:
+        worker_items.append(
+            {
             "subject": item["subject"],
             "day": item["day"],
             "beh": item["beh"],
             "epo_path": str(item["epo_path"]),
-        }
-        for item in sessions
-    ]
+            }
+        )
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
     write_progress("running", 0, len(worker_items))
+    def iter_session_jobs():
+        for item in worker_items:
+            yield delayed(process_erp_session_safe)(item)
+
     if n_workers == 1:
         session_results = []
         for i, item in enumerate(worker_items, start=1):
@@ -197,7 +202,7 @@ def run_erp_grand_average(
     else:
         result_iter = Parallel(
             n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-        )(delayed(process_erp_session_safe)(item) for item in worker_items)
+        )(iter_session_jobs())
         session_results = []
         for i, result in enumerate(result_iter, start=1):
             session_results.append(result)
@@ -229,7 +234,9 @@ def run_erp_grand_average(
                 records[key].append({"subject": subject, "day": day, key: result[key]})
     pd.DataFrame(qc_rows).to_csv(qc_path, index=False)
 
-    means = {key: _grand_average_records(vals, key) for key, vals in records.items()}
+    means = {}
+    for key, vals in records.items():
+        means[key] = _grand_average_records(vals, key)
     d_grand = pd.concat(
         [
             evoked_map_to_long(means["evoked_stim_all"], "stim", "all"),
@@ -252,26 +259,18 @@ def run_erp_grand_average(
     subject_rows = []
     if not stim_all.empty:
         for subject in sorted(stim_all["subject"].unique()):
-            d_stim_s = evoked_map_to_long(
-                {
-                    int(row["day"]): row["evoked_stim_all"]
-                    for _, row in stim_all[stim_all["subject"] == subject].iterrows()
-                },
-                "stim",
-                "all",
-            )
+            stim_map = {}
+            for _, row in stim_all[stim_all["subject"] == subject].iterrows():
+                stim_map[int(row["day"])] = row["evoked_stim_all"]
+            d_stim_s = evoked_map_to_long(stim_map, "stim", "all")
             d_feedback_s = pd.DataFrame()
             if not feedback_all.empty:
-                d_feedback_s = evoked_map_to_long(
-                    {
-                        int(row["day"]): row["evoked_feedback_all"]
-                        for _, row in feedback_all[
-                            feedback_all["subject"] == subject
-                        ].iterrows()
-                    },
-                    "feedback",
-                    "all",
-                )
+                feedback_map = {}
+                for _, row in feedback_all[
+                    feedback_all["subject"] == subject
+                ].iterrows():
+                    feedback_map[int(row["day"])] = row["evoked_feedback_all"]
+                d_feedback_s = evoked_map_to_long(feedback_map, "feedback", "all")
             d_sub_s = pd.concat([d_stim_s, d_feedback_s], ignore_index=True)
             if not d_sub_s.empty:
                 subject_rows.append(d_sub_s.assign(subject=int(subject)))

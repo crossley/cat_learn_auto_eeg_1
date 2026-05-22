@@ -55,8 +55,14 @@ def save_fig_mvpa_feedback_locked_cat_tg(
     im = ax.imshow(masked, cmap="magma", aspect="equal")
     ax.set_xticks(range(len(day_grid)))
     ax.set_yticks(range(len(day_grid)))
-    ax.set_xticklabels([f"D{d}" for d in day_grid])
-    ax.set_yticklabels([f"D{d}" for d in day_grid])
+    x_labels = []
+    for d in day_grid:
+        x_labels.append(f"D{d}")
+    y_labels = []
+    for d in day_grid:
+        y_labels.append(f"D{d}")
+    ax.set_xticklabels(x_labels)
+    ax.set_yticklabels(y_labels)
     ax.set_xlabel("Test Day")
     ax.set_ylabel("Train Day")
     ax.set_title("Feedback-Locked Transfer (Diagonal Mean AUC)")

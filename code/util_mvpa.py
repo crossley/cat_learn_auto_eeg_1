@@ -74,7 +74,10 @@ def pick_eeg_interpolate_bads(epochs):
 
 
 def prepare_stim_data(epochs):
-    stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
+    stim_events = []
+    for x in ["Stim/A", "Stim/B"]:
+        if x in epochs.event_id:
+            stim_events.append(x)
     if len(stim_events) < 2:
         raise ValueError(f"missing_stim_labels:{','.join(stim_events)}")
     stim_epochs = epochs[stim_events].copy()
@@ -264,14 +267,15 @@ def run_mvpa_stim_locked_cat_tg_within_day(
         return True
 
     session_items = load_sessions(load_epochs=True)
-    cache_results = [
-        prepare_session_cache(
-            item,
-            cache_dir=output_dir,
-            cache_prefix="mvpa_stim_locked_cat_tg_within_day_cache_interp_bads",
+    cache_results = []
+    for item in session_items:
+        cache_results.append(
+            prepare_session_cache(
+                item,
+                cache_dir=output_dir,
+                cache_prefix="mvpa_stim_locked_cat_tg_within_day_cache_interp_bads",
+            )
         )
-        for item in session_items
-    ]
     prepared_items = []
     for result in cache_results:
         if not result["ok"]:
@@ -366,38 +370,40 @@ def run_mvpa_stim_locked_cat_tg_within_day(
         flush=True,
     )
     if n_workers == 1:
-        runner = (lambda: [handle_within_result(
-            process_within_day_session(
-                session_meta=item, min_epochs=min_epochs, random_state=random_state
-            )
-        ) for item in prepared_items])
+        def runner():
+            for item in prepared_items:
+                handle_within_result(
+                    process_within_day_session(
+                        session_meta=item,
+                        min_epochs=min_epochs,
+                        random_state=random_state,
+                    )
+                )
         if threadpool_limits is None:
             runner()
         else:
             with threadpool_limits(limits=1):
                 runner()
     elif len(prepared_items) > 0:
+        def iter_within_day_jobs():
+            for item in prepared_items:
+                yield delayed(process_within_day_session)(
+                    session_meta=item,
+                    min_epochs=min_epochs,
+                    random_state=random_state,
+                )
+
         if threadpool_limits is None:
             result_iter = Parallel(
                 n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(
-                delayed(process_within_day_session)(
-                    session_meta=item, min_epochs=min_epochs, random_state=random_state
-                )
-                for item in prepared_items
-            )
+            )(iter_within_day_jobs())
             for result in result_iter:
                 handle_within_result(result)
         else:
             with threadpool_limits(limits=1):
                 result_iter = Parallel(
                     n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-                )(
-                    delayed(process_within_day_session)(
-                        session_meta=item, min_epochs=min_epochs, random_state=random_state
-                    )
-                    for item in prepared_items
-                )
+                )(iter_within_day_jobs())
                 for result in result_iter:
                     handle_within_result(result)
 
@@ -455,4 +461,3 @@ def run_mvpa_stim_locked_cat_tg_within_day(
         "qc_csv": qc_csv,
         "prepared_items": prepared_items,
     }
-

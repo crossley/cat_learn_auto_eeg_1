@@ -17,15 +17,22 @@ except Exception:
 
 
 def parallel_collect(func, items, n_workers):
+    def iter_delayed_items():
+        for item in items:
+            yield delayed(func)(item)
+
     if n_workers == 1:
-        return [func(item) for item in items]
+        results = []
+        for item in items:
+            results.append(func(item))
+        return results
     if threadpool_limits is None:
         return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-            delayed(func)(item) for item in items
+            iter_delayed_items()
         )
     with threadpool_limits(limits=1):
         return Parallel(n_jobs=n_workers, backend="loky", verbose=0)(
-            delayed(func)(item) for item in items
+            iter_delayed_items()
         )
 
 

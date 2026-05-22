@@ -15,7 +15,12 @@ from mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis import FIGURES_DIR, O
 
 def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
     summaries = ["square_mean", "diagonal_mean", "top10_mean"]
-    summaries = [s for s in summaries if s in set(matrix_df["summary"])]
+    retained_summaries = []
+    summary_set = set(matrix_df["summary"])
+    for s in summaries:
+        if s in summary_set:
+            retained_summaries.append(s)
+    summaries = retained_summaries
     days = [1, 2, 3, 4, 5]
     fig, axes = plt.subplots(
         len(summaries), 2, figsize=(9.4, 4.1 * len(summaries)), squeeze=False
@@ -41,8 +46,14 @@ def plot_day_pair_window_matrices_by_summary(matrix_df, fig_path):
             )
             ax.set_xticks(range(len(days)))
             ax.set_yticks(range(len(days)))
-            ax.set_xticklabels([f"D{day}" for day in days])
-            ax.set_yticklabels([f"D{day}" for day in days])
+            x_labels = []
+            for day in days:
+                x_labels.append(f"D{day}")
+            y_labels = []
+            for day in days:
+                y_labels.append(f"D{day}")
+            ax.set_xticklabels(x_labels)
+            ax.set_yticklabels(y_labels)
             ax.set_xlabel("Test day")
             ax.set_ylabel("Train day")
             ax.set_title(f"{summary} | {window_name}")

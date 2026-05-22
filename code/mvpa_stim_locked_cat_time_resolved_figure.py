@@ -34,10 +34,9 @@ def vector_corr(x_vec, y_vec):
 
 def make_haufe_info_from_pos_df(pos_df):
     ch_names = pos_df["channel"].tolist()
-    ch_pos = {
-        r["channel"]: np.array([r["x"], r["y"], r["z"]], dtype=float)
-        for _, r in pos_df.iterrows()
-    }
+    ch_pos = {}
+    for _, r in pos_df.iterrows():
+        ch_pos[r["channel"]] = np.array([r["x"], r["y"], r["z"]], dtype=float)
     info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
     montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
     info.set_montage(montage, on_missing="ignore")
@@ -77,14 +76,11 @@ def plot_haufe_similarity_day_pairs(peak_df, haufe_day_mean_df, figures_dir):
 
     peak_medians = {}
     if not peak_df.empty:
-        peak_medians = {
-            (int(r["day"]), str(r["peak"])): float(r["peak_time_sec"])
-            for _, r in (
-                peak_df.groupby(["day", "peak"], as_index=False)["peak_time_sec"]
-                .median()
-                .iterrows()
-            )
-        }
+        peak_summary = peak_df.groupby(["day", "peak"], as_index=False)[
+            "peak_time_sec"
+        ].median()
+        for _, r in peak_summary.iterrows():
+            peak_medians[(int(r["day"]), str(r["peak"]))] = float(r["peak_time_sec"])
 
     fig, axes = plt.subplots(5, 5, figsize=(18.0, 16.0), squeeze=False)
     im = None
@@ -228,10 +224,11 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
                     .median()
                     .rename(columns={"peak_time_sec": "median_peak_time_sec"})
                 )
-                peak_medians = {
-                    (int(r["day"]), str(r["peak"])): float(r["median_peak_time_sec"])
-                    for _, r in d_peak_median.iterrows()
-                }
+                peak_medians = {}
+                for _, r in d_peak_median.iterrows():
+                    peak_medians[(int(r["day"]), str(r["peak"]))] = float(
+                        r["median_peak_time_sec"]
+                    )
 
     haufe_similarity_path = None
     if not haufe_df.empty:
@@ -267,11 +264,10 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
         ax.set_xlabel("Time (s)")
         ax.set_ylim(y_lower - 0.02, y_upper + y_pad)
         ax.grid(alpha=0.25)
-        day_peak_times = [
-            (peak_medians[(int(day), peak_label)], peak_label)
-            for peak_label in ["early", "late"]
-            if (int(day), peak_label) in peak_medians
-        ]
+        day_peak_times = []
+        for peak_label in ["early", "late"]:
+            if (int(day), peak_label) in peak_medians:
+                day_peak_times.append((peak_medians[(int(day), peak_label)], peak_label))
         for peak_time, peak_label in day_peak_times:
             if x_max <= x_min:
                 continue

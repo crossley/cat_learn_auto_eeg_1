@@ -108,9 +108,10 @@ def evaluate_grid_candidate(beh, n_bins):
 
 
 def choose_grid(beh):
-    diagnostics = pd.DataFrame(
-        [evaluate_grid_candidate(beh, n_bins) for n_bins in GRID_CANDIDATES]
-    )
+    diagnostic_rows = []
+    for n_bins in GRID_CANDIDATES:
+        diagnostic_rows.append(evaluate_grid_candidate(beh, n_bins))
+    diagnostics = pd.DataFrame(diagnostic_rows)
     passing = diagnostics[
         (diagnostics["n_retained_bins"] >= MIN_RETAINED_BINS)
         & (diagnostics["retained_bin_prop"] >= MIN_RETAINED_BIN_PROP)
@@ -163,14 +164,14 @@ def make_bin_table(beh, boundary, n_bins):
     )
     summary["category_label"] = np.where(summary["prop_cat_b"] >= 0.5, "B", "A")
     summary["response_label"] = np.where(summary["prop_resp_b"] >= 0.5, "B", "A")
-    summary["x_center"] = [
-        float((x_edges[int(i)] + x_edges[int(i) + 1]) / 2.0)
-        for i in summary["sf_bin"]
-    ]
-    summary["y_center"] = [
-        float((y_edges[int(i)] + y_edges[int(i) + 1]) / 2.0)
-        for i in summary["ori_bin"]
-    ]
+    x_centers = []
+    for i in summary["sf_bin"]:
+        x_centers.append(float((x_edges[int(i)] + x_edges[int(i) + 1]) / 2.0))
+    summary["x_center"] = x_centers
+    y_centers = []
+    for i in summary["ori_bin"]:
+        y_centers.append(float((y_edges[int(i)] + y_edges[int(i) + 1]) / 2.0))
+    summary["y_center"] = y_centers
     w = np.array([boundary["coef_xt"], boundary["coef_yt"]], dtype=float)
     b = float(boundary["intercept"])
     norm = float(boundary["norm"])

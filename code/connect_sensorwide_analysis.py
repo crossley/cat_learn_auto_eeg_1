@@ -76,8 +76,13 @@ def process_sensorwide_session(task):
         )
         stim_epochs = stim_epochs.load_data()
         feedback_epochs = feedback_epochs.load_data()
-        if not all(ch in stim_epochs.ch_names for ch in channel_subset):
-            missing = [ch for ch in channel_subset if ch not in stim_epochs.ch_names]
+        all_channels_present = True
+        missing = []
+        for ch in channel_subset:
+            if ch not in stim_epochs.ch_names:
+                all_channels_present = False
+                missing.append(ch)
+        if not all_channels_present:
             return {
                 "ok": False, "subject": subject, "day": day,
                 "reason": "missing_channels", "detail": ",".join(missing),
@@ -168,7 +173,10 @@ def channel_xy(info, ch_names):
         ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
         return np.c_[np.cos(ang), np.sin(ang)] * 0.9
     ch_pos = montage.get_positions()["ch_pos"]
-    xy = np.array([ch_pos[ch][:2] for ch in ch_names], dtype=float)
+    xy_rows = []
+    for ch in ch_names:
+        xy_rows.append(ch_pos[ch][:2])
+    xy = np.array(xy_rows, dtype=float)
     xy = xy - np.mean(xy, axis=0, keepdims=True)
     scale = np.max(np.linalg.norm(xy, axis=1))
     if scale > 0:
@@ -198,15 +206,20 @@ def run_sensorwide_connectivity_analysis(
     sessions = load_sessions()
     t0 = time.time()
     progress_json = output_dir / "connect_sensorwide_progress.json"
-    edges_path = output_dir / "sensorwide_edge_timeseries.csv"
+    carpet_path = output_dir / "sensorwide_carpet_timeseries.csv"
     channels_path = output_dir / "sensorwide_channel_layout.csv"
-    checkpoint_path = output_dir / "sensorwide_edge_timeseries_checkpoint.csv"
+    checkpoint_path = output_dir / "sensorwide_carpet_timeseries_checkpoint.csv"
 
     n_channels = len(channel_subset)
-    pair_idx = [(i, j) for i in range(n_channels) for j in range(i + 1, n_channels)]
+    pair_idx = []
+    for i in range(n_channels):
+        for j in range(i + 1, n_channels):
+            pair_idx.append((i, j))
 
-    tasks = [
-        {
+    tasks = []
+    for item in sessions:
+        tasks.append(
+            {
             "subject": int(item["subject"]),
             "day": int(item["day"]),
             "beh": item["beh"],
@@ -220,9 +233,8 @@ def run_sensorwide_connectivity_analysis(
             "stim_tmax": stim_tmax,
             "feedback_tmin": feedback_tmin,
             "feedback_tmax": feedback_tmax,
-        }
-        for item in sessions
-    ]
+            }
+        )
     print(
         f"[connect_sensorwide] Running on {len(tasks)} sessions (n_workers={n_workers})...",
         flush=True,
@@ -264,10 +276,10 @@ def run_sensorwide_connectivity_analysis(
 
     if not agg or info_subset is None:
         print("[connect_sensorwide] No data computed.", flush=True)
-        return {"edges_path": None}
+        return {"carpet_path": None}
 
     d_edges = agg_to_edges_df(agg, channel_subset)
-    d_edges.to_csv(edges_path, index=False)
+    d_edges.to_csv(carpet_path, index=False)
     d_edges.to_csv(checkpoint_path, index=False)
 
     xy = channel_xy(info_subset, channel_subset)
@@ -279,7 +291,7 @@ def run_sensorwide_connectivity_analysis(
         f"[connect_sensorwide] Done. Used sessions: {used}, skipped: {len(skipped)}.",
         flush=True,
     )
-    return {"edges_path": edges_path, "channels_path": channels_path}
+    return {"carpet_path": carpet_path, "channels_path": channels_path}
 
 
 if __name__ == "__main__":

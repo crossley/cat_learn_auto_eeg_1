@@ -117,7 +117,10 @@ def process_stim_mvpa_session(task: dict):
 
     try:
         epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
-        stim_events = [x for x in ["Stim/A", "Stim/B"] if x in epochs.event_id]
+        stim_events = []
+        for x in ["Stim/A", "Stim/B"]:
+            if x in epochs.event_id:
+                stim_events.append(x)
         if len(stim_events) < 2:
             return {
                 "ok": False,
@@ -187,19 +190,20 @@ def process_stim_mvpa_session(task: dict):
 
     auc = decode_timecourse(X, y, n_splits=5, random_state=random_state)
     times = stim_epochs.times.copy()
-    session_rows = [
-        {
-            "session_file": session_file,
-            "subject": subject,
-            "day": day,
-            "time_sec": float(times[ti]),
-            "auc": float(auc_val),
-            "n_trials": n_trials,
-            "n_a": n_a,
-            "n_b": n_b,
-        }
-        for ti, auc_val in enumerate(auc)
-    ]
+    session_rows = []
+    for ti, auc_val in enumerate(auc):
+        session_rows.append(
+            {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "time_sec": float(times[ti]),
+                "auc": float(auc_val),
+                "n_trials": n_trials,
+                "n_a": n_a,
+                "n_b": n_b,
+            }
+        )
 
     haufe_rows = []
     channel_pos = []
@@ -288,17 +292,18 @@ def run_mvpa_stim_locked_cat_time_resolved(
         progress_json.write_text(json.dumps(payload, indent=2))
 
     sessions = load_sessions()
-    tasks = [
-        {
-            "subject": int(item["subject"]),
-            "day": int(item["day"]),
-            "epo_file": item["epo_file"],
-            "epo_path": str(item["epo_path"]),
-            "min_epochs": int(min_epochs),
-            "random_state": int(random_state),
-        }
-        for item in sessions
-    ]
+    tasks = []
+    for item in sessions:
+        tasks.append(
+            {
+                "subject": int(item["subject"]),
+                "day": int(item["day"]),
+                "epo_file": item["epo_file"],
+                "epo_path": str(item["epo_path"]),
+                "min_epochs": int(min_epochs),
+                "random_state": int(random_state),
+            }
+        )
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
@@ -332,20 +337,25 @@ def run_mvpa_stim_locked_cat_time_resolved(
         f"(n_workers={n_workers})...",
         flush=True,
     )
+
+    def iter_stim_mvpa_jobs():
+        for task in tasks:
+            yield delayed(process_stim_mvpa_session)(task)
+
     if n_workers == 1:
         for done, task in enumerate(tasks, start=1):
             handle_result(process_stim_mvpa_session(task), done)
     elif threadpool_limits is None:
         result_iter = Parallel(
             n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-        )(delayed(process_stim_mvpa_session)(task) for task in tasks)
+        )(iter_stim_mvpa_jobs())
         for done, result in enumerate(result_iter, start=1):
             handle_result(result, done)
     else:
         with threadpool_limits(limits=1):
             result_iter = Parallel(
                 n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-            )(delayed(process_stim_mvpa_session)(task) for task in tasks)
+            )(iter_stim_mvpa_jobs())
             for done, result in enumerate(result_iter, start=1):
                 handle_result(result, done)
 
@@ -475,12 +485,10 @@ def run_mvpa_stim_locked_cat_time_resolved(
             )
             .sort_values(["day", "channel", "time_sec"])
         )
-        haufe_pos_df = pd.DataFrame(
-            [
-                {"channel": ch, "x": xyz[0], "y": xyz[1], "z": xyz[2]}
-                for ch, xyz in sorted(haufe_channel_pos.items())
-            ]
-        )
+        haufe_pos_rows = []
+        for ch, xyz in sorted(haufe_channel_pos.items()):
+            haufe_pos_rows.append({"channel": ch, "x": xyz[0], "y": xyz[1], "z": xyz[2]})
+        haufe_pos_df = pd.DataFrame(haufe_pos_rows)
         haufe_session_df.to_csv(haufe_session_csv, index=False)
         haufe_day_mean_df.to_csv(haufe_day_mean_csv, index=False)
         haufe_pos_df.to_csv(haufe_channel_pos_csv, index=False)

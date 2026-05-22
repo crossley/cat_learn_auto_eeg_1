@@ -75,7 +75,10 @@ def plot_day_grid(evoked_map, title, fig_path):
 def plot_day_condition_grid(
     evoked_by_day_cond, title, fig_path, conds=("correct", "incorrect")
 ):
-    days_sorted = sorted({k[0] for k in evoked_by_day_cond.keys()})
+    days = set()
+    for k in evoked_by_day_cond.keys():
+        days.add(k[0])
+    days_sorted = sorted(days)
     if len(days_sorted) == 0:
         return None
     fig, axes = plt.subplots(
@@ -124,27 +127,23 @@ def save_fig_erp_grand_average(
         title="Grand Average ERP: stim_all",
         fig_path=figures_dir / "erp_grand_average_stim_all.png",
     )
+    stim_correct_incorrect = {}
+    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "correct").items():
+        stim_correct_incorrect[(day, "correct")] = ev
+    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "incorrect").items():
+        stim_correct_incorrect[(day, "incorrect")] = ev
     paths["stim_correct_vs_incorrect"] = plot_day_condition_grid(
-        {
-            (day, "correct"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "correct").items()
-        }
-        | {
-            (day, "incorrect"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "incorrect").items()
-        },
+        stim_correct_incorrect,
         title="Grand Average ERP: stim locked by feedback correctness",
         fig_path=figures_dir / "erp_grand_average_stim_correct_vs_incorrect.png",
     )
+    stim_cat = {}
+    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_a").items():
+        stim_cat[(day, "cat_a")] = ev
+    for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_b").items():
+        stim_cat[(day, "cat_b")] = ev
     paths["stim_cat_a_vs_cat_b"] = plot_day_condition_grid(
-        {
-            (day, "cat_a"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_a").items()
-        }
-        | {
-            (day, "cat_b"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "stim", "cat_b").items()
-        },
+        stim_cat,
         title="Grand Average ERP: stim locked by category",
         fig_path=figures_dir / "erp_grand_average_stim_cat_a_vs_cat_b.png",
         conds=("cat_a", "cat_b"),
@@ -154,34 +153,34 @@ def save_fig_erp_grand_average(
         title="Grand Average ERP: feedback locked",
         fig_path=figures_dir / "erp_grand_average_feedback_all.png",
     )
+    feedback_correct_incorrect = {}
+    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "correct").items():
+        feedback_correct_incorrect[(day, "correct")] = ev
+    for day, ev in long_to_evoked_map(
+        d_grand_plot, "feedback", "incorrect"
+    ).items():
+        feedback_correct_incorrect[(day, "incorrect")] = ev
     paths["feedback_correct_vs_incorrect"] = plot_day_condition_grid(
-        {
-            (day, "correct"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "correct").items()
-        }
-        | {
-            (day, "incorrect"): ev
-            for day, ev in long_to_evoked_map(
-                d_grand_plot, "feedback", "incorrect"
-            ).items()
-        },
+        feedback_correct_incorrect,
         title="Grand Average ERP: feedback locked by feedback correctness",
         fig_path=figures_dir / "erp_grand_average_feedback_correct_vs_incorrect.png",
     )
+    feedback_cat = {}
+    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_a").items():
+        feedback_cat[(day, "cat_a")] = ev
+    for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_b").items():
+        feedback_cat[(day, "cat_b")] = ev
     paths["feedback_A_vs_B"] = plot_day_condition_grid(
-        {
-            (day, "cat_a"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_a").items()
-        }
-        | {
-            (day, "cat_b"): ev
-            for day, ev in long_to_evoked_map(d_grand_plot, "feedback", "cat_b").items()
-        },
+        feedback_cat,
         title="Grand Average ERP: feedback locked by category",
         fig_path=figures_dir / "erp_grand_average_feedback_A_vs_B.png",
         conds=("cat_a", "cat_b"),
     )
-    return {k: v for k, v in paths.items() if v is not None}
+    retained_paths = {}
+    for k, v in paths.items():
+        if v is not None:
+            retained_paths[k] = v
+    return retained_paths
 
 
 if __name__ == "__main__":

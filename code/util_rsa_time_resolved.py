@@ -82,9 +82,9 @@ def _load_or_build_bins(output_dir):
     beh_binned, x_edges, y_edges = assign_grid_bins(beh, selected_n)
     _, retained_bins = make_bin_table(beh, boundary, selected_n)
     model_rdms = make_model_rdms(retained_bins)
-    retained_keys = [
-        (int(row.sf_bin), int(row.ori_bin)) for row in retained_bins.itertuples()
-    ]
+    retained_keys = []
+    for row in retained_bins.itertuples():
+        retained_keys.append((int(row.sf_bin), int(row.ori_bin)))
     return beh_binned, retained_bins, retained_keys, model_rdms, x_edges, y_edges
 
 
@@ -201,19 +201,20 @@ def process_rsa_session(task):
                 }
             )
 
-    count_rows = [
-        {
-            "session_file": session_file,
-            "subject": subject,
-            "day": day,
-            "bin_i": int(i),
-            "sf_bin": int(retained_keys[i][0]),
-            "ori_bin": int(retained_keys[i][1]),
-            "n_epochs": int(bin_counts[i]),
-            "usable": bool(bin_counts[i] >= MIN_EPOCHS_PER_BIN),
-        }
-        for i in range(n_bins)
-    ]
+    count_rows = []
+    for i in range(n_bins):
+        count_rows.append(
+            {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "bin_i": int(i),
+                "sf_bin": int(retained_keys[i][0]),
+                "ori_bin": int(retained_keys[i][1]),
+                "n_epochs": int(bin_counts[i]),
+                "usable": bool(bin_counts[i] >= MIN_EPOCHS_PER_BIN),
+            }
+        )
 
     return {
         "ok": True,
@@ -311,19 +312,20 @@ def process_windowed_rsa_session(task):
                     }
                 )
 
-    count_rows = [
-        {
-            "session_file": session_file,
-            "subject": subject,
-            "day": day,
-            "bin_i": int(i),
-            "sf_bin": int(retained_keys[i][0]),
-            "ori_bin": int(retained_keys[i][1]),
-            "n_epochs": int(bin_counts[i]),
-            "usable": bool(bin_counts[i] >= MIN_EPOCHS_PER_BIN),
-        }
-        for i in range(n_bins)
-    ]
+    count_rows = []
+    for i in range(n_bins):
+        count_rows.append(
+            {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "bin_i": int(i),
+                "sf_bin": int(retained_keys[i][0]),
+                "ori_bin": int(retained_keys[i][1]),
+                "n_epochs": int(bin_counts[i]),
+                "usable": bool(bin_counts[i] >= MIN_EPOCHS_PER_BIN),
+            }
+        )
     return {
         "ok": True,
         "rdm_df": pd.DataFrame(rdm_rows),
@@ -456,16 +458,14 @@ def run_rsa_time_resolved(
     model_vec_df.to_csv(model_vec_csv, index=False)
 
     sessions = load_sessions(load_epochs=False)
-    tasks = [
-        {
-            **session,
-            "retained_keys": retained_keys,
-            "x_edges": x_edges,
-            "y_edges": y_edges,
-            "event_names": event_names,
-        }
-        for session in sessions
-    ]
+    tasks = []
+    for session in sessions:
+        task = dict(session)
+        task["retained_keys"] = retained_keys
+        task["x_edges"] = x_edges
+        task["y_edges"] = y_edges
+        task["event_names"] = event_names
+        tasks.append(task)
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
@@ -504,13 +504,17 @@ def run_rsa_time_resolved(
                 flush=True,
             )
 
+    def iter_rsa_jobs():
+        for task in tasks:
+            yield delayed(process_rsa_session)(task)
+
     if n_workers == 1:
         for task in tasks:
             handle_result(process_rsa_session(task))
     elif threadpool_limits is None:
         result_iter = Parallel(
             n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-        )(delayed(process_rsa_session)(task) for task in tasks)
+        )(iter_rsa_jobs())
         for result in result_iter:
             handle_result(result)
     else:
@@ -520,7 +524,7 @@ def run_rsa_time_resolved(
                 backend="loky",
                 verbose=0,
                 return_as="generator_unordered",
-            )(delayed(process_rsa_session)(task) for task in tasks)
+            )(iter_rsa_jobs())
             for result in result_iter:
                 handle_result(result)
 
@@ -576,18 +580,16 @@ def run_rsa_windowed(
     model_vec_df.to_csv(model_vec_csv, index=False)
 
     sessions = load_sessions(load_epochs=False)
-    tasks = [
-        {
-            **session,
-            "retained_keys": retained_keys,
-            "x_edges": x_edges,
-            "y_edges": y_edges,
-            "window_width_sec": window_width_sec,
-            "center_step_sec": center_step_sec,
-            "event_names": event_names,
-        }
-        for session in sessions
-    ]
+    tasks = []
+    for session in sessions:
+        task = dict(session)
+        task["retained_keys"] = retained_keys
+        task["x_edges"] = x_edges
+        task["y_edges"] = y_edges
+        task["window_width_sec"] = window_width_sec
+        task["center_step_sec"] = center_step_sec
+        task["event_names"] = event_names
+        tasks.append(task)
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
@@ -627,13 +629,17 @@ def run_rsa_windowed(
                 flush=True,
             )
 
+    def iter_windowed_rsa_jobs():
+        for task in tasks:
+            yield delayed(process_windowed_rsa_session)(task)
+
     if n_workers == 1:
         for task in tasks:
             handle_result(process_windowed_rsa_session(task))
     elif threadpool_limits is None:
         result_iter = Parallel(
             n_jobs=n_workers, backend="loky", verbose=0, return_as="generator_unordered"
-        )(delayed(process_windowed_rsa_session)(task) for task in tasks)
+        )(iter_windowed_rsa_jobs())
         for result in result_iter:
             handle_result(result)
     else:
@@ -643,7 +649,7 @@ def run_rsa_windowed(
                 backend="loky",
                 verbose=0,
                 return_as="generator_unordered",
-            )(delayed(process_windowed_rsa_session)(task) for task in tasks)
+            )(iter_windowed_rsa_jobs())
             for result in result_iter:
                 handle_result(result)
 

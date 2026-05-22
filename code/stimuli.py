@@ -153,7 +153,10 @@ def plot_stim_space_examples(ds):
 
     # range of spatial frequency
     freqs = [ds['xt'].min(), ds['xt'].mean(), ds['xt'].max()]
-    freqs = [x * px_per_cm**-1 for x in freqs]
+    freqs_scaled = []
+    for x in freqs:
+        freqs_scaled.append(x * px_per_cm**-1)
+    freqs = freqs_scaled
 
     # range of orientation
     thetas = [ds['yt'].min(), ds['yt'].mean(), ds['yt'].max()]
