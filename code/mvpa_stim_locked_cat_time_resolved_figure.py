@@ -163,7 +163,7 @@ def save_fig_mvpa_stim_locked_cat_time_resolved(
     haufe_day_mean_csv = output_dir / "mvpa_stim_locked_cat_haufe_day_mean_channel_time.csv"
     haufe_channel_pos_csv = output_dir / "mvpa_stim_locked_cat_haufe_channel_positions.csv"
     haufe_peak_times_csv = output_dir / "mvpa_stim_locked_cat_haufe_subject_day_peak_times.csv"
-    fig_day_panels = figures_dir / "mvpa_stim_locked_cat_auc_by_day_panels.png"
+    fig_day_panels = figures_dir / "mvpa_stim_locked_cat_time_resolved_auc_by_day_panels.png"
 
     required_paths = [
         session_csv,
