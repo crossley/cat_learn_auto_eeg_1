@@ -61,7 +61,22 @@ def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
         wspace=0.36,
         hspace=0.42,
     )
-    ax_space = fig.add_subplot(gs[0, 0])
+
+    ax_cat = fig.add_subplot(gs[0, 0])
+    nonempty = all_bins[all_bins["n_trials"] > 0]
+    for label, color in [("A", "tab:blue"), ("B", "tab:orange")]:
+        d = nonempty[nonempty["category_label"] == label]
+        ax_cat.scatter(
+            d["x_center"], d["y_center"],
+            s=25, alpha=0.7, color=color, edgecolor="none", label=label,
+        )
+    ax_cat.set_xlabel("x")
+    ax_cat.set_ylabel("y")
+    ax_cat.set_title("Category distribution")
+    ax_cat.set_aspect("equal", adjustable="box")
+    ax_cat.legend(title="Category", fontsize=8)
+
+    ax_space = fig.add_subplot(gs[1, 0])
     bin_colors = plt.cm.tab20(
         np.linspace(0, 1, max(len(retained_bins), 2), endpoint=False)
     )
@@ -102,16 +117,14 @@ def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
     axes = [
         fig.add_subplot(gs[0, 1]),
         fig.add_subplot(gs[0, 2]),
-        fig.add_subplot(gs[1, 0]),
         fig.add_subplot(gs[1, 1]),
+        fig.add_subplot(gs[1, 2]),
     ]
     for ax, (name, mat) in zip(axes, rdms.items()):
         im = ax.imshow(mat, origin="lower", cmap="viridis", vmin=0, vmax=1)
         ax.set_title(name)
         ax.set_xlabel("Stimulus bin")
         ax.set_ylabel("Stimulus bin")
-    ax_empty = fig.add_subplot(gs[1, 2])
-    ax_empty.axis("off")
     cax = fig.add_axes([0.93, 0.22, 0.012, 0.56])
     fig.colorbar(im, cax=cax, label="Model dissimilarity")
     fig.suptitle("RSA model RDM predictions")
