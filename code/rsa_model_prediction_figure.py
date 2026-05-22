@@ -17,6 +17,7 @@ from rsa_model_prediction_analysis import (
     MIN_TRIALS_PER_BIN_SESSION,
     OUTPUT_DIR,
 )
+from util_boundary_distance import load_behaviour_with_boundary
 
 
 def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
@@ -43,7 +44,9 @@ def plot_grid_diagnostics(diagnostics, selected_n, fig_path):
     plt.close(fig)
 
 
-def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
+def plot_model_predictions(beh, all_bins, retained_bins, rdms, fig_path):
+    if beh.empty:
+        raise ValueError("Empty behavioural trial table")
     if all_bins.empty:
         raise ValueError("Empty RSA model stimulus-bin table")
     if retained_bins.empty:
@@ -63,12 +66,11 @@ def plot_model_predictions(all_bins, retained_bins, rdms, fig_path):
     )
 
     ax_cat = fig.add_subplot(gs[0, 0])
-    nonempty = all_bins[all_bins["n_trials"] > 0]
     for label, color in [("A", "tab:blue"), ("B", "tab:orange")]:
-        d = nonempty[nonempty["category_label"] == label]
+        d = beh[beh["cat"].astype(str) == label]
         ax_cat.scatter(
-            d["x_center"], d["y_center"],
-            s=25, alpha=0.7, color=color, edgecolor="none", label=label,
+            d["x"], d["y"],
+            s=4, alpha=0.15, color=color, edgecolor="none", label=label,
         )
     ax_cat.set_xlabel("x")
     ax_cat.set_ylabel("y")
@@ -180,8 +182,9 @@ def save_fig_rsa_model_predictions(
         selected_n = int(selected_rows.sort_values("n_bins", ascending=False).iloc[0]["n_bins"])
     diagnostics_fig = figures_dir / "rsa_model_grid_diagnostics.png"
     prediction_fig = figures_dir / "rsa_model_prediction_rdms.png"
+    beh, _ = load_behaviour_with_boundary()
     plot_grid_diagnostics(diagnostics, selected_n, diagnostics_fig)
-    plot_model_predictions(all_bins, retained_bins, rdms, prediction_fig)
+    plot_model_predictions(beh, all_bins, retained_bins, rdms, prediction_fig)
     return {
         "diagnostics_figure": diagnostics_fig,
         "prediction_figure": prediction_fig,
