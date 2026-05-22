@@ -76,10 +76,10 @@ def save_fig_mvpa_feedback_locked_cat_tg(
             else:
                 offdiag_mat[i, j] = mat[i, j]
     im_offdiag = ax.imshow(
-        np.ma.masked_invalid(offdiag_mat), cmap="magma", aspect="equal"
+        np.ma.masked_invalid(offdiag_mat), cmap="viridis", aspect="equal"
     )
     im_diag = ax.imshow(
-        np.ma.masked_invalid(diag_mat), cmap="magma", aspect="equal"
+        np.ma.masked_invalid(diag_mat), cmap="Greys", aspect="equal"
     )
     ax.set_xticks(range(len(day_grid)))
     ax.set_yticks(range(len(day_grid)))
@@ -153,7 +153,7 @@ def save_fig_mvpa_feedback_locked_cat_tg(
                 ],
                 vmin=vmin,
                 vmax=vmax,
-                cmap="viridis",
+                cmap="Greys" if train_day == test_day else "viridis",
             )
             if train_day == test_day:
                 im_diag = im
