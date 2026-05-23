@@ -109,7 +109,7 @@ def save_fig_mvpa_stim_locked_cat_transfer_prediction(figures_dir=FIGURES_DIR):
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.6), squeeze=False)
-    binary_cmap = plt.get_cmap("Blues")
+    binary_cmap = plt.get_cmap("gray")
     graded_cmap = plt.get_cmap("viridis")
     ims = []
     for idx, mat in enumerate(matrices):
