@@ -6,11 +6,14 @@ from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import mne
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
@@ -34,6 +37,17 @@ def require_csv(path):
     if d.empty:
         raise ValueError(f"Empty Haufe day-structure output: {path}")
     return d
+
+
+def make_haufe_info_from_pos_df(pos_df):
+    ch_names = pos_df["channel"].tolist()
+    ch_pos = {}
+    for _, row in pos_df.iterrows():
+        ch_pos[row["channel"]] = np.array([row["x"], row["y"], row["z"]], dtype=float)
+    info = mne.create_info(ch_names=ch_names, sfreq=128.0, ch_types="eeg")
+    montage = mne.channels.make_dig_montage(ch_pos=ch_pos, coord_frame="head")
+    info.set_montage(montage, on_missing="ignore")
+    return info, ch_names
 
 
 def group_matrix(sym_df, window):
@@ -106,6 +120,65 @@ def save_similarity_figure(sym_df, figures_dir):
     )
     cax = fig.add_axes([0.89, 0.22, 0.022, 0.52])
     fig.colorbar(im, cax=cax, label="Pattern similarity r")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def save_topomap_figure(pattern_df, pos_df, figures_dir):
+    fig_path = figures_dir / "mvpa_stim_locked_cat_haufe_day_structure_topomaps.png"
+    info, ch_names = make_haufe_info_from_pos_df(pos_df)
+    all_vals = []
+    day_window_values = {}
+    for window in WINDOWS:
+        for day in DAYS:
+            g = pattern_df[
+                (pattern_df["window"] == window)
+                & (pattern_df["day"] == int(day))
+            ]
+            if g.empty:
+                raise ValueError(
+                    f"Missing Haufe window-pattern rows: day={day}, window={window}"
+                )
+            d_mean = (
+                g.groupby("channel", as_index=False)
+                .agg(pattern_mean=("pattern_mean", "mean"))
+            )
+            vals = (
+                d_mean.set_index("channel")
+                .reindex(ch_names)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+            if not np.all(np.isfinite(vals)):
+                raise ValueError(
+                    f"Missing topomap channel values: day={day}, window={window}"
+                )
+            day_window_values[(int(day), window)] = vals
+            for val in vals:
+                all_vals.append(float(val))
+    vmax = float(np.nanmax(np.abs(all_vals)))
+    if not np.isfinite(vmax) or vmax <= 0:
+        raise ValueError("Cannot determine Haufe topomap color scale")
+    fig, axes = plt.subplots(len(WINDOWS), len(DAYS), figsize=(10.0, 4.6), squeeze=False)
+    im = None
+    for r, window in enumerate(WINDOWS):
+        for c, day in enumerate(DAYS):
+            ax = axes[r, c]
+            vals = day_window_values[(int(day), window)]
+            im, _ = mne.viz.plot_topomap(
+                vals,
+                info,
+                axes=ax,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-vmax, vmax),
+            )
+            ax.set_title(f"D{day} {window}", fontsize=10)
+    fig.suptitle("Window-Averaged Haufe Topographies")
+    fig.subplots_adjust(top=0.84, bottom=0.08, left=0.03, right=0.90, wspace=0.08, hspace=0.18)
+    cax = fig.add_axes([0.92, 0.20, 0.018, 0.58])
+    fig.colorbar(im, cax=cax, label="Haufe pattern")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -251,14 +324,21 @@ def save_fig_mvpa_stim_locked_cat_haufe_day_structure(
     stability_csv = (
         output_dir / "mvpa_stim_locked_cat_haufe_day_structure_distance_stability.csv"
     )
+    pattern_csv = (
+        output_dir / "mvpa_stim_locked_cat_haufe_day_structure_window_patterns.csv"
+    )
+    pos_csv = output_dir / "mvpa_stim_locked_cat_haufe_channel_positions.csv"
 
     sym_df = require_csv(sym_csv)
     clusters_df = require_csv(clusters_csv)
     embedding_df = require_csv(embedding_csv)
     bootstrap_df = require_csv(bootstrap_csv)
     stability_df = require_csv(stability_csv)
+    pattern_df = require_csv(pattern_csv)
+    pos_df = require_csv(pos_csv)
 
     similarity_path = save_similarity_figure(sym_df, figures_dir)
+    topomap_path = save_topomap_figure(pattern_df, pos_df, figures_dir)
     cluster_embedding_path = save_cluster_embedding_figure(
         clusters_df,
         embedding_df,
@@ -270,10 +350,12 @@ def save_fig_mvpa_stim_locked_cat_haufe_day_structure(
         figures_dir,
     )
     print(f"[Haufe day-structure] Wrote {similarity_path}")
+    print(f"[Haufe day-structure] Wrote {topomap_path}")
     print(f"[Haufe day-structure] Wrote {cluster_embedding_path}")
     print(f"[Haufe day-structure] Wrote {bootstrap_support_path}")
     return {
         "similarity": similarity_path,
+        "topomaps": topomap_path,
         "clusters_embedding": cluster_embedding_path,
         "bootstrap_support": bootstrap_support_path,
     }
