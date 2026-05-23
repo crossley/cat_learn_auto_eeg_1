@@ -184,6 +184,67 @@ def save_topomap_figure(pattern_df, pos_df, figures_dir):
     return fig_path
 
 
+def save_normalized_topomap_figure(pattern_df, pos_df, figures_dir):
+    fig_path = (
+        figures_dir / "mvpa_stim_locked_cat_haufe_day_structure_topomaps_normalized.png"
+    )
+    info, ch_names = make_haufe_info_from_pos_df(pos_df)
+    day_window_values = {}
+    for window in WINDOWS:
+        for day in DAYS:
+            g = pattern_df[
+                (pattern_df["window"] == window)
+                & (pattern_df["day"] == int(day))
+            ]
+            if g.empty:
+                raise ValueError(
+                    f"Missing Haufe window-pattern rows: day={day}, window={window}"
+                )
+            d_mean = (
+                g.groupby("channel", as_index=False)
+                .agg(pattern_mean=("pattern_mean", "mean"))
+            )
+            vals = (
+                d_mean.set_index("channel")
+                .reindex(ch_names)["pattern_mean"]
+                .to_numpy(dtype=float)
+            )
+            if not np.all(np.isfinite(vals)):
+                raise ValueError(
+                    f"Missing normalized topomap values: day={day}, window={window}"
+                )
+            vals = vals - np.mean(vals)
+            denom = float(np.max(np.abs(vals)))
+            if not np.isfinite(denom) or denom <= np.finfo(float).eps:
+                raise ValueError(
+                    f"Cannot normalize flat Haufe map: day={day}, window={window}"
+                )
+            day_window_values[(int(day), window)] = vals / denom
+    fig, axes = plt.subplots(len(WINDOWS), len(DAYS), figsize=(10.0, 4.6), squeeze=False)
+    im = None
+    for r, window in enumerate(WINDOWS):
+        for c, day in enumerate(DAYS):
+            ax = axes[r, c]
+            vals = day_window_values[(int(day), window)]
+            im, _ = mne.viz.plot_topomap(
+                vals,
+                info,
+                axes=ax,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-1.0, 1.0),
+            )
+            ax.set_title(f"D{day} {window}", fontsize=10)
+    fig.suptitle("Shape-Normalized Haufe Topographies")
+    fig.subplots_adjust(top=0.84, bottom=0.08, left=0.03, right=0.90, wspace=0.08, hspace=0.18)
+    cax = fig.add_axes([0.92, 0.20, 0.018, 0.58])
+    fig.colorbar(im, cax=cax, label="Demeaned / panel max abs")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def linkage_matrix(clusters_df, window):
     g = clusters_df[
         (clusters_df["row_type"] == "linkage")
@@ -339,6 +400,11 @@ def save_fig_mvpa_stim_locked_cat_haufe_day_structure(
 
     similarity_path = save_similarity_figure(sym_df, figures_dir)
     topomap_path = save_topomap_figure(pattern_df, pos_df, figures_dir)
+    normalized_topomap_path = save_normalized_topomap_figure(
+        pattern_df,
+        pos_df,
+        figures_dir,
+    )
     cluster_embedding_path = save_cluster_embedding_figure(
         clusters_df,
         embedding_df,
@@ -351,11 +417,13 @@ def save_fig_mvpa_stim_locked_cat_haufe_day_structure(
     )
     print(f"[Haufe day-structure] Wrote {similarity_path}")
     print(f"[Haufe day-structure] Wrote {topomap_path}")
+    print(f"[Haufe day-structure] Wrote {normalized_topomap_path}")
     print(f"[Haufe day-structure] Wrote {cluster_embedding_path}")
     print(f"[Haufe day-structure] Wrote {bootstrap_support_path}")
     return {
         "similarity": similarity_path,
         "topomaps": topomap_path,
+        "topomaps_normalized": normalized_topomap_path,
         "clusters_embedding": cluster_embedding_path,
         "bootstrap_support": bootstrap_support_path,
     }
