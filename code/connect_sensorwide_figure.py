@@ -19,10 +19,74 @@ import pandas as pd
 from connect_sensorwide_analysis import BANDS, CHANNEL_SUBSET, FIGURES_DIR, OUTPUT_DIR
 
 SNAP_TIMES_SEC = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55]
-ACTIVE_PAIR_PCTS = [0.05, 0.10, 0.20, 0.30]
+ACTIVE_PAIR_PCTS = [0.05, 0.10, 0.20, 0.30, 0.80]
 
 
-def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy):
+def get_day_colors(days):
+    colors = plt.get_cmap("viridis")(np.linspace(0.15, 0.85, len(days)))
+    day_colors = {}
+    for idx, day in enumerate(days):
+        day_colors[day] = colors[idx]
+    return day_colors
+
+
+def get_active_pair_idx_by_pct(carpets, n_pairs):
+    active_pair_idx_by_pct = {}
+    active_pair_scores = []
+    days = sorted(carpets.keys())
+    for pair_i in range(n_pairs):
+        vals = []
+        for day in days:
+            _times, d = carpets[day]
+            for val in d[pair_i, :]:
+                if np.isfinite(val):
+                    vals.append(float(val))
+        score = np.nan
+        if len(vals) > 0:
+            vals_arr = np.asarray(vals, dtype=float)
+            score = float(np.nanmax(vals_arr) - np.nanmin(vals_arr))
+        active_pair_scores.append(score)
+
+    finite_scores = np.asarray(active_pair_scores, dtype=float)
+    finite_scores = finite_scores[np.isfinite(finite_scores)]
+    if len(finite_scores) == 0:
+        raise ValueError("No finite sensor-pair modulation scores for active rows")
+
+    for pct in ACTIVE_PAIR_PCTS:
+        top_k = max(1, int(np.ceil(pct * n_pairs)))
+        threshold = float(np.sort(finite_scores)[-top_k])
+        active_pair_idx = []
+        for pair_i, score in enumerate(active_pair_scores):
+            if np.isfinite(score) and score >= threshold:
+                active_pair_idx.append(int(pair_i))
+        if len(active_pair_idx) == 0:
+            raise ValueError(f"No active sensor-pairs selected for threshold: {pct}")
+        active_pair_idx_by_pct[pct] = active_pair_idx
+
+    return active_pair_idx_by_pct
+
+
+def get_active_ylim(carpets, active_pair_idx_by_pct):
+    active_vals = []
+    for pct in ACTIVE_PAIR_PCTS:
+        active_pair_idx = active_pair_idx_by_pct[pct]
+        for day in sorted(carpets.keys()):
+            _times, d = carpets[day]
+            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+            for val in active_mean:
+                if np.isfinite(val):
+                    active_vals.append(float(val))
+    if len(active_vals) == 0:
+        return None
+    y_min = float(np.nanmin(active_vals))
+    y_max = float(np.nanmax(active_vals))
+    y_pad = 0.08 * max(y_max - y_min, 1e-12)
+    return (y_min - y_pad, y_max + y_pad)
+
+
+def plot_sensor_pair_carpet(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
     days = sorted(day_data.keys())
     n_days = len(days)
     n_pairs = len(pair_idx)
@@ -42,7 +106,8 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
 
     if not carpets:
         raise ValueError(
-            f"No sensorwide carpet data available for lock={lock_name}, band={band_name}"
+            "No sensorwide carpet data available for "
+            f"lock={lock_name}, band={band_name}"
         )
 
     vmax_candidates = []
@@ -52,39 +117,9 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     vmax = max(vmax_candidates) if vmax_candidates else 1e-12
     vmax = max(vmax, 1e-12)
 
-    inset_top_k = max(1, int(np.ceil(0.10 * n_pairs)))
-
     active_pair_idx_by_pct = {}
-    active_pair_scores = []
     if add_active_row:
-        for pair_i in range(n_pairs):
-            vals = []
-            for day in days:
-                _times, d = carpets[day]
-                for val in d[pair_i, :]:
-                    if np.isfinite(val):
-                        vals.append(float(val))
-            score = np.nan
-            if len(vals) > 0:
-                vals_arr = np.asarray(vals, dtype=float)
-                score = float(np.nanmax(vals_arr) - np.nanmin(vals_arr))
-            active_pair_scores.append(score)
-        finite_scores = np.asarray(active_pair_scores, dtype=float)
-        finite_scores = finite_scores[np.isfinite(finite_scores)]
-        if len(finite_scores) == 0:
-            raise ValueError("No finite sensor-pair modulation scores for active row")
-        for pct in ACTIVE_PAIR_PCTS:
-            top_k = max(1, int(np.ceil(pct * n_pairs)))
-            threshold = float(np.sort(finite_scores)[-top_k])
-            active_pair_idx = []
-            for pair_i, score in enumerate(active_pair_scores):
-                if np.isfinite(score) and score >= threshold:
-                    active_pair_idx.append(int(pair_i))
-            if len(active_pair_idx) == 0:
-                raise ValueError(
-                    f"No active sensor-pairs selected for broadband stim row: {pct}"
-                )
-            active_pair_idx_by_pct[pct] = active_pair_idx
+        active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
 
     n_rows = 1
     height = 5.2
@@ -108,20 +143,7 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     im = None
     active_ylim = None
     if add_active_row:
-        active_vals = []
-        for pct in ACTIVE_PAIR_PCTS:
-            active_pair_idx = active_pair_idx_by_pct[pct]
-            for day in days:
-                _times, d = carpets[day]
-                active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
-                for val in active_mean:
-                    if np.isfinite(val):
-                        active_vals.append(float(val))
-        if len(active_vals) > 0:
-            y_min = float(np.nanmin(active_vals))
-            y_max = float(np.nanmax(active_vals))
-            y_pad = 0.08 * max(y_max - y_min, 1e-12)
-            active_ylim = (y_min - y_pad, y_max + y_pad)
+        active_ylim = get_active_ylim(carpets, active_pair_idx_by_pct)
 
     for col, day in enumerate(days):
         ax = axes[0, col]
@@ -142,47 +164,6 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
         ax.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
         ax.set_ylabel("Sensor pair")
         ax.set_title(f"Day {day}")
-
-        mats = day_data[day]["mats"]
-        for snap_t in SNAP_TIMES_SEC:
-            if snap_t < x_min or snap_t > x_max:
-                continue
-            t_idx = int(np.argmin(np.abs(times - snap_t)))
-            mat = mats[t_idx]
-            pair_vals_list = []
-            for i, j in pair_idx:
-                pair_vals_list.append(mat[i, j])
-            pair_vals = np.array(pair_vals_list, dtype=float)
-
-            x_frac = (snap_t - x_min) / (x_max - x_min)
-            width = 0.13
-            inset = ax.inset_axes(
-                [max(0.01, min(0.99 - width, x_frac - width / 2.0)), 1.04, width, 0.30],
-                transform=ax.transAxes,
-            )
-
-            inset.scatter(ch_xy[:, 0], ch_xy[:, 1], s=6, color="0.3", zorder=3, linewidths=0)
-
-            finite_vals = pair_vals[np.isfinite(pair_vals)]
-            if len(finite_vals) >= inset_top_k:
-                threshold = np.sort(finite_vals)[-inset_top_k]
-                max_val = float(finite_vals.max())
-                if max_val > 0:
-                    for (pi, pj), pv in zip(pair_idx, pair_vals):
-                        if np.isfinite(pv) and pv >= threshold:
-                            lw = 0.4 + 2.5 * (pv / max_val)
-                            inset.plot(
-                                [ch_xy[pi, 0], ch_xy[pj, 0]],
-                                [ch_xy[pi, 1], ch_xy[pj, 1]],
-                                color="tab:blue",
-                                linewidth=lw,
-                                alpha=0.8,
-                                zorder=2,
-                            )
-
-            inset.set_aspect("equal")
-            inset.axis("off")
-            inset.set_title(f"{int(snap_t * 1000)}ms", fontsize=7)
 
         if add_active_row:
             for row_i, pct in enumerate(ACTIVE_PAIR_PCTS, start=1):
@@ -222,6 +203,72 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     cax = fig.add_axes([0.93, cbar_bottom, 0.012, cbar_height])
     fig.colorbar(im, cax=cax, label="Connectivity")
     fig_path = figures_dir / f"sensorwide_carpet_{lock_name}_{band_name}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_overlay(day_data, pair_idx, lock_name, band_name, figures_dir):
+    days = sorted(day_data.keys())
+    n_pairs = len(pair_idx)
+    carpets = {}
+    for day in days:
+        mats = day_data[day]["mats"]
+        times = day_data[day]["times"]
+        vals = []
+        for mat in mats:
+            pair_vals = []
+            for i, j in pair_idx:
+                pair_vals.append(mat[i, j])
+            vals.append(pair_vals)
+        carpets[day] = (times, np.asarray(vals).T)
+
+    active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
+    active_ylim = get_active_ylim(carpets, active_pair_idx_by_pct)
+    day_colors = get_day_colors(days)
+
+    fig, axes = plt.subplots(
+        1,
+        len(ACTIVE_PAIR_PCTS),
+        figsize=(4.0 * len(ACTIVE_PAIR_PCTS), 3.8),
+        sharey=True,
+        squeeze=False,
+    )
+    for col, pct in enumerate(ACTIVE_PAIR_PCTS):
+        ax = axes[0, col]
+        active_pair_idx = active_pair_idx_by_pct[pct]
+        for day in days:
+            times, d = carpets[day]
+            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+            ax.plot(
+                times,
+                active_mean,
+                color=day_colors[day],
+                linewidth=1.8,
+                label=f"D{day}",
+            )
+        pct_label = int(round(pct * 100))
+        ax.set_title(f"Top {pct_label}% (n={len(active_pair_idx)})")
+        ax.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
+        ax.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
+        if active_ylim is not None:
+            ax.set_ylim(active_ylim)
+        ax.grid(alpha=0.25)
+        if col == 0:
+            ax.set_ylabel("Connectivity")
+            ax.legend(frameon=False, fontsize=8, loc="best")
+
+    fig.suptitle(f"Active Sensor-Pair Connectivity: {lock_name}, {band_name}")
+    fig.subplots_adjust(
+        top=0.82,
+        bottom=0.18,
+        left=0.06,
+        right=0.99,
+        wspace=0.16,
+    )
+    fig_path = figures_dir / (
+        f"sensorwide_active_pair_overlay_{lock_name}_{band_name}.png"
+    )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -300,11 +347,19 @@ def save_fig_sensorwide_connectivity(
                         mat[j, i] = float(row["conn_val"])
                     np.fill_diagonal(mat, 0.0)
                     mats.append(mat)
-                day_data[day] = {"times": np.array(times_this, dtype=float), "mats": mats}
+                day_data[day] = {
+                    "times": np.array(times_this, dtype=float),
+                    "mats": mats,
+                }
             fig_path = plot_sensor_pair_carpet(
                 day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
             )
             figure_paths.append(fig_path)
+            if lock_name == "stim" and band_name == "broadband":
+                fig_path = plot_active_pair_overlay(
+                    day_data, pair_idx, lock_name, band_name, figures_dir
+                )
+                figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
 
 
