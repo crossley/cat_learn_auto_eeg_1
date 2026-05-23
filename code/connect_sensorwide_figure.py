@@ -25,6 +25,7 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     days = sorted(day_data.keys())
     n_days = len(days)
     n_pairs = len(pair_idx)
+    add_active_row = (lock_name == "stim") and (band_name == "broadband")
 
     carpets = {}
     for day in days:
@@ -52,11 +53,66 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
 
     top_k = max(1, int(np.ceil(0.10 * n_pairs)))
 
-    fig, axes = plt.subplots(1, n_days, figsize=(5 * n_days, 5.2), squeeze=False)
-    axes = axes.ravel()
+    active_pair_idx = []
+    active_pair_scores = []
+    if add_active_row:
+        for pair_i in range(n_pairs):
+            vals = []
+            for day in days:
+                _times, d = carpets[day]
+                for val in d[pair_i, :]:
+                    if np.isfinite(val):
+                        vals.append(float(val))
+            score = np.nan
+            if len(vals) > 0:
+                vals_arr = np.asarray(vals, dtype=float)
+                score = float(np.nanmax(vals_arr) - np.nanmin(vals_arr))
+            active_pair_scores.append(score)
+        finite_scores = np.asarray(active_pair_scores, dtype=float)
+        finite_scores = finite_scores[np.isfinite(finite_scores)]
+        if len(finite_scores) == 0:
+            raise ValueError("No finite sensor-pair modulation scores for active row")
+        threshold = float(np.sort(finite_scores)[-top_k])
+        for pair_i, score in enumerate(active_pair_scores):
+            if np.isfinite(score) and score >= threshold:
+                active_pair_idx.append(int(pair_i))
+        if len(active_pair_idx) == 0:
+            raise ValueError("No active sensor-pairs selected for broadband stim row")
+
+    n_rows = 1
+    height = 5.2
+    if add_active_row:
+        n_rows = 2
+        height = 7.0
+    gridspec_kw = None
+    if add_active_row:
+        gridspec_kw = {"height_ratios": [3.0, 1.45]}
+    fig, axes = plt.subplots(
+        n_rows,
+        n_days,
+        figsize=(5 * n_days, height),
+        gridspec_kw=gridspec_kw,
+        squeeze=False,
+    )
 
     im = None
-    for ax, day in zip(axes, days):
+    active_ylim = None
+    if add_active_row:
+        active_vals = []
+        for day in days:
+            _times, d = carpets[day]
+            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+            for val in active_mean:
+                if np.isfinite(val):
+                    active_vals.append(float(val))
+        if len(active_vals) > 0:
+            y_min = float(np.nanmin(active_vals))
+            y_max = float(np.nanmax(active_vals))
+            y_pad = 0.08 * max(y_max - y_min, 1e-12)
+            active_ylim = (y_min - y_pad, y_max + y_pad)
+
+    for col, day in enumerate(days):
+        ax = axes[0, col]
         times, d = carpets[day]
         x_min = float(times.min())
         x_max = float(times.max())
@@ -116,10 +172,38 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
             inset.axis("off")
             inset.set_title(f"{int(snap_t * 1000)}ms", fontsize=7)
 
-    fig.suptitle(f"Sensorwide Connectivity: {lock_name}, {band_name}")
-    cax = fig.add_axes([0.93, 0.10, 0.012, 0.55])
+        if add_active_row:
+            ax_curve = axes[1, col]
+            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+            ax_curve.plot(times, active_mean, color="black", linewidth=1.8)
+            ax_curve.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
+            ax_curve.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
+            ax_curve.set_title(f"Active pair mean (n={len(active_pair_idx)})")
+            if col == 0:
+                ax_curve.set_ylabel("Connectivity")
+            if active_ylim is not None:
+                ax_curve.set_ylim(active_ylim)
+            ax_curve.grid(alpha=0.25)
+
+    if add_active_row:
+        fig.suptitle(f"Sensorwide Connectivity: {lock_name}, {band_name}", y=0.97)
+        fig.subplots_adjust(
+            left=0.04,
+            right=0.91,
+            bottom=0.11,
+            top=0.70,
+            wspace=0.18,
+            hspace=0.58,
+        )
+        cbar_bottom = 0.40
+        cbar_height = 0.25
+    else:
+        fig.suptitle(f"Sensorwide Connectivity: {lock_name}, {band_name}")
+        fig.tight_layout(rect=[0, 0, 0.92, 0.78])
+        cbar_bottom = 0.10
+        cbar_height = 0.55
+    cax = fig.add_axes([0.93, cbar_bottom, 0.012, cbar_height])
     fig.colorbar(im, cax=cax, label="Connectivity")
-    fig.tight_layout(rect=[0, 0, 0.92, 0.78])
     fig_path = figures_dir / f"sensorwide_carpet_{lock_name}_{band_name}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
