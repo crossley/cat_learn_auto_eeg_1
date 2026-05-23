@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Plot late-window stimulus-locked category MVPA outputs."""
 
+import json
 import os
 from pathlib import Path
 
@@ -39,6 +40,85 @@ def require_csv(path):
     if d.empty:
         raise ValueError(f"Empty late-window MVPA output: {path}")
     return d
+
+
+def require_completed_progress(path):
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing late-window MVPA progress file: {path}. "
+            "Run mvpa_stim_locked_cat_late_window_analysis.py first."
+        )
+    payload = json.loads(path.read_text())
+    stage = str(payload.get("stage", ""))
+    done = int(payload.get("done", -1))
+    total = int(payload.get("total", -2))
+    if stage != "completed" or done != total:
+        raise RuntimeError(
+            f"Late-window MVPA outputs are incomplete: stage={stage}, "
+            f"done={done}, total={total}. Re-run the analysis before plotting."
+        )
+    return payload
+
+
+def validate_complete_classifier_outputs(session_df, day_df, sensor_day_df, similarity_df):
+    missing_classifiers = []
+    for classifier in CLASSIFIERS:
+        if classifier not in set(session_df["classifier"].dropna()):
+            missing_classifiers.append(classifier)
+    if len(missing_classifiers) > 0:
+        raise ValueError(
+            "Late-window session output missing classifiers: "
+            + ", ".join(missing_classifiers)
+        )
+
+    base_pairs = None
+    for classifier in CLASSIFIERS:
+        g = session_df[session_df["classifier"] == classifier]
+        pairs = set()
+        for _, row in g.iterrows():
+            pairs.add((int(row["subject"]), int(row["day"])))
+        if base_pairs is None:
+            base_pairs = pairs
+        elif pairs != base_pairs:
+            raise ValueError(
+                f"Classifier {classifier} has a different subject/day set. "
+                "Refusing to plot partial classifier outputs."
+            )
+
+    for classifier in CLASSIFIERS:
+        for day in DAYS:
+            n_rows = int(
+                np.sum(
+                    (day_df["classifier"] == classifier)
+                    & (day_df["day"] == int(day))
+                )
+            )
+            if n_rows != 1:
+                raise ValueError(
+                    f"Expected one AUC day row for classifier={classifier}, "
+                    f"day={day}; found {n_rows}"
+                )
+            n_channels = int(
+                np.sum(
+                    (sensor_day_df["classifier"] == classifier)
+                    & (sensor_day_df["day"] == int(day))
+                )
+            )
+            if n_channels < 3:
+                raise ValueError(
+                    f"Too few topomap channels for classifier={classifier}, "
+                    f"day={day}; found {n_channels}"
+                )
+        g_sim = similarity_df[
+            (similarity_df["row_type"] == "group")
+            & (similarity_df["classifier"] == classifier)
+        ]
+        if len(g_sim) != 10:
+            raise ValueError(
+                f"Expected 10 group day-pair similarity rows for "
+                f"classifier={classifier}; found {len(g_sim)}"
+            )
 
 
 def make_haufe_info_from_pos_df(pos_df):
@@ -328,12 +408,22 @@ def save_fig_mvpa_stim_locked_cat_late_window(
     pos_csv = output_dir / "mvpa_stim_locked_cat_late_window_haufe_channel_positions.csv"
     similarity_csv = output_dir / "mvpa_stim_locked_cat_late_window_haufe_similarity.csv"
     clusters_csv = output_dir / "mvpa_stim_locked_cat_late_window_haufe_clusters.csv"
+    session_csv = output_dir / "mvpa_stim_locked_cat_late_window_session_auc.csv"
+    progress_json = output_dir / "mvpa_stim_locked_cat_late_window_progress.json"
 
+    require_completed_progress(progress_json)
+    session_df = require_csv(session_csv)
     day_df = require_csv(day_csv)
     sensor_day_df = require_csv(sensor_day_csv)
     pos_df = require_csv(pos_csv)
     similarity_df = require_csv(similarity_csv)
     clusters_df = require_csv(clusters_csv)
+    validate_complete_classifier_outputs(
+        session_df,
+        day_df,
+        sensor_day_df,
+        similarity_df,
+    )
 
     auc_path = save_auc_figure(day_df, figures_dir)
     similarity_path = save_similarity_figure(similarity_df, figures_dir)
