@@ -19,6 +19,7 @@ import pandas as pd
 from connect_sensorwide_analysis import BANDS, CHANNEL_SUBSET, FIGURES_DIR, OUTPUT_DIR
 
 SNAP_TIMES_SEC = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55]
+ACTIVE_PAIR_PCTS = [0.05, 0.10, 0.20, 0.30]
 
 
 def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy):
@@ -51,9 +52,9 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     vmax = max(vmax_candidates) if vmax_candidates else 1e-12
     vmax = max(vmax, 1e-12)
 
-    top_k = max(1, int(np.ceil(0.10 * n_pairs)))
+    inset_top_k = max(1, int(np.ceil(0.10 * n_pairs)))
 
-    active_pair_idx = []
+    active_pair_idx_by_pct = {}
     active_pair_scores = []
     if add_active_row:
         for pair_i in range(n_pairs):
@@ -72,21 +73,30 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
         finite_scores = finite_scores[np.isfinite(finite_scores)]
         if len(finite_scores) == 0:
             raise ValueError("No finite sensor-pair modulation scores for active row")
-        threshold = float(np.sort(finite_scores)[-top_k])
-        for pair_i, score in enumerate(active_pair_scores):
-            if np.isfinite(score) and score >= threshold:
-                active_pair_idx.append(int(pair_i))
-        if len(active_pair_idx) == 0:
-            raise ValueError("No active sensor-pairs selected for broadband stim row")
+        for pct in ACTIVE_PAIR_PCTS:
+            top_k = max(1, int(np.ceil(pct * n_pairs)))
+            threshold = float(np.sort(finite_scores)[-top_k])
+            active_pair_idx = []
+            for pair_i, score in enumerate(active_pair_scores):
+                if np.isfinite(score) and score >= threshold:
+                    active_pair_idx.append(int(pair_i))
+            if len(active_pair_idx) == 0:
+                raise ValueError(
+                    f"No active sensor-pairs selected for broadband stim row: {pct}"
+                )
+            active_pair_idx_by_pct[pct] = active_pair_idx
 
     n_rows = 1
     height = 5.2
     if add_active_row:
-        n_rows = 2
-        height = 7.0
+        n_rows = 1 + len(ACTIVE_PAIR_PCTS)
+        height = 11.0
     gridspec_kw = None
     if add_active_row:
-        gridspec_kw = {"height_ratios": [3.0, 1.45]}
+        height_ratios = [3.0]
+        for _pct in ACTIVE_PAIR_PCTS:
+            height_ratios.append(1.1)
+        gridspec_kw = {"height_ratios": height_ratios}
     fig, axes = plt.subplots(
         n_rows,
         n_days,
@@ -99,12 +109,14 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
     active_ylim = None
     if add_active_row:
         active_vals = []
-        for day in days:
-            _times, d = carpets[day]
-            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
-            for val in active_mean:
-                if np.isfinite(val):
-                    active_vals.append(float(val))
+        for pct in ACTIVE_PAIR_PCTS:
+            active_pair_idx = active_pair_idx_by_pct[pct]
+            for day in days:
+                _times, d = carpets[day]
+                active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+                for val in active_mean:
+                    if np.isfinite(val):
+                        active_vals.append(float(val))
         if len(active_vals) > 0:
             y_min = float(np.nanmin(active_vals))
             y_max = float(np.nanmax(active_vals))
@@ -152,8 +164,8 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
             inset.scatter(ch_xy[:, 0], ch_xy[:, 1], s=6, color="0.3", zorder=3, linewidths=0)
 
             finite_vals = pair_vals[np.isfinite(pair_vals)]
-            if len(finite_vals) >= top_k:
-                threshold = np.sort(finite_vals)[-top_k]
+            if len(finite_vals) >= inset_top_k:
+                threshold = np.sort(finite_vals)[-inset_top_k]
                 max_val = float(finite_vals.max())
                 if max_val > 0:
                     for (pi, pj), pv in zip(pair_idx, pair_vals):
@@ -173,30 +185,35 @@ def plot_sensor_pair_carpet(day_data, pair_idx, lock_name, band_name, figures_di
             inset.set_title(f"{int(snap_t * 1000)}ms", fontsize=7)
 
         if add_active_row:
-            ax_curve = axes[1, col]
-            active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
-            ax_curve.plot(times, active_mean, color="black", linewidth=1.8)
-            ax_curve.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
-            ax_curve.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
-            ax_curve.set_title(f"Active pair mean (n={len(active_pair_idx)})")
-            if col == 0:
-                ax_curve.set_ylabel("Connectivity")
-            if active_ylim is not None:
-                ax_curve.set_ylim(active_ylim)
-            ax_curve.grid(alpha=0.25)
+            for row_i, pct in enumerate(ACTIVE_PAIR_PCTS, start=1):
+                ax_curve = axes[row_i, col]
+                active_pair_idx = active_pair_idx_by_pct[pct]
+                active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+                ax_curve.plot(times, active_mean, color="black", linewidth=1.8)
+                ax_curve.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
+                ax_curve.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
+                pct_label = int(round(pct * 100))
+                ax_curve.set_title(
+                    f"Top {pct_label}% active pair mean (n={len(active_pair_idx)})"
+                )
+                if col == 0:
+                    ax_curve.set_ylabel("Connectivity")
+                if active_ylim is not None:
+                    ax_curve.set_ylim(active_ylim)
+                ax_curve.grid(alpha=0.25)
 
     if add_active_row:
         fig.suptitle(f"Sensorwide Connectivity: {lock_name}, {band_name}", y=0.97)
         fig.subplots_adjust(
             left=0.04,
             right=0.91,
-            bottom=0.11,
-            top=0.70,
+            bottom=0.07,
+            top=0.82,
             wspace=0.18,
-            hspace=0.58,
+            hspace=0.72,
         )
-        cbar_bottom = 0.40
-        cbar_height = 0.25
+        cbar_bottom = 0.56
+        cbar_height = 0.20
     else:
         fig.suptitle(f"Sensorwide Connectivity: {lock_name}, {band_name}")
         fig.tight_layout(rect=[0, 0, 0.92, 0.78])
