@@ -34,9 +34,6 @@ CHANNEL_SUBSET = [
 
 BANDS = {
     "broadband": None,
-    "delta": (1.0, 4.0),
-    "theta": (4.0, 8.0),
-    "alpha": (8.0, 12.0),
 }
 
 
@@ -187,7 +184,7 @@ def channel_xy(info, ch_names):
 def run_sensorwide_connectivity_analysis(
     channel_subset: list[str] = CHANNEL_SUBSET,
     bands: dict = BANDS,
-    window_sec: float = 0.12,
+    window_sec: float = 0.05,
     step_sec: float = 0.01,
     stim_tmin: float = 0.00,
     stim_tmax: float = 0.80,
