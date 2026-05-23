@@ -10,6 +10,9 @@ subject-level AUC matrices loaded from the precomputed NPZ files:
              broken by a soft potential keeping component 1 closer to the
              main diagonal than component 2
 
+All 75 (train_day, test_day, model) triples are fit in parallel via joblib.
+Each worker runs chains serially (cores=1) so total CPU usage = N_JOBS.
+
 Outputs written to OUTPUT_DIR:
   mvpa_stim_locked_cat_tg_mixture_component_summary.csv
   mvpa_stim_locked_cat_tg_mixture_fitted_surface.csv
@@ -35,6 +38,7 @@ logging.getLogger("pytensor").setLevel(logging.ERROR)
 logging.getLogger("arviz").setLevel(logging.ERROR)
 
 import arviz as az
+import joblib
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -46,6 +50,7 @@ OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
 
 SUBSAMPLE_STEP = 4
+N_JOBS = 4
 N_CHAINS = 2
 N_TUNE = 1000
 N_DRAWS = 1000
@@ -276,9 +281,59 @@ def _surface_rows(surface_mean, model_name, train_day, test_day, t_sub):
     return rows
 
 
+def _fit_one(
+    train_day,
+    test_day,
+    model_name,
+    builder,
+    output_dir,
+    subsample_step,
+    n_chains,
+    n_tune,
+    n_draws,
+    random_seed,
+    save_traces,
+):
+    """Fit one (train_day, test_day, model) triple and return CSV rows."""
+    output_dir = Path(output_dir)
+    X, t_sub, _ = load_day_pair_matrices(output_dir, train_day, test_day, subsample_step)
+    trace_path = (
+        output_dir
+        / f"mvpa_stim_locked_cat_tg_mixture_trace"
+          f"_trainD{train_day}_testD{test_day}_{model_name}.nc"
+    )
+    if save_traces and trace_path.exists():
+        idata = az.from_netcdf(str(trace_path))
+    else:
+        model = builder(X, t_sub)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with model:
+                idata = pm.sample(
+                    draws=n_draws,
+                    tune=n_tune,
+                    chains=n_chains,
+                    cores=1,
+                    random_seed=random_seed,
+                    progressbar=False,
+                )
+        if save_traces:
+            idata.to_netcdf(str(trace_path))
+
+    summary_chunk = _summary_rows(idata, model_name, train_day, test_day)
+    surface_mean = compute_posterior_mean_surface(idata, model_name, t_sub)
+    surface_chunk = _surface_rows(surface_mean, model_name, train_day, test_day, t_sub)
+    print(
+        f"[TG mixture] done trainD{train_day} testD{test_day} {model_name}",
+        flush=True,
+    )
+    return summary_chunk, surface_chunk
+
+
 def run_mvpa_stim_locked_cat_tg_mixture(
     output_dir=OUTPUT_DIR,
     subsample_step=SUBSAMPLE_STEP,
+    n_jobs=N_JOBS,
     n_chains=N_CHAINS,
     n_tune=N_TUNE,
     n_draws=N_DRAWS,
@@ -293,76 +348,48 @@ def run_mvpa_stim_locked_cat_tg_mixture(
     surface_csv = output_dir / "mvpa_stim_locked_cat_tg_mixture_fitted_surface.csv"
     progress_json = output_dir / "mvpa_stim_locked_cat_tg_mixture_progress.json"
 
-    wrote_summary = False
-    wrote_surface = False
-    t0 = time.time()
-
-    day_pairs = []
-    for td in day_grid:
-        for vd in day_grid:
-            day_pairs.append((td, vd))
     model_specs = [
         ("model_1", build_model_1),
         ("model_2", build_model_2),
         ("model_3", build_model_3),
     ]
+    triples = []
+    for td in day_grid:
+        for vd in day_grid:
+            for mn, builder in model_specs:
+                triples.append((td, vd, mn, builder))
 
-    n_done = 0
-    for train_day, test_day in day_pairs:
-        X, t_sub, subjects = load_day_pair_matrices(
-            output_dir, train_day, test_day, subsample_step
+    t0 = time.time()
+    jobs = []
+    for td, vd, mn, builder in triples:
+        jobs.append(
+            joblib.delayed(_fit_one)(
+                td, vd, mn, builder, output_dir,
+                subsample_step, n_chains, n_tune, n_draws, random_seed, save_traces,
+            )
         )
+    results = joblib.Parallel(n_jobs=n_jobs)(jobs)
 
-        for model_name, builder in model_specs:
-            trace_path = (
-                output_dir
-                / f"mvpa_stim_locked_cat_tg_mixture_trace"
-                  f"_trainD{train_day}_testD{test_day}_{model_name}.nc"
-            )
-            if save_traces and trace_path.exists():
-                idata = az.from_netcdf(str(trace_path))
-            else:
-                model = builder(X, t_sub)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    with model:
-                        idata = pm.sample(
-                            draws=n_draws,
-                            tune=n_tune,
-                            chains=n_chains,
-                            cores=n_chains,
-                            random_seed=random_seed,
-                            progressbar=False,
-                        )
-                if save_traces:
-                    idata.to_netcdf(str(trace_path))
+    all_summary = []
+    all_surface = []
+    for summary_chunk, surface_chunk in results:
+        all_summary.extend(summary_chunk)
+        all_surface.extend(surface_chunk)
 
-            summary_chunk = _summary_rows(idata, model_name, train_day, test_day)
-            pd.DataFrame(summary_chunk).to_csv(
-                summary_csv, mode="a", header=not wrote_summary, index=False
-            )
-            wrote_summary = True
+    pd.DataFrame(all_summary).to_csv(summary_csv, index=False)
+    pd.DataFrame(all_surface).to_csv(surface_csv, index=False)
 
-            surface_mean = compute_posterior_mean_surface(idata, model_name, t_sub)
-            surface_chunk = _surface_rows(surface_mean, model_name, train_day, test_day, t_sub)
-            pd.DataFrame(surface_chunk).to_csv(
-                surface_csv, mode="a", header=not wrote_surface, index=False
-            )
-            wrote_surface = True
-
-        n_done += 1
-        elapsed = time.time() - t0
-        progress = {
-            "n_done": n_done,
-            "n_total": len(day_pairs),
-            "elapsed_min": round(elapsed / 60.0, 2),
-        }
-        progress_json.write_text(json.dumps(progress, indent=2))
-        print(
-            f"[TG mixture] {n_done}/{len(day_pairs)} day-pairs done "
-            f"(trainD{train_day} testD{test_day}, {elapsed/60:.1f} min)",
-            flush=True,
-        )
+    elapsed = time.time() - t0
+    progress = {
+        "n_done": len(triples),
+        "n_total": len(triples),
+        "elapsed_min": round(elapsed / 60.0, 2),
+    }
+    progress_json.write_text(json.dumps(progress, indent=2))
+    print(
+        f"[TG mixture] all {len(triples)} fits done ({elapsed / 60:.1f} min)",
+        flush=True,
+    )
 
     return {
         "summary_csv": summary_csv,

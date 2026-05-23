@@ -26,7 +26,7 @@ MVPA_STIM_LOCKED_CAT_TG_MATRIX_GLOB = "mvpa_stim_locked_cat_tg_matrix_sub_*_trai
 
 MVPA_CAT_TG_WINDOWS: dict[str, tuple[float, float]] = {
     "early": (0.060, 0.180),
-    "late": (0.250, 0.550),
+    "late": (0.400, 0.600),
 }
 
 

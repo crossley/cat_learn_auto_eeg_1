@@ -20,8 +20,13 @@ import pandas as pd
 from joblib import Parallel, delayed
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.exceptions import ConvergenceWarning as SklearnConvergenceWarning
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
 
 try:
     from threadpoolctl import threadpool_limits
@@ -30,7 +35,7 @@ except Exception:
 
 from load_project_data import load_sessions
 from mvpa_stim_locked_cat_tg_window_structure_analysis import MVPA_CAT_TG_WINDOWS
-from util_mvpa import build_clf, pick_eeg_interpolate_bads
+from util_mvpa import pick_eeg_interpolate_bads
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
@@ -42,6 +47,49 @@ WINDOW_START_SEC = MVPA_CAT_TG_WINDOWS[WINDOW][0]
 WINDOW_END_SEC = MVPA_CAT_TG_WINDOWS[WINDOW][1]
 N_BOOTSTRAP = 1000
 RANDOM_STATE = 42
+CLASSIFIERS = ["logreg", "linear_svm", "shrinkage_lda"]
+
+
+def build_window_clf(classifier, random_state):
+    if classifier == "logreg":
+        estimator = LogisticRegression(
+            solver="lbfgs",
+            max_iter=1000,
+            class_weight="balanced",
+            random_state=random_state,
+        )
+    elif classifier == "linear_svm":
+        estimator = LinearSVC(
+            C=1.0,
+            class_weight="balanced",
+            dual=True,
+            max_iter=5000,
+            random_state=random_state,
+        )
+    elif classifier == "shrinkage_lda":
+        estimator = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+    else:
+        raise ValueError(f"Unknown late-window classifier: {classifier}")
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("estimator", estimator),
+        ]
+    )
+
+
+def classifier_weight(clf, classifier):
+    scaler = clf.named_steps["scaler"]
+    estimator = clf.named_steps["estimator"]
+    if classifier in ["logreg", "linear_svm"]:
+        w_scaled = estimator.coef_.ravel().astype(float)
+    elif classifier == "shrinkage_lda":
+        w_scaled = estimator.coef_.ravel().astype(float)
+    else:
+        raise ValueError(f"Unknown late-window classifier: {classifier}")
+    scale = np.asarray(scaler.scale_, dtype=float)
+    scale[scale == 0] = 1.0
+    return w_scaled / scale
 
 
 def sem(x):
@@ -68,25 +116,27 @@ def finite_corr(x, y):
     return float(np.sum(x * y) / denom)
 
 
-def compute_haufe_pattern_window(X_flat, y, n_channels, n_times, random_state):
+def compute_haufe_pattern_window(
+    X_flat,
+    y,
+    n_channels,
+    n_times,
+    random_state,
+    classifier,
+):
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
     fold_patterns = []
     for tr, _ in cv.split(X_flat, y):
         X_tr = X_flat[tr]
         y_tr = y[tr]
-        clf = build_clf(random_state=random_state)
+        clf = build_window_clf(classifier, random_state=random_state)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SklearnConvergenceWarning)
                 clf.fit(X_tr, y_tr)
         except Exception:
             continue
-        scaler = clf.named_steps["scaler"]
-        logreg = clf.named_steps["logreg"]
-        w_scaled = logreg.coef_.ravel().astype(float)
-        scale = np.asarray(scaler.scale_, dtype=float)
-        scale[scale == 0] = 1.0
-        w_feature = w_scaled / scale
+        w_feature = classifier_weight(clf, classifier)
         if X_tr.shape[0] < 2:
             continue
         X_centered = X_tr - np.mean(X_tr, axis=0)
@@ -199,63 +249,11 @@ def process_late_window_session(task):
     n_times = int(X_win.shape[2])
     X_flat = X_win.reshape(X_win.shape[0], n_channels * n_times)
 
-    clf = build_clf(random_state=random_state)
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", SklearnConvergenceWarning)
-            scores = cross_val_score(clf, X_flat, y, cv=cv, scoring="roc_auc")
-        auc = float(np.mean(scores))
-    except Exception as exc:
-        return {
-            "ok": False,
-            "qc": {
-                "session_file": session_file,
-                "subject": subject,
-                "day": day,
-                "stage": "decode",
-                "reason": "compute_error",
-                "detail": str(exc),
-            },
-        }
-
-    try:
-        patterns = compute_haufe_pattern_window(
-            X_flat,
-            y,
-            n_channels,
-            n_times,
-            random_state,
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "qc": {
-                "session_file": session_file,
-                "subject": subject,
-                "day": day,
-                "stage": "haufe",
-                "reason": "compute_error",
-                "detail": str(exc),
-            },
-        }
-
-    session_row = {
-        "session_file": session_file,
-        "subject": subject,
-        "day": day,
-        "window": WINDOW,
-        "window_start_sec": float(WINDOW_START_SEC),
-        "window_end_sec": float(WINDOW_END_SEC),
-        "auc": auc,
-        "n_trials": n_trials,
-        "n_a": n_a,
-        "n_b": n_b,
-        "n_channels": n_channels,
-        "n_timepoints": n_times,
-    }
+    session_rows = []
     haufe_rows = []
     sensor_rows = []
+    qc_rows = []
     channel_pos = []
     for ci, ch in enumerate(stim_epochs.ch_names):
         loc = stim_epochs.info["chs"][stim_epochs.info.ch_names.index(ch)]["loc"][:3]
@@ -267,48 +265,123 @@ def process_late_window_session(task):
                 "z": float(loc[2]),
             }
         )
-        vals = patterns[ci, :]
-        sensor_rows.append(
-            {
-                "session_file": session_file,
-                "subject": subject,
-                "day": day,
-                "window": WINDOW,
-                "channel": ch,
-                "pattern_mean": float(np.nanmean(vals)),
-                "abs_pattern_mean": float(np.nanmean(np.abs(vals))),
-                "n_timepoints": n_times,
-            }
-        )
-        for ti, t_sec in enumerate(win_times):
-            val = float(patterns[ci, ti])
-            haufe_rows.append(
+    for classifier in CLASSIFIERS:
+        clf = build_window_clf(classifier, random_state=random_state)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SklearnConvergenceWarning)
+                scores = cross_val_score(clf, X_flat, y, cv=cv, scoring="roc_auc")
+            auc = float(np.mean(scores))
+        except Exception as exc:
+            qc_rows.append(
                 {
                     "session_file": session_file,
                     "subject": subject,
                     "day": day,
-                    "window": WINDOW,
-                    "channel": ch,
-                    "time_sec": float(t_sec),
-                    "pattern": val,
-                    "abs_pattern": float(np.abs(val)),
-                    "n_trials": n_trials,
-                    "n_a": n_a,
-                    "n_b": n_b,
+                    "stage": "decode",
+                    "reason": "compute_error",
+                    "detail": f"{classifier}: {exc}",
                 }
             )
+            continue
+
+        try:
+            patterns = compute_haufe_pattern_window(
+                X_flat,
+                y,
+                n_channels,
+                n_times,
+                random_state,
+                classifier,
+            )
+        except Exception as exc:
+            qc_rows.append(
+                {
+                    "session_file": session_file,
+                    "subject": subject,
+                    "day": day,
+                    "stage": "haufe",
+                    "reason": "compute_error",
+                    "detail": f"{classifier}: {exc}",
+                }
+            )
+            continue
+
+        session_rows.append(
+            {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "classifier": classifier,
+                "window": WINDOW,
+                "window_start_sec": float(WINDOW_START_SEC),
+                "window_end_sec": float(WINDOW_END_SEC),
+                "auc": auc,
+                "n_trials": n_trials,
+                "n_a": n_a,
+                "n_b": n_b,
+                "n_channels": n_channels,
+                "n_timepoints": n_times,
+            }
+        )
+        for ci, ch in enumerate(stim_epochs.ch_names):
+            vals = patterns[ci, :]
+            sensor_rows.append(
+                {
+                    "session_file": session_file,
+                    "subject": subject,
+                    "day": day,
+                    "classifier": classifier,
+                    "window": WINDOW,
+                    "channel": ch,
+                    "pattern_mean": float(np.nanmean(vals)),
+                    "abs_pattern_mean": float(np.nanmean(np.abs(vals))),
+                    "n_timepoints": n_times,
+                }
+            )
+            for ti, t_sec in enumerate(win_times):
+                val = float(patterns[ci, ti])
+                haufe_rows.append(
+                    {
+                        "session_file": session_file,
+                        "subject": subject,
+                        "day": day,
+                        "classifier": classifier,
+                        "window": WINDOW,
+                        "channel": ch,
+                        "time_sec": float(t_sec),
+                        "pattern": val,
+                        "abs_pattern": float(np.abs(val)),
+                        "n_trials": n_trials,
+                        "n_a": n_a,
+                        "n_b": n_b,
+                    }
+                )
+    if len(session_rows) == 0:
+        return {
+            "ok": False,
+            "qc": {
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
+                "stage": "classifier_loop",
+                "reason": "all_classifiers_failed",
+                "detail": "No classifier produced valid AUC and Haufe patterns",
+            },
+        }
     return {
         "ok": True,
-        "session_row": session_row,
+        "session_rows": session_rows,
         "haufe_rows": haufe_rows,
         "sensor_rows": sensor_rows,
         "channel_pos": channel_pos,
+        "qc_rows": qc_rows,
     }
 
 
 def make_day_means(session_df):
     return (
-        session_df.groupby(["day", "window"], as_index=False)
+        session_df.groupby(["classifier", "day", "window"], as_index=False)
         .agg(
             auc_mean=("auc", "mean"),
             auc_sem=("auc", sem),
@@ -320,7 +393,7 @@ def make_day_means(session_df):
 
 def make_sensor_day_mean(sensor_df):
     return (
-        sensor_df.groupby(["day", "window", "channel"], as_index=False)
+        sensor_df.groupby(["classifier", "day", "window", "channel"], as_index=False)
         .agg(
             pattern_mean=("pattern_mean", "mean"),
             pattern_sem=("pattern_mean", sem),
@@ -331,13 +404,17 @@ def make_sensor_day_mean(sensor_df):
     )
 
 
-def subject_day_vector(sensor_df, subject, day, channels):
+def subject_day_vector(sensor_df, subject, day, classifier, channels):
     g = sensor_df[
         (sensor_df["subject"] == int(subject))
         & (sensor_df["day"] == int(day))
+        & (sensor_df["classifier"] == classifier)
     ]
     if g.empty:
-        raise ValueError(f"Missing late-window sensor pattern: subject={subject}, day={day}")
+        raise ValueError(
+            f"Missing late-window sensor pattern: subject={subject}, "
+            f"day={day}, classifier={classifier}"
+        )
     s = g.set_index("channel")["pattern_mean"]
     vals = []
     missing = []
@@ -354,20 +431,29 @@ def subject_day_vector(sensor_df, subject, day, channels):
     return np.asarray(vals, dtype=float)
 
 
-def complete_subjects(sensor_df, channels):
-    subjects = sorted(sensor_df["subject"].dropna().unique().astype(int))
+def complete_subjects(sensor_df, classifier, channels):
+    d_classifier = sensor_df[sensor_df["classifier"] == classifier]
+    subjects = sorted(d_classifier["subject"].dropna().unique().astype(int))
     retained = []
     for subject in subjects:
         complete = True
         for day in DAYS:
             try:
-                subject_day_vector(sensor_df, int(subject), int(day), channels)
+                subject_day_vector(
+                    sensor_df,
+                    int(subject),
+                    int(day),
+                    classifier,
+                    channels,
+                )
             except ValueError:
                 complete = False
         if complete:
             retained.append(int(subject))
     if len(retained) == 0:
-        raise ValueError("No complete subjects for late-window Haufe similarity")
+        raise ValueError(
+            f"No complete subjects for late-window Haufe similarity: {classifier}"
+        )
     return retained
 
 
@@ -375,43 +461,52 @@ def make_symmetrised_similarity(sensor_df):
     channels = sorted(sensor_df["channel"].dropna().unique().tolist())
     if len(channels) < 3:
         raise ValueError("Need at least three channels for late-window similarity")
-    subjects = complete_subjects(sensor_df, channels)
-    cache = {}
-    for subject in subjects:
-        day_cache = {}
-        for day in DAYS:
-            day_cache[int(day)] = subject_day_vector(sensor_df, subject, day, channels)
-        cache[int(subject)] = day_cache
     rows = []
-    for subject in subjects:
-        for i, day_i in enumerate(DAYS):
-            for j in range(i + 1, len(DAYS)):
-                day_j = DAYS[j]
-                sim = finite_corr(
-                    cache[int(subject)][int(day_i)],
-                    cache[int(subject)][int(day_j)],
+    for classifier in CLASSIFIERS:
+        subjects = complete_subjects(sensor_df, classifier, channels)
+        cache = {}
+        for subject in subjects:
+            day_cache = {}
+            for day in DAYS:
+                day_cache[int(day)] = subject_day_vector(
+                    sensor_df,
+                    subject,
+                    day,
+                    classifier,
+                    channels,
                 )
-                if not np.isfinite(sim):
-                    raise ValueError(
-                        f"Non-finite late-window similarity: "
-                        f"subject={subject}, D{day_i}-D{day_j}"
+            cache[int(subject)] = day_cache
+        for subject in subjects:
+            for i, day_i in enumerate(DAYS):
+                for j in range(i + 1, len(DAYS)):
+                    day_j = DAYS[j]
+                    sim = finite_corr(
+                        cache[int(subject)][int(day_i)],
+                        cache[int(subject)][int(day_j)],
                     )
-                rows.append(
-                    {
-                        "row_type": "subject",
-                        "subject": int(subject),
-                        "day_low": int(day_i),
-                        "day_high": int(day_j),
-                        "similarity": float(sim),
-                        "similarity_mean": np.nan,
-                        "similarity_sem": np.nan,
-                        "n_subjects": np.nan,
-                        "n_channels": int(len(channels)),
-                    }
-                )
+                    if not np.isfinite(sim):
+                        raise ValueError(
+                            f"Non-finite late-window similarity: "
+                            f"classifier={classifier}, subject={subject}, "
+                            f"D{day_i}-D{day_j}"
+                        )
+                    rows.append(
+                        {
+                            "row_type": "subject",
+                            "classifier": classifier,
+                            "subject": int(subject),
+                            "day_low": int(day_i),
+                            "day_high": int(day_j),
+                            "similarity": float(sim),
+                            "similarity_mean": np.nan,
+                            "similarity_sem": np.nan,
+                            "n_subjects": np.nan,
+                            "n_channels": int(len(channels)),
+                        }
+                    )
     subject_rows = pd.DataFrame(rows)
     group_rows = (
-        subject_rows.groupby(["day_low", "day_high"], as_index=False)
+        subject_rows.groupby(["classifier", "day_low", "day_high"], as_index=False)
         .agg(
             similarity_mean=("similarity", "mean"),
             similarity_sem=("similarity", sem),
@@ -425,6 +520,7 @@ def make_symmetrised_similarity(sensor_df):
         out_rows.append(
             {
                 "row_type": "group",
+                "classifier": row["classifier"],
                 "subject": np.nan,
                 "day_low": int(row["day_low"]),
                 "day_high": int(row["day_high"]),
@@ -439,10 +535,13 @@ def make_symmetrised_similarity(sensor_df):
     return pd.concat([subject_rows, group_df], ignore_index=True)
 
 
-def group_similarity_matrix(sym_df):
-    g = sym_df[sym_df["row_type"] == "group"]
+def group_similarity_matrix(sym_df, classifier):
+    g = sym_df[
+        (sym_df["row_type"] == "group")
+        & (sym_df["classifier"] == classifier)
+    ]
     if g.empty:
-        raise ValueError("Missing group late-window similarity rows")
+        raise ValueError(f"Missing group late-window similarity rows: {classifier}")
     mat = np.full((len(DAYS), len(DAYS)), np.nan, dtype=float)
     for _, row in g.iterrows():
         i = DAYS.index(int(row["day_low"]))
@@ -509,43 +608,46 @@ def cluster_description_from_distance(dist):
 
 
 def make_clusters(sym_df):
-    sim_mat = group_similarity_matrix(sym_df)
-    dist = distance_matrix_from_similarity(sim_mat)
-    z, day_order, first_pair, last_singleton_day = cluster_description_from_distance(dist)
     rows = []
-    for merge_idx in range(z.shape[0]):
-        rows.append(
-            {
-                "row_type": "linkage",
-                "merge_index": int(merge_idx),
-                "child_1": float(z[merge_idx, 0]),
-                "child_2": float(z[merge_idx, 1]),
-                "distance": float(z[merge_idx, 2]),
-                "n_members": int(z[merge_idx, 3]),
-                "day": np.nan,
-                "order_position": np.nan,
-                "day_order": day_order,
-                "first_pair": first_pair,
-                "last_singleton_day": last_singleton_day,
-            }
-        )
-    order_parts = day_order.split(",")
-    for pos, day_text in enumerate(order_parts):
-        rows.append(
-            {
-                "row_type": "order",
-                "merge_index": np.nan,
-                "child_1": np.nan,
-                "child_2": np.nan,
-                "distance": np.nan,
-                "n_members": np.nan,
-                "day": int(day_text),
-                "order_position": int(pos),
-                "day_order": day_order,
-                "first_pair": first_pair,
-                "last_singleton_day": last_singleton_day,
-            }
-        )
+    for classifier in CLASSIFIERS:
+        sim_mat = group_similarity_matrix(sym_df, classifier)
+        dist = distance_matrix_from_similarity(sim_mat)
+        z, day_order, first_pair, last_singleton_day = cluster_description_from_distance(dist)
+        for merge_idx in range(z.shape[0]):
+            rows.append(
+                {
+                    "row_type": "linkage",
+                    "classifier": classifier,
+                    "merge_index": int(merge_idx),
+                    "child_1": float(z[merge_idx, 0]),
+                    "child_2": float(z[merge_idx, 1]),
+                    "distance": float(z[merge_idx, 2]),
+                    "n_members": int(z[merge_idx, 3]),
+                    "day": np.nan,
+                    "order_position": np.nan,
+                    "day_order": day_order,
+                    "first_pair": first_pair,
+                    "last_singleton_day": last_singleton_day,
+                }
+            )
+        order_parts = day_order.split(",")
+        for pos, day_text in enumerate(order_parts):
+            rows.append(
+                {
+                    "row_type": "order",
+                    "classifier": classifier,
+                    "merge_index": np.nan,
+                    "child_1": np.nan,
+                    "child_2": np.nan,
+                    "distance": np.nan,
+                    "n_members": np.nan,
+                    "day": int(day_text),
+                    "order_position": int(pos),
+                    "day_order": day_order,
+                    "first_pair": first_pair,
+                    "last_singleton_day": last_singleton_day,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -616,9 +718,11 @@ def run_mvpa_stim_locked_cat_late_window(
         if not result["ok"]:
             qc_rows.append(result["qc"])
         else:
-            session_rows.append(result["session_row"])
+            session_rows.extend(result["session_rows"])
             haufe_rows.extend(result["haufe_rows"])
             sensor_rows.extend(result["sensor_rows"])
+            for qc_row in result.get("qc_rows", []):
+                qc_rows.append(qc_row)
             for pos_row in result["channel_pos"]:
                 ch = pos_row["channel"]
                 if ch not in channel_pos:

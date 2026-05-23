@@ -19,6 +19,7 @@ import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
 
 from mvpa_stim_locked_cat_late_window_analysis import (
+    CLASSIFIERS,
     DAYS,
     FIGURES_DIR,
     OUTPUT_DIR,
@@ -53,19 +54,24 @@ def make_haufe_info_from_pos_df(pos_df):
 
 def save_auc_figure(day_df, figures_dir):
     fig_path = figures_dir / "mvpa_stim_locked_cat_late_window_auc_by_day.png"
-    g = day_df.sort_values("day")
-    if len(g) != len(DAYS):
-        raise ValueError("Late-window AUC day table does not contain all days")
-    fig, ax = plt.subplots(figsize=(5.4, 3.6))
-    ax.errorbar(
-        g["day"],
-        g["auc_mean"],
-        yerr=g["auc_sem"],
-        color="black",
-        marker="o",
-        linewidth=1.8,
-        capsize=3,
-    )
+    fig, ax = plt.subplots(figsize=(6.2, 3.8))
+    colors = ["black", "tab:blue", "tab:orange"]
+    for idx, classifier in enumerate(CLASSIFIERS):
+        g = day_df[day_df["classifier"] == classifier].sort_values("day")
+        if len(g) != len(DAYS):
+            raise ValueError(
+                f"Late-window AUC table missing days for classifier={classifier}"
+            )
+        ax.errorbar(
+            g["day"],
+            g["auc_mean"],
+            yerr=g["auc_sem"],
+            color=colors[idx],
+            marker="o",
+            linewidth=1.8,
+            capsize=3,
+            label=classifier,
+        )
     ax.axhline(0.5, color="0.55", linestyle=":", linewidth=1.0)
     ax.set_xticks(DAYS)
     ax.set_xlabel("Day")
@@ -73,6 +79,7 @@ def save_auc_figure(day_df, figures_dir):
     ax.set_title(
         f"Late-Window Category Decoding ({WINDOW_START_SEC:.2f}-{WINDOW_END_SEC:.2f}s)"
     )
+    ax.legend(frameon=False, fontsize=8)
     ax.grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
@@ -80,10 +87,13 @@ def save_auc_figure(day_df, figures_dir):
     return fig_path
 
 
-def similarity_matrix(sim_df):
-    g = sim_df[sim_df["row_type"] == "group"]
+def similarity_matrix(sim_df, classifier):
+    g = sim_df[
+        (sim_df["row_type"] == "group")
+        & (sim_df["classifier"] == classifier)
+    ]
     if g.empty:
-        raise ValueError("Missing late-window group similarity rows")
+        raise ValueError(f"Missing late-window group similarity rows: {classifier}")
     mat = np.full((len(DAYS), len(DAYS)), np.nan, dtype=float)
     for _, row in g.iterrows():
         i = DAYS.index(int(row["day_low"]))
@@ -95,53 +105,76 @@ def similarity_matrix(sim_df):
 
 def save_similarity_figure(sim_df, figures_dir):
     fig_path = figures_dir / "mvpa_stim_locked_cat_late_window_haufe_similarity.png"
-    mat = similarity_matrix(sim_df)
-    vals = mat[np.isfinite(mat)]
-    if len(vals) == 0:
+    mats = {}
+    vals_all = []
+    for classifier in CLASSIFIERS:
+        mat = similarity_matrix(sim_df, classifier)
+        mats[classifier] = mat
+        vals = mat[np.isfinite(mat)]
+        for val in vals:
+            vals_all.append(float(val))
+    if len(vals_all) == 0:
         raise ValueError("No finite late-window Haufe similarity values")
-    vmax = float(np.nanmax(np.abs(vals)))
+    vmax = float(np.nanmax(np.abs(vals_all)))
     if not np.isfinite(vmax) or vmax <= 0:
         raise ValueError("Cannot determine late-window similarity color scale")
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad(color="0.82")
-    fig, ax = plt.subplots(figsize=(4.8, 4.2))
-    im = ax.imshow(np.ma.masked_invalid(mat), origin="upper", cmap=cmap, vmin=-vmax, vmax=vmax)
+    fig, axes = plt.subplots(1, len(CLASSIFIERS), figsize=(10.8, 3.7), squeeze=False)
+    im = None
     labels = []
     for day in DAYS:
         labels.append(f"D{day}")
-    ax.set_xticks(range(len(DAYS)))
-    ax.set_yticks(range(len(DAYS)))
-    ax.set_xticklabels(labels)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Day")
-    ax.set_ylabel("Day")
-    for i in range(len(DAYS)):
-        for j in range(len(DAYS)):
-            if np.isfinite(mat[i, j]):
-                color = "black"
-                if abs(float(mat[i, j])) > 0.55 * vmax:
-                    color = "white"
-                ax.text(
-                    j,
-                    i,
-                    f"{mat[i, j]:.2f}",
-                    ha="center",
-                    va="center",
-                    color=color,
-                    fontsize=8,
-                )
-    ax.set_title("Late-Window Haufe Pattern Similarity")
-    fig.colorbar(im, ax=ax, label="Pattern similarity r", fraction=0.046, pad=0.04)
-    fig.tight_layout()
+    for c, classifier in enumerate(CLASSIFIERS):
+        ax = axes[0, c]
+        mat = mats[classifier]
+        im = ax.imshow(
+            np.ma.masked_invalid(mat),
+            origin="upper",
+            cmap=cmap,
+            vmin=-vmax,
+            vmax=vmax,
+        )
+        ax.set_title(classifier)
+        ax.set_xticks(range(len(DAYS)))
+        ax.set_yticks(range(len(DAYS)))
+        ax.set_xticklabels(labels)
+        ax.set_yticklabels(labels)
+        ax.set_xlabel("Day")
+        ax.set_ylabel("Day")
+        for i in range(len(DAYS)):
+            for j in range(len(DAYS)):
+                if np.isfinite(mat[i, j]):
+                    color = "black"
+                    if abs(float(mat[i, j])) > 0.55 * vmax:
+                        color = "white"
+                    ax.text(
+                        j,
+                        i,
+                        f"{mat[i, j]:.2f}",
+                        ha="center",
+                        va="center",
+                        color=color,
+                        fontsize=7,
+                    )
+    fig.suptitle("Late-Window Haufe Pattern Similarity")
+    fig.subplots_adjust(top=0.80, bottom=0.12, left=0.06, right=0.90, wspace=0.35)
+    cax = fig.add_axes([0.92, 0.24, 0.018, 0.46])
+    fig.colorbar(im, cax=cax, label="Pattern similarity r")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
 
 
-def day_sensor_values(sensor_day_df, day, ch_names):
-    g = sensor_day_df[sensor_day_df["day"] == int(day)]
+def day_sensor_values(sensor_day_df, day, classifier, ch_names):
+    g = sensor_day_df[
+        (sensor_day_df["day"] == int(day))
+        & (sensor_day_df["classifier"] == classifier)
+    ]
     if g.empty:
-        raise ValueError(f"Missing late-window sensor day rows: day={day}")
+        raise ValueError(
+            f"Missing late-window sensor day rows: day={day}, classifier={classifier}"
+        )
     vals = (
         g.set_index("channel")
         .reindex(ch_names)["pattern_mean"]
@@ -157,31 +190,41 @@ def save_topomap_figure(sensor_day_df, pos_df, figures_dir):
     info, ch_names = make_haufe_info_from_pos_df(pos_df)
     day_values = {}
     all_vals = []
-    for day in DAYS:
-        vals = day_sensor_values(sensor_day_df, int(day), ch_names)
-        day_values[int(day)] = vals
-        for val in vals:
-            all_vals.append(float(val))
+    for classifier in CLASSIFIERS:
+        for day in DAYS:
+            vals = day_sensor_values(sensor_day_df, int(day), classifier, ch_names)
+            day_values[(classifier, int(day))] = vals
+            for val in vals:
+                all_vals.append(float(val))
     vmax = float(np.nanmax(np.abs(all_vals)))
     if not np.isfinite(vmax) or vmax <= 0:
         raise ValueError("Cannot determine late-window topomap color scale")
-    fig, axes = plt.subplots(1, len(DAYS), figsize=(10.0, 2.7), squeeze=False)
+    fig, axes = plt.subplots(
+        len(CLASSIFIERS),
+        len(DAYS),
+        figsize=(10.0, 6.8),
+        squeeze=False,
+    )
     im = None
-    for c, day in enumerate(DAYS):
-        ax = axes[0, c]
-        im, _ = mne.viz.plot_topomap(
-            day_values[int(day)],
-            info,
-            axes=ax,
-            show=False,
-            contours=0,
-            cmap="RdBu_r",
-            vlim=(-vmax, vmax),
-        )
-        ax.set_title(f"D{day}", fontsize=10)
+    for r, classifier in enumerate(CLASSIFIERS):
+        for c, day in enumerate(DAYS):
+            ax = axes[r, c]
+            im, _ = mne.viz.plot_topomap(
+                day_values[(classifier, int(day))],
+                info,
+                axes=ax,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-vmax, vmax),
+            )
+            if r == 0:
+                ax.set_title(f"D{day}", fontsize=10)
+            if c == 0:
+                ax.set_ylabel(classifier, fontsize=9)
     fig.suptitle("Late-Window Whole-Window Haufe Topographies")
-    fig.subplots_adjust(top=0.76, bottom=0.12, left=0.03, right=0.90, wspace=0.08)
-    cax = fig.add_axes([0.92, 0.24, 0.018, 0.44])
+    fig.subplots_adjust(top=0.88, bottom=0.06, left=0.05, right=0.90, wspace=0.08, hspace=0.18)
+    cax = fig.add_axes([0.92, 0.20, 0.018, 0.58])
     fig.colorbar(im, cax=cax, label="Haufe pattern")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -194,40 +237,56 @@ def save_normalized_topomap_figure(sensor_day_df, pos_df, figures_dir):
     )
     info, ch_names = make_haufe_info_from_pos_df(pos_df)
     day_values = {}
-    for day in DAYS:
-        vals = day_sensor_values(sensor_day_df, int(day), ch_names)
-        vals = vals - np.mean(vals)
-        denom = float(np.max(np.abs(vals)))
-        if not np.isfinite(denom) or denom <= np.finfo(float).eps:
-            raise ValueError(f"Cannot normalize flat late-window map: day={day}")
-        day_values[int(day)] = vals / denom
-    fig, axes = plt.subplots(1, len(DAYS), figsize=(10.0, 2.7), squeeze=False)
+    for classifier in CLASSIFIERS:
+        for day in DAYS:
+            vals = day_sensor_values(sensor_day_df, int(day), classifier, ch_names)
+            vals = vals - np.mean(vals)
+            denom = float(np.max(np.abs(vals)))
+            if not np.isfinite(denom) or denom <= np.finfo(float).eps:
+                raise ValueError(
+                    f"Cannot normalize flat late-window map: "
+                    f"classifier={classifier}, day={day}"
+                )
+            day_values[(classifier, int(day))] = vals / denom
+    fig, axes = plt.subplots(
+        len(CLASSIFIERS),
+        len(DAYS),
+        figsize=(10.0, 6.8),
+        squeeze=False,
+    )
     im = None
-    for c, day in enumerate(DAYS):
-        ax = axes[0, c]
-        im, _ = mne.viz.plot_topomap(
-            day_values[int(day)],
-            info,
-            axes=ax,
-            show=False,
-            contours=0,
-            cmap="RdBu_r",
-            vlim=(-1.0, 1.0),
-        )
-        ax.set_title(f"D{day}", fontsize=10)
+    for r, classifier in enumerate(CLASSIFIERS):
+        for c, day in enumerate(DAYS):
+            ax = axes[r, c]
+            im, _ = mne.viz.plot_topomap(
+                day_values[(classifier, int(day))],
+                info,
+                axes=ax,
+                show=False,
+                contours=0,
+                cmap="RdBu_r",
+                vlim=(-1.0, 1.0),
+            )
+            if r == 0:
+                ax.set_title(f"D{day}", fontsize=10)
+            if c == 0:
+                ax.set_ylabel(classifier, fontsize=9)
     fig.suptitle("Late-Window Shape-Normalized Haufe Topographies")
-    fig.subplots_adjust(top=0.76, bottom=0.12, left=0.03, right=0.90, wspace=0.08)
-    cax = fig.add_axes([0.92, 0.24, 0.018, 0.44])
+    fig.subplots_adjust(top=0.88, bottom=0.06, left=0.05, right=0.90, wspace=0.08, hspace=0.18)
+    cax = fig.add_axes([0.92, 0.20, 0.018, 0.58])
     fig.colorbar(im, cax=cax, label="Demeaned / panel max abs")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
 
 
-def linkage_matrix(clusters_df):
-    g = clusters_df[clusters_df["row_type"] == "linkage"].sort_values("merge_index")
+def linkage_matrix(clusters_df, classifier):
+    g = clusters_df[
+        (clusters_df["row_type"] == "linkage")
+        & (clusters_df["classifier"] == classifier)
+    ].sort_values("merge_index")
     if len(g) != len(DAYS) - 1:
-        raise ValueError("Missing late-window linkage rows")
+        raise ValueError(f"Missing late-window linkage rows: {classifier}")
     z = np.zeros((len(g), 4), dtype=float)
     for i, row in enumerate(g.itertuples()):
         z[i, 0] = float(row.child_1)
@@ -242,12 +301,15 @@ def save_cluster_figure(clusters_df, figures_dir):
     labels = []
     for day in DAYS:
         labels.append(f"D{day}")
-    z = linkage_matrix(clusters_df)
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    dendrogram(z, labels=labels, ax=ax, color_threshold=0.0)
-    ax.set_title("Late-Window Haufe Day Clustering")
-    ax.set_ylabel("Distance")
-    fig.tight_layout()
+    fig, axes = plt.subplots(1, len(CLASSIFIERS), figsize=(10.8, 3.4), squeeze=False)
+    for c, classifier in enumerate(CLASSIFIERS):
+        ax = axes[0, c]
+        z = linkage_matrix(clusters_df, classifier)
+        dendrogram(z, labels=labels, ax=ax, color_threshold=0.0)
+        ax.set_title(classifier)
+        ax.set_ylabel("Distance")
+    fig.suptitle("Late-Window Haufe Day Clustering")
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
