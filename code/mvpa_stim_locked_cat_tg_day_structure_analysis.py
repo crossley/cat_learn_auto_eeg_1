@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
-from scipy.stats import ttest_1samp
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
@@ -25,6 +24,8 @@ INPUT_CSV = OUTPUT_DIR / "mvpa_stim_locked_cat_tg_day_pair_window_auc_subject_pa
 DAYS = [1, 2, 3, 4, 5]
 SUMMARIES = ["square_mean", "diagonal_mean", "top10_mean"]
 WINDOWS = ["early", "late"]
+N_BOOTSTRAP = 1000
+RANDOM_STATE = 42
 
 
 def sem(x):
@@ -33,48 +34,6 @@ def sem(x):
     if len(x) <= 1:
         return np.nan
     return float(np.std(x, ddof=1) / np.sqrt(len(x)))
-
-
-def pearson_corr(x, y):
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    valid = np.isfinite(x) & np.isfinite(y)
-    if int(np.sum(valid)) < 3:
-        return np.nan
-    x = x[valid]
-    y = y[valid]
-    x = x - np.mean(x)
-    y = y - np.mean(y)
-    denom = float(np.sqrt(np.sum(x**2) * np.sum(y**2)))
-    if denom <= np.finfo(float).eps:
-        return np.nan
-    return float(np.sum(x * y) / denom)
-
-
-def candidate_value(model, day_low, day_high):
-    day_distance = abs(day_high - day_low)
-    if model == "day_distance_gradient":
-        return float(-day_distance)
-    if model == "day1_isolated_later_only":
-        return float((day_low > 1) and (day_high > 1))
-    if model == "adjacent_clusters_23_45":
-        return float((day_low == 2 and day_high == 3) or (day_low == 4 and day_high == 5))
-    if model == "stage_blocks_1_23_45":
-        stage_map = {1: 0, 2: 1, 3: 1, 4: 2, 5: 2}
-        return float(-abs(stage_map[day_low] - stage_map[day_high]))
-    if model == "late_cluster_45":
-        return float(day_low == 4 and day_high == 5)
-    raise ValueError(f"Unknown candidate model: {model}")
-
-
-def candidate_models():
-    models = []
-    models.append("day_distance_gradient")
-    models.append("day1_isolated_later_only")
-    models.append("adjacent_clusters_23_45")
-    models.append("stage_blocks_1_23_45")
-    models.append("late_cluster_45")
-    return models
 
 
 def load_input(input_csv):
@@ -216,22 +175,82 @@ def distance_matrix_from_similarity(sim_mat):
     return dist
 
 
+def finite_corr(x, y):
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+    if int(np.sum(valid)) < 3:
+        return np.nan
+    x = x[valid]
+    y = y[valid]
+    x = x - np.mean(x)
+    y = y - np.mean(y)
+    denom = float(np.sqrt(np.sum(x**2) * np.sum(y**2)))
+    if denom <= np.finfo(float).eps:
+        return np.nan
+    return float(np.sum(x * y) / denom)
+
+
+def matrix_to_pair_vector(mat):
+    vals = []
+    for i in range(len(DAYS)):
+        for j in range(i + 1, len(DAYS)):
+            vals.append(float(mat[i, j]))
+    return np.asarray(vals, dtype=float)
+
+
+def cluster_members(node_id, z):
+    node_id = int(node_id)
+    n_days = len(DAYS)
+    if node_id < n_days:
+        return [DAYS[node_id]]
+    merge_idx = node_id - n_days
+    members = []
+    for child_col in [0, 1]:
+        child_members = cluster_members(int(z[merge_idx, child_col]), z)
+        for day in child_members:
+            members.append(day)
+    return sorted(members)
+
+
+def cluster_description_from_distance(dist):
+    condensed = squareform(dist, checks=False)
+    z = linkage(condensed, method="average")
+    order_idx = leaves_list(z)
+    order_days = []
+    for idx in order_idx:
+        order_days.append(DAYS[int(idx)])
+    order_labels = []
+    for day in order_days:
+        order_labels.append(str(day))
+    day_order = ",".join(order_labels)
+
+    first_members = cluster_members(int(z[0, 0]), z)
+    for day in cluster_members(int(z[0, 1]), z):
+        first_members.append(day)
+    first_members = sorted(first_members)
+    first_pair = ""
+    if len(first_members) == 2:
+        first_pair = f"D{first_members[0]}-D{first_members[1]}"
+
+    last_row = z[z.shape[0] - 1]
+    left_members = cluster_members(int(last_row[0]), z)
+    right_members = cluster_members(int(last_row[1]), z)
+    last_singleton_day = np.nan
+    if len(left_members) == 1 and len(right_members) > 1:
+        last_singleton_day = int(left_members[0])
+    if len(right_members) == 1 and len(left_members) > 1:
+        last_singleton_day = int(right_members[0])
+    return z, day_order, first_pair, last_singleton_day
+
+
 def make_clusters(sym_df):
     rows = []
     for summary in SUMMARIES:
         for window in WINDOWS:
             sim_mat = group_similarity_matrix(sym_df, summary, window)
             dist = distance_matrix_from_similarity(sim_mat)
-            condensed = squareform(dist, checks=False)
-            z = linkage(condensed, method="average")
-            order_idx = leaves_list(z)
-            order_days = []
-            for idx in order_idx:
-                order_days.append(DAYS[int(idx)])
-            order_labels = []
-            for day in order_days:
-                order_labels.append(str(day))
-            day_order = ",".join(order_labels)
+            z, day_order, _first_pair, _last_singleton_day = cluster_description_from_distance(dist)
             for merge_idx in range(z.shape[0]):
                 rows.append(
                     {
@@ -248,7 +267,8 @@ def make_clusters(sym_df):
                         "day_order": day_order,
                     }
                 )
-            for pos, day in enumerate(order_days):
+            order_parts = day_order.split(",")
+            for pos, day_text in enumerate(order_parts):
                 rows.append(
                     {
                         "row_type": "order",
@@ -259,11 +279,291 @@ def make_clusters(sym_df):
                         "child_2": np.nan,
                         "distance": np.nan,
                         "n_members": np.nan,
-                        "day": int(day),
+                        "day": int(day_text),
                         "order_position": int(pos),
                         "day_order": day_order,
                     }
                 )
+    return pd.DataFrame(rows)
+
+
+def subject_similarity_matrix(sym_df, summary, window, subject):
+    g = sym_df[
+        (sym_df["row_type"] == "subject")
+        & (sym_df["summary"] == summary)
+        & (sym_df["window"] == window)
+        & (sym_df["subject"] == subject)
+    ]
+    if g.empty:
+        raise ValueError(
+            f"Missing subject symmetrised rows: summary={summary}, "
+            f"window={window}, subject={subject}"
+        )
+    mat = np.full((len(DAYS), len(DAYS)), np.nan, dtype=float)
+    for _, row in g.iterrows():
+        i = DAYS.index(int(row["day_low"]))
+        j = DAYS.index(int(row["day_high"]))
+        mat[i, j] = float(row["similarity"])
+        mat[j, i] = float(row["similarity"])
+    missing = []
+    for i, day_i in enumerate(DAYS):
+        for j in range(i + 1, len(DAYS)):
+            day_j = DAYS[j]
+            if not np.isfinite(mat[i, j]):
+                missing.append(f"D{day_i}-D{day_j}")
+    if len(missing) > 0:
+        raise ValueError(
+            f"Missing subject day pairs for summary={summary}, window={window}, "
+            f"subject={subject}: " + ", ".join(missing)
+        )
+    return mat
+
+
+def complete_subjects(sym_df, summary, window):
+    d_key = sym_df[
+        (sym_df["row_type"] == "subject")
+        & (sym_df["summary"] == summary)
+        & (sym_df["window"] == window)
+    ]
+    subjects = sorted(d_key["subject"].dropna().unique().astype(int))
+    retained = []
+    for subject in subjects:
+        try:
+            subject_similarity_matrix(sym_df, summary, window, subject)
+            retained.append(int(subject))
+        except ValueError:
+            pass
+    if len(retained) == 0:
+        raise ValueError(f"No complete subjects: summary={summary}, window={window}")
+    return retained
+
+
+def subject_matrix_cache(sym_df, summary, window):
+    subjects = complete_subjects(sym_df, summary, window)
+    matrices = {}
+    for subject in subjects:
+        matrices[int(subject)] = subject_similarity_matrix(
+            sym_df,
+            summary,
+            window,
+            int(subject),
+        )
+    return subjects, matrices
+
+
+def make_subject_clusters(sym_df):
+    rows = []
+    for summary in SUMMARIES:
+        for window in WINDOWS:
+            subjects, matrices = subject_matrix_cache(sym_df, summary, window)
+            for subject in subjects:
+                sim_mat = matrices[int(subject)]
+                dist = distance_matrix_from_similarity(sim_mat)
+                z, day_order, first_pair, last_singleton_day = cluster_description_from_distance(dist)
+                for merge_idx in range(z.shape[0]):
+                    rows.append(
+                        {
+                            "row_type": "linkage",
+                            "summary": summary,
+                            "window": window,
+                            "subject": int(subject),
+                            "merge_index": int(merge_idx),
+                            "child_1": float(z[merge_idx, 0]),
+                            "child_2": float(z[merge_idx, 1]),
+                            "distance": float(z[merge_idx, 2]),
+                            "n_members": int(z[merge_idx, 3]),
+                            "day": np.nan,
+                            "order_position": np.nan,
+                            "day_order": day_order,
+                            "first_pair": first_pair,
+                            "last_singleton_day": last_singleton_day,
+                        }
+                    )
+                order_parts = day_order.split(",")
+                for pos, day_text in enumerate(order_parts):
+                    rows.append(
+                        {
+                            "row_type": "order",
+                            "summary": summary,
+                            "window": window,
+                            "subject": int(subject),
+                            "merge_index": np.nan,
+                            "child_1": np.nan,
+                            "child_2": np.nan,
+                            "distance": np.nan,
+                            "n_members": np.nan,
+                            "day": int(day_text),
+                            "order_position": int(pos),
+                            "day_order": day_order,
+                            "first_pair": first_pair,
+                            "last_singleton_day": last_singleton_day,
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+def bootstrap_mean_similarity_matrix(matrices, sampled_subjects, summary, window):
+    mats = []
+    for subject in sampled_subjects:
+        mats.append(matrices[int(subject)])
+    if len(mats) == 0:
+        raise ValueError("Cannot bootstrap empty subject sample")
+    arr = np.stack(mats, axis=0)
+    out = np.full((len(DAYS), len(DAYS)), np.nan, dtype=float)
+    for i in range(len(DAYS)):
+        for j in range(len(DAYS)):
+            if i == j:
+                continue
+            vals = arr[:, i, j]
+            vals = vals[np.isfinite(vals)]
+            if len(vals) == 0:
+                raise ValueError(
+                    "Bootstrap sample has no finite values: "
+                    f"summary={summary}, window={window}, "
+                    f"day_pair=D{DAYS[i]}-D{DAYS[j]}"
+                )
+            out[i, j] = float(np.mean(vals))
+    return out
+
+
+def make_bootstrap_clusters(sym_df, n_bootstrap=N_BOOTSTRAP, random_state=RANDOM_STATE):
+    rng = np.random.default_rng(random_state)
+    rows = []
+    for summary in SUMMARIES:
+        for window in WINDOWS:
+            print(
+                f"[TG day-structure] Bootstrapping {summary}, {window} "
+                f"({n_bootstrap} resamples)..."
+            )
+            subjects, matrices = subject_matrix_cache(sym_df, summary, window)
+            if len(subjects) == 0:
+                raise ValueError(
+                    f"No subjects for bootstrap: summary={summary}, window={window}"
+                )
+            first_pair_counts = {}
+            last_day_counts = {}
+            for boot_idx in range(n_bootstrap):
+                sampled = rng.choice(subjects, size=len(subjects), replace=True)
+                sim_mat = bootstrap_mean_similarity_matrix(
+                    matrices,
+                    sampled,
+                    summary,
+                    window,
+                )
+                dist = distance_matrix_from_similarity(sim_mat)
+                _z, day_order, first_pair, last_singleton_day = cluster_description_from_distance(dist)
+                sampled_labels = []
+                for subject in sampled:
+                    sampled_labels.append(str(int(subject)))
+                sampled_subjects = ",".join(sampled_labels)
+                rows.append(
+                    {
+                        "row_type": "bootstrap",
+                        "summary": summary,
+                        "window": window,
+                        "bootstrap": int(boot_idx),
+                        "n_subjects": int(len(subjects)),
+                        "sampled_subjects": sampled_subjects,
+                        "first_pair": first_pair,
+                        "last_singleton_day": last_singleton_day,
+                        "day_order": day_order,
+                        "support_type": "",
+                        "event": "",
+                        "support": np.nan,
+                    }
+                )
+                if first_pair not in first_pair_counts:
+                    first_pair_counts[first_pair] = 0
+                first_pair_counts[first_pair] += 1
+                if np.isfinite(last_singleton_day):
+                    last_key = f"D{int(last_singleton_day)}"
+                else:
+                    last_key = "none"
+                if last_key not in last_day_counts:
+                    last_day_counts[last_key] = 0
+                last_day_counts[last_key] += 1
+            for event, count in sorted(first_pair_counts.items()):
+                rows.append(
+                    {
+                        "row_type": "support",
+                        "summary": summary,
+                        "window": window,
+                        "bootstrap": np.nan,
+                        "n_subjects": int(len(subjects)),
+                        "sampled_subjects": "",
+                        "first_pair": "",
+                        "last_singleton_day": np.nan,
+                        "day_order": "",
+                        "support_type": "first_pair",
+                        "event": event,
+                        "support": float(count) / float(n_bootstrap),
+                    }
+                )
+            for event, count in sorted(last_day_counts.items()):
+                rows.append(
+                    {
+                        "row_type": "support",
+                        "summary": summary,
+                        "window": window,
+                        "bootstrap": np.nan,
+                        "n_subjects": int(len(subjects)),
+                        "sampled_subjects": "",
+                        "first_pair": "",
+                        "last_singleton_day": np.nan,
+                        "day_order": "",
+                        "support_type": "last_singleton_day",
+                        "event": event,
+                        "support": float(count) / float(n_bootstrap),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def make_distance_stability(sym_df):
+    rows = []
+    for summary in SUMMARIES:
+        for window in WINDOWS:
+            group_sim = group_similarity_matrix(sym_df, summary, window)
+            group_dist = distance_matrix_from_similarity(group_sim)
+            group_vec = matrix_to_pair_vector(group_dist)
+            subjects, matrices = subject_matrix_cache(sym_df, summary, window)
+            subject_corrs = []
+            for subject in subjects:
+                subject_sim = matrices[int(subject)]
+                subject_dist = distance_matrix_from_similarity(subject_sim)
+                subject_vec = matrix_to_pair_vector(subject_dist)
+                r = finite_corr(subject_vec, group_vec)
+                subject_corrs.append(r)
+                rows.append(
+                    {
+                        "row_type": "subject",
+                        "summary": summary,
+                        "window": window,
+                        "subject": int(subject),
+                        "distance_correlation": r,
+                        "mean_distance_correlation": np.nan,
+                        "sem_distance_correlation": np.nan,
+                        "n_subjects": np.nan,
+                    }
+                )
+            vals = np.asarray(subject_corrs, dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if len(vals) == 0:
+                raise ValueError(
+                    f"No finite distance-stability values: summary={summary}, window={window}"
+                )
+            rows.append(
+                {
+                    "row_type": "summary",
+                    "summary": summary,
+                    "window": window,
+                    "subject": np.nan,
+                    "distance_correlation": np.nan,
+                    "mean_distance_correlation": float(np.mean(vals)),
+                    "sem_distance_correlation": sem(vals),
+                    "n_subjects": int(len(vals)),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -315,66 +615,6 @@ def make_embedding(sym_df):
     return pd.DataFrame(rows)
 
 
-def make_model_comparison(sym_df):
-    d = sym_df[sym_df["row_type"] == "subject"].copy()
-    if d.empty:
-        raise ValueError("No subject-level symmetrised rows for candidate model comparison")
-    model_names = candidate_models()
-    subject_rows = []
-    for (summary, window, subject), g in d.groupby(["summary", "window", "subject"]):
-        obs = g["similarity"].to_numpy(dtype=float)
-        for model in model_names:
-            pred_vals = []
-            for _, row in g.iterrows():
-                pred_vals.append(
-                    candidate_value(model, int(row["day_low"]), int(row["day_high"]))
-                )
-            r = pearson_corr(obs, np.asarray(pred_vals, dtype=float))
-            subject_rows.append(
-                {
-                    "row_type": "subject",
-                    "summary": summary,
-                    "window": window,
-                    "subject": int(subject),
-                    "model": model,
-                    "r": r,
-                    "r_mean": np.nan,
-                    "r_sem": np.nan,
-                    "t": np.nan,
-                    "p": np.nan,
-                    "n_subjects": np.nan,
-                }
-            )
-    subject_df = pd.DataFrame(subject_rows)
-    summary_rows = []
-    for (summary, window, model), g in subject_df.groupby(["summary", "window", "model"]):
-        vals = g["r"].to_numpy(dtype=float)
-        vals = vals[np.isfinite(vals)]
-        if len(vals) == 0:
-            raise ValueError(
-                f"No finite candidate-model correlations: "
-                f"summary={summary}, window={window}, model={model}"
-            )
-        t_res = ttest_1samp(vals, 0.0, nan_policy="omit")
-        summary_rows.append(
-            {
-                "row_type": "summary",
-                "summary": summary,
-                "window": window,
-                "subject": np.nan,
-                "model": model,
-                "r": np.nan,
-                "r_mean": float(np.mean(vals)),
-                "r_sem": sem(vals),
-                "t": float(t_res.statistic),
-                "p": float(t_res.pvalue),
-                "n_subjects": int(len(vals)),
-            }
-        )
-    summary_df = pd.DataFrame(summary_rows)
-    return pd.concat([subject_df, summary_df], ignore_index=True)
-
-
 def run_mvpa_stim_locked_cat_tg_day_structure(
     input_csv: Path | str = INPUT_CSV,
     output_dir: Path | str = OUTPUT_DIR,
@@ -385,30 +625,42 @@ def run_mvpa_stim_locked_cat_tg_day_structure(
     sym_df = make_symmetrised_similarity(d)
     clusters_df = make_clusters(sym_df)
     embedding_df = make_embedding(sym_df)
-    model_df = make_model_comparison(sym_df)
+    subject_clusters_df = make_subject_clusters(sym_df)
+    bootstrap_clusters_df = make_bootstrap_clusters(sym_df)
+    distance_stability_df = make_distance_stability(sym_df)
 
     sym_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_symmetrised.csv"
     clusters_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_clusters.csv"
     embedding_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_embedding.csv"
-    model_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_model_comparison.csv"
+    subject_clusters_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_subject_clusters.csv"
+    bootstrap_clusters_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_bootstrap_clusters.csv"
+    distance_stability_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_distance_stability.csv"
 
     sym_df.to_csv(sym_csv, index=False)
     clusters_df.to_csv(clusters_csv, index=False)
     embedding_df.to_csv(embedding_csv, index=False)
-    model_df.to_csv(model_csv, index=False)
+    subject_clusters_df.to_csv(subject_clusters_csv, index=False)
+    bootstrap_clusters_df.to_csv(bootstrap_clusters_csv, index=False)
+    distance_stability_df.to_csv(distance_stability_csv, index=False)
     print(f"[TG day-structure] Wrote {sym_csv}")
     print(f"[TG day-structure] Wrote {clusters_csv}")
     print(f"[TG day-structure] Wrote {embedding_csv}")
-    print(f"[TG day-structure] Wrote {model_csv}")
+    print(f"[TG day-structure] Wrote {subject_clusters_csv}")
+    print(f"[TG day-structure] Wrote {bootstrap_clusters_csv}")
+    print(f"[TG day-structure] Wrote {distance_stability_csv}")
     return {
         "symmetrised_df": sym_df,
         "clusters_df": clusters_df,
         "embedding_df": embedding_df,
-        "model_df": model_df,
+        "subject_clusters_df": subject_clusters_df,
+        "bootstrap_clusters_df": bootstrap_clusters_df,
+        "distance_stability_df": distance_stability_df,
         "symmetrised_csv": sym_csv,
         "clusters_csv": clusters_csv,
         "embedding_csv": embedding_csv,
-        "model_csv": model_csv,
+        "subject_clusters_csv": subject_clusters_csv,
+        "bootstrap_clusters_csv": bootstrap_clusters_csv,
+        "distance_stability_csv": distance_stability_csv,
     }
 
 

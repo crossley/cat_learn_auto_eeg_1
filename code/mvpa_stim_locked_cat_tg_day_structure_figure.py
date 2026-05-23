@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Plot day-structure analyses for stimulus-locked TG window summaries."""
 
+import os
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 
 import matplotlib
 
@@ -186,62 +190,75 @@ def save_embedding_figure(embedding_df, figures_dir):
     return fig_path
 
 
-def model_label(model):
-    labels = {
-        "day_distance_gradient": "distance",
-        "day1_isolated_later_only": "day1 vs later",
-        "adjacent_clusters_23_45": "2-3 / 4-5",
-        "stage_blocks_1_23_45": "1 / 2-3 / 4-5",
-        "late_cluster_45": "4-5",
-    }
-    if model not in labels:
-        return model
-    return labels[model]
+def support_label(row):
+    support_type = str(row["support_type"])
+    event = str(row["event"])
+    if support_type == "first_pair":
+        return f"first {event}"
+    if support_type == "last_singleton_day":
+        return f"last {event}"
+    return event
 
 
-def save_model_comparison_figure(model_df, figures_dir):
-    fig_path = figures_dir / "mvpa_stim_locked_cat_tg_day_structure_model_comparison.png"
-    d = model_df[model_df["row_type"] == "summary"].copy()
-    if d.empty:
-        raise ValueError("No candidate-model summary rows to plot")
-    models = []
-    for model in d["model"].dropna().unique():
-        models.append(model)
+def save_bootstrap_support_figure(bootstrap_df, stability_df, figures_dir):
+    fig_path = figures_dir / "mvpa_stim_locked_cat_tg_day_structure_bootstrap_support.png"
+    d_support = bootstrap_df[bootstrap_df["row_type"] == "support"].copy()
+    d_stability = stability_df[stability_df["row_type"] == "summary"].copy()
+    if d_support.empty:
+        raise ValueError("No bootstrap support rows to plot")
+    if d_stability.empty:
+        raise ValueError("No distance-stability summary rows to plot")
     fig, axes = plt.subplots(
-        len(SUMMARIES), len(WINDOWS), figsize=(11.0, 10.2), squeeze=False, sharey=True
+        len(SUMMARIES), len(WINDOWS), figsize=(11.5, 10.0), squeeze=False
     )
     for r, summary in enumerate(SUMMARIES):
         for c, window in enumerate(WINDOWS):
             ax = axes[r, c]
-            g = d[
-                (d["summary"] == summary)
-                & (d["window"] == window)
+            g = d_support[
+                (d_support["summary"] == summary)
+                & (d_support["window"] == window)
             ].copy()
             if g.empty:
                 raise ValueError(
-                    f"Missing candidate model rows: summary={summary}, window={window}"
+                    f"Missing bootstrap support rows: summary={summary}, window={window}"
                 )
-            means = []
-            sems = []
+            plot_rows = []
+            for support_type in ["first_pair", "last_singleton_day"]:
+                g_type = g[g["support_type"] == support_type].sort_values(
+                    "support", ascending=False
+                )
+                for _, row in g_type.head(4).iterrows():
+                    plot_rows.append(row)
             labels = []
-            for model in models:
-                row = g[g["model"] == model]
-                if row.empty:
-                    raise ValueError(
-                        f"Missing candidate model {model}: summary={summary}, window={window}"
-                    )
-                means.append(float(row["r_mean"].iloc[0]))
-                sems.append(float(row["r_sem"].iloc[0]))
-                labels.append(model_label(model))
-            x = np.arange(len(models))
-            ax.bar(x, means, yerr=sems, color="tab:blue", alpha=0.85, capsize=3)
-            ax.axhline(0.0, color="0.3", linewidth=0.8)
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
-            ax.set_title(f"{summary} | {window}")
-            ax.set_ylabel("Mean subject r")
-            ax.grid(axis="y", alpha=0.25)
-    fig.suptitle("Candidate Models of Cross-Day TG Day Structure")
+            vals = []
+            colors = []
+            for row in plot_rows:
+                labels.append(support_label(row))
+                vals.append(float(row["support"]))
+                if row["support_type"] == "first_pair":
+                    colors.append("tab:blue")
+                else:
+                    colors.append("tab:orange")
+            y = np.arange(len(vals))
+            ax.barh(y, vals, color=colors, alpha=0.85)
+            ax.set_yticks(y)
+            ax.set_yticklabels(labels, fontsize=8)
+            ax.invert_yaxis()
+            ax.set_xlim(0.0, 1.0)
+            ax.set_xlabel("Bootstrap support")
+            stab = d_stability[
+                (d_stability["summary"] == summary)
+                & (d_stability["window"] == window)
+            ]
+            if stab.empty:
+                raise ValueError(
+                    f"Missing distance-stability row: summary={summary}, window={window}"
+                )
+            mean_r = float(stab["mean_distance_correlation"].iloc[0])
+            sem_r = float(stab["sem_distance_correlation"].iloc[0])
+            ax.set_title(f"{summary} | {window} | stability r={mean_r:.2f}+/-{sem_r:.2f}")
+            ax.grid(axis="x", alpha=0.25)
+    fig.suptitle("Bootstrap Support for TG Day-Structure Clustering")
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -259,23 +276,27 @@ def save_fig_mvpa_stim_locked_cat_tg_day_structure(
     sym_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_symmetrised.csv"
     clusters_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_clusters.csv"
     embedding_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_embedding.csv"
-    model_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_model_comparison.csv"
+    bootstrap_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_bootstrap_clusters.csv"
+    stability_csv = output_dir / "mvpa_stim_locked_cat_tg_day_structure_distance_stability.csv"
 
     sym_df = require_csv(sym_csv)
     clusters_df = require_csv(clusters_csv)
     embedding_df = require_csv(embedding_csv)
-    model_df = require_csv(model_csv)
+    bootstrap_df = require_csv(bootstrap_csv)
+    stability_df = require_csv(stability_csv)
 
     paths = {
         "symmetrised": save_symmetrised_figure(sym_df, figures_dir),
         "clusters": save_cluster_figure(clusters_df, figures_dir),
         "embedding": save_embedding_figure(embedding_df, figures_dir),
-        "model_comparison": save_model_comparison_figure(model_df, figures_dir),
+        "bootstrap_support": save_bootstrap_support_figure(
+            bootstrap_df, stability_df, figures_dir
+        ),
     }
     print(f"[TG day-structure] Wrote {paths['symmetrised']}")
     print(f"[TG day-structure] Wrote {paths['clusters']}")
     print(f"[TG day-structure] Wrote {paths['embedding']}")
-    print(f"[TG day-structure] Wrote {paths['model_comparison']}")
+    print(f"[TG day-structure] Wrote {paths['bootstrap_support']}")
     return paths
 
 
