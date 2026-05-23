@@ -91,6 +91,8 @@ There is deliberately no all-in-one runner.
 | `mvpa_stim_locked_cat_tg_window_structure_analysis.py` | Compute early/late AUC windows and day-distance gradients |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis.py` | Compute Day-1 distinctiveness summaries |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_figure.py` | Plot Day-1 distinctiveness figures |
+| `mvpa_stim_locked_cat_tg_mixture_analysis.py` | Bayesian bivariate-Gaussian mixture models fit to stim-locked TG matrices |
+| `mvpa_stim_locked_cat_tg_mixture_figure.py` | Plot mixture model overlay figures on TG heatmaps |
 
 ### RSA (`rsa_`)
 
@@ -146,6 +148,7 @@ The active analyses write these output families:
 | `mvpa_stim_feedback_cat_tg_analysis.py` | `mvpa_stim_feedback_cat_tg_subject_level.csv`, `mvpa_stim_feedback_cat_tg_day_mean.csv`, `mvpa_stim_feedback_cat_tg_day_pair_mean.csv`, `mvpa_stim_feedback_cat_tg_timegen_day_mean.csv`, `mvpa_stim_feedback_cat_tg_timegen_day_pair_mean.csv`, `mvpa_stim_feedback_cat_tg_qc_log.csv` |
 | `mvpa_stim_locked_cat_tg_window_structure_analysis.py` | `mvpa_stim_locked_cat_tg_window_auc_subject_pairs.csv`, `mvpa_stim_locked_cat_tg_window_gradient_slopes.csv`, `mvpa_stim_locked_cat_tg_window_slope_difference.json` |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_analysis.py` | `mvpa_stim_locked_cat_tg_day1_window_auc_subject_pairs.csv`, `mvpa_stim_locked_cat_tg_day1_distinctiveness_model_terms.csv`, `mvpa_stim_locked_cat_tg_day1_pair_type_summary.csv`, `mvpa_stim_locked_cat_tg_day_pair_window_auc_matrix*.csv` |
+| `mvpa_stim_locked_cat_tg_mixture_analysis.py` | `mvpa_stim_locked_cat_tg_mixture_component_summary.csv`, `mvpa_stim_locked_cat_tg_mixture_fitted_surface.csv`, `mvpa_stim_locked_cat_tg_mixture_trace_trainD{n}_testD{m}_{model}.nc` (optional), `mvpa_stim_locked_cat_tg_mixture_progress.json` |
 | `rsa_model_prediction_analysis.py` | `rsa_model_grid_diagnostics.csv`, `rsa_model_stimulus_bins.csv`, `rsa_model_rdms.csv` |
 | `rsa_*_time_resolved_analysis.py` | `rsa_*_time_resolved_rdms.csv`, `rsa_*_bin_epoch_counts.csv`, `rsa_*_model_fit_timecourses.csv`, `rsa_*_cross_day_geometry_similarity.csv`, `rsa_*_model_vectors.csv`, `rsa_*_time_resolved_qc_log.csv` |
 | `rsa_*_windowed_analysis.py` | `rsa_*_windowed_rdms.csv`, `rsa_*_windowed_bin_epoch_counts.csv`, `rsa_*_windowed_model_fit_timecourses.csv`, `rsa_*_windowed_cross_day_geometry_similarity.csv`, `rsa_*_windowed_model_vectors.csv`, `rsa_*_windowed_qc_log.csv` |
@@ -164,6 +167,7 @@ The active figure scripts generate these retained figure families:
 | `mvpa_feedback_locked_cat_tg_figure.py` | `mvpa_feedback_locked_cat_tg_transfer_5x4.png`, `mvpa_feedback_locked_cat_tg_timegen_matrices_5x5.png`, `mvpa_feedback_locked_cat_tg_haufe_similarity_timegen_matrices_5x5.png` |
 | `mvpa_stim_feedback_cat_tg_figure.py` | `mvpa_stim_feedback_cat_tg_timegen_matrices_stim_to_feedback_5x5.png`, `mvpa_stim_feedback_cat_tg_timegen_matrices_feedback_to_stim_5x5.png` |
 | `mvpa_stim_locked_cat_tg_day1_distinctiveness_figure.py` | `mvpa_stim_locked_cat_tg_day_pair_window_matrices_by_summary.png` |
+| `mvpa_stim_locked_cat_tg_mixture_figure.py` | `mvpa_stim_locked_cat_tg_mixture_overlay_model_1_5x5.png`, `mvpa_stim_locked_cat_tg_mixture_overlay_model_2_5x5.png`, `mvpa_stim_locked_cat_tg_mixture_overlay_model_3_5x5.png` |
 | `rsa_model_prediction_figure.py` | `rsa_model_grid_diagnostics.png`, `rsa_model_prediction_rdms.png` |
 | `rsa_*_time_resolved_figure.py` | `rsa_*_model_fit_timecourses.png`, `rsa_*_neural_rdm_snapshots.png`, `rsa_*_cross_day_geometry_similarity.png`, `rsa_*_cross_day_geometry_timecourse_pairs.png` |
 | `rsa_stim_time_resolved_figure.py` | Also `rsa_stim_cross_day_geometry_timecourse.png`, `rsa_stim_cross_day_geometry_timecourse_5x5.png` |
