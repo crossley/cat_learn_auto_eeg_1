@@ -177,6 +177,16 @@ def fit_transfer_subject(subject, day_data, random_state):
             train_item = day_data[train_day]
             X_train = train_item["X"]
             y_train = train_item["y"]
+            transfer_clf = build_window_clf(classifier, random_state=random_state)
+            transfer_fit_ok = False
+            transfer_detail = ""
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SklearnConvergenceWarning)
+                    transfer_clf.fit(X_train, y_train)
+                transfer_fit_ok = True
+            except Exception as exc:
+                transfer_detail = str(exc)
             for test_day in DAYS:
                 if test_day not in day_data:
                     continue
@@ -201,19 +211,20 @@ def fit_transfer_subject(subject, day_data, random_state):
                         status = "error"
                         detail = str(exc)
                 else:
-                    clf = build_window_clf(classifier, random_state=random_state)
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", SklearnConvergenceWarning)
-                            clf.fit(X_train, y_train)
-                        scores = classifier_scores(clf, test_item["X"])
-                        auc = float(roc_auc_score(test_item["y"], scores))
-                        status = "transfer"
-                        detail = ""
-                    except Exception as exc:
+                    if not transfer_fit_ok:
                         auc = np.nan
                         status = "error"
-                        detail = str(exc)
+                        detail = transfer_detail
+                    else:
+                        try:
+                            scores = classifier_scores(transfer_clf, test_item["X"])
+                            auc = float(roc_auc_score(test_item["y"], scores))
+                            status = "transfer"
+                            detail = ""
+                        except Exception as exc:
+                            auc = np.nan
+                            status = "error"
+                            detail = str(exc)
                 if status == "error":
                     qc_rows.append(
                         {
@@ -396,6 +407,11 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
                         f"sessions (elapsed {elapsed/60:.1f} min)",
                         flush=True,
                     )
+    print(
+        f"[MVPA late-window transfer] prepared {len(tasks)}/{len(tasks)} "
+        "sessions",
+        flush=True,
+    )
 
     subject_days = {}
     for item in prepared:
@@ -410,22 +426,77 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
     write_progress("transfer", 0, len(subjects))
     print(
         f"[MVPA late-window transfer] Computing transfer for {len(subjects)} "
-        "subjects...",
+        f"subjects (n_workers={n_workers})...",
         flush=True,
     )
-    for done, subject in enumerate(subjects, start=1):
-        rows, new_qc = fit_transfer_subject(subject, subject_days[subject], random_state)
-        subject_rows.extend(rows)
-        for row in new_qc:
-            qc_rows.append(row)
-        write_progress("transfer", done, len(subjects))
-        if (done % 5) == 0:
-            elapsed = time.time() - t0
-            print(
-                f"[MVPA late-window transfer] complete {done}/{len(subjects)} "
-                f"subjects (elapsed {elapsed/60:.1f} min)",
-                flush=True,
+
+    def iter_transfer_jobs():
+        for subject in subjects:
+            yield delayed(fit_transfer_subject)(
+                subject,
+                subject_days[subject],
+                random_state,
             )
+
+    if n_workers == 1:
+        for done, subject in enumerate(subjects, start=1):
+            rows, new_qc = fit_transfer_subject(
+                subject,
+                subject_days[subject],
+                random_state,
+            )
+            subject_rows.extend(rows)
+            for row in new_qc:
+                qc_rows.append(row)
+            write_progress("transfer", done, len(subjects))
+            if (done % 5) == 0 or done == len(subjects):
+                elapsed = time.time() - t0
+                print(
+                    f"[MVPA late-window transfer] complete {done}/{len(subjects)} "
+                    f"subjects (elapsed {elapsed/60:.1f} min)",
+                    flush=True,
+                )
+    elif threadpool_limits is None:
+        result_iter = Parallel(
+            n_jobs=n_workers,
+            backend="loky",
+            verbose=0,
+            return_as="generator_unordered",
+        )(iter_transfer_jobs())
+        for done, result in enumerate(result_iter, start=1):
+            rows, new_qc = result
+            subject_rows.extend(rows)
+            for row in new_qc:
+                qc_rows.append(row)
+            write_progress("transfer", done, len(subjects))
+            if (done % 5) == 0 or done == len(subjects):
+                elapsed = time.time() - t0
+                print(
+                    f"[MVPA late-window transfer] complete {done}/{len(subjects)} "
+                    f"subjects (elapsed {elapsed/60:.1f} min)",
+                    flush=True,
+                )
+    else:
+        with threadpool_limits(limits=1):
+            result_iter = Parallel(
+                n_jobs=n_workers,
+                backend="loky",
+                verbose=0,
+                return_as="generator_unordered",
+            )(iter_transfer_jobs())
+            for done, result in enumerate(result_iter, start=1):
+                rows, new_qc = result
+                subject_rows.extend(rows)
+                for row in new_qc:
+                    qc_rows.append(row)
+                write_progress("transfer", done, len(subjects))
+                if (done % 5) == 0 or done == len(subjects):
+                    elapsed = time.time() - t0
+                    print(
+                        f"[MVPA late-window transfer] complete {done}/{len(subjects)} "
+                        f"subjects (elapsed {elapsed/60:.1f} min)",
+                        flush=True,
+                    )
 
     subject_df = pd.DataFrame(subject_rows)
     qc_df = pd.DataFrame(qc_rows, columns=qc_columns)
