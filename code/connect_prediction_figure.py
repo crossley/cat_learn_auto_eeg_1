@@ -40,7 +40,6 @@ def save_fig_connect_prediction(figures_dir=FIGURES_DIR):
     ax.set_title("One-stage connectivity")
     ax.set_xlabel("Time from stimulus onset (s)")
     ax.set_ylabel("Predicted connectivity")
-    ax.axvspan(0.40, 0.60, color="0.90", zorder=0)
     ax.grid(alpha=0.25)
 
     ax = axes[1]
@@ -53,7 +52,6 @@ def save_fig_connect_prediction(figures_dir=FIGURES_DIR):
         ax.plot(t, early_y, color=colors[idx], linewidth=1.8)
     ax.set_title("Two-stage connectivity")
     ax.set_xlabel("Time from stimulus onset (s)")
-    ax.axvspan(0.40, 0.60, color="0.90", zorder=0)
     ax.grid(alpha=0.25)
 
     handles = []
@@ -66,7 +64,7 @@ def save_fig_connect_prediction(figures_dir=FIGURES_DIR):
         plt.Line2D([0], [0], color="0.25", linewidth=1.8),
         plt.Line2D([0], [0], color="0.25", linewidth=1.8, linestyle=":"),
     ]
-    stage_labels = ["earlier-onset pathway", "later-onset pathway"]
+    stage_labels = ["Stage 1", "Stage 2"]
     for handle in stage_handles:
         handles.append(handle)
     for label in stage_labels:
