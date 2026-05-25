@@ -68,7 +68,7 @@ def get_active_pair_idx_by_pct(carpets, n_pairs):
 
 def get_active_ylim(carpets, active_pair_idx_by_pct):
     active_vals = []
-    for pct in ACTIVE_PAIR_PCTS:
+    for pct in active_pair_idx_by_pct.keys():
         active_pair_idx = active_pair_idx_by_pct[pct]
         for day in sorted(carpets.keys()):
             _times, d = carpets[day]
@@ -274,6 +274,59 @@ def plot_active_pair_overlay(day_data, pair_idx, lock_name, band_name, figures_d
     return fig_path
 
 
+def plot_active_pair_overlay_single_pct(
+    day_data, pair_idx, lock_name, band_name, figures_dir, pct
+):
+    days = sorted(day_data.keys())
+    n_pairs = len(pair_idx)
+    carpets = {}
+    for day in days:
+        mats = day_data[day]["mats"]
+        times = day_data[day]["times"]
+        vals = []
+        for mat in mats:
+            pair_vals = []
+            for i, j in pair_idx:
+                pair_vals.append(mat[i, j])
+            vals.append(pair_vals)
+        carpets[day] = (times, np.asarray(vals).T)
+
+    active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
+    active_pair_idx = active_pair_idx_by_pct[pct]
+    active_ylim = get_active_ylim(carpets, {pct: active_pair_idx})
+    day_colors = get_day_colors(days)
+    pct_label = int(round(pct * 100))
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.0))
+    for day in days:
+        times, d = carpets[day]
+        active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+        ax.plot(
+            times,
+            active_mean,
+            color=day_colors[day],
+            linewidth=2.0,
+            label=f"D{day}",
+        )
+    ax.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
+    ax.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
+    ax.set_ylabel("Connectivity")
+    ax.set_title(f"Top {pct_label}% active pairs (n={len(active_pair_idx)})")
+    if active_ylim is not None:
+        ax.set_ylim(active_ylim)
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False, fontsize=8, loc="best")
+    fig.suptitle(f"Active Sensor-Pair Connectivity: {lock_name}, {band_name}")
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig_path = figures_dir / (
+        f"sensorwide_active_pair_overlay_top{pct_label}_"
+        f"{lock_name}_{band_name}.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_sensorwide_connectivity(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -358,6 +411,15 @@ def save_fig_sensorwide_connectivity(
             if lock_name == "stim" and band_name == "broadband":
                 fig_path = plot_active_pair_overlay(
                     day_data, pair_idx, lock_name, band_name, figures_dir
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_overlay_single_pct(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    0.20,
                 )
                 figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
