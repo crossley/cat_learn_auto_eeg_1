@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -109,7 +110,10 @@ def save_fig_mvpa_stim_locked_cat_transfer_prediction(figures_dir=FIGURES_DIR):
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.6), squeeze=False)
-    binary_cmap = plt.get_cmap("gray")
+    binary_cmap = LinearSegmentedColormap.from_list(
+        "prediction_gray",
+        ["0.22", "0.86"],
+    )
     graded_cmap = plt.get_cmap("viridis")
     ims = []
     for idx, mat in enumerate(matrices):
@@ -125,7 +129,14 @@ def save_fig_mvpa_stim_locked_cat_transfer_prediction(figures_dir=FIGURES_DIR):
         add_cell_labels(ax, mat)
 
     fig.suptitle("A Priori Day-Generalisation Predictions")
-    fig.subplots_adjust(top=0.90, bottom=0.08, left=0.08, right=0.86, wspace=0.32, hspace=0.38)
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.08,
+        left=0.08,
+        right=0.86,
+        wspace=0.32,
+        hspace=0.38,
+    )
     cax = fig.add_axes([0.89, 0.18, 0.018, 0.64])
     fig.colorbar(ims[-1], cax=cax, label="Predicted transfer")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")

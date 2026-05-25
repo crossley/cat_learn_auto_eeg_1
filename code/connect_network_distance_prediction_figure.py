@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -114,7 +115,10 @@ def save_fig_connect_network_distance_prediction(figures_dir=FIGURES_DIR):
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.6), squeeze=False)
-    binary_cmap = plt.get_cmap("gray")
+    binary_cmap = LinearSegmentedColormap.from_list(
+        "prediction_gray",
+        ["0.22", "0.86"],
+    )
     graded_cmap = plt.get_cmap("viridis")
     ims = []
     for idx, mat in enumerate(matrices):
