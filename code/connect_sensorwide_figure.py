@@ -766,6 +766,7 @@ def plot_active_pair_network_distance_matrices(
                 vals_i = get_peak_row(peak_rows, day_i, peak_i)["pair_vals"]
                 for col_j, day_j in enumerate(days):
                     if day_i == day_j:
+                        mat[row_i, col_j] = 0.0
                         continue
                     vals_j = get_peak_row(peak_rows, day_j, peak_i)["pair_vals"]
                     dist = edge_vector_distance(vals_i, vals_j, metric)
@@ -907,6 +908,13 @@ def subject_distance_summary(subjects, vector_map, days, metric, peak):
     for row_i, day_i in enumerate(days):
         for col_j, day_j in enumerate(days):
             if day_i == day_j:
+                n_diag = 0
+                for subject in subjects:
+                    if (subject, day_i, peak) in vector_map:
+                        n_diag += 1
+                mean_mat[row_i, col_j] = 0.0
+                sem_mat[row_i, col_j] = 0.0
+                n_mat[row_i, col_j] = int(n_diag)
                 continue
             vals = []
             for subject in subjects:
