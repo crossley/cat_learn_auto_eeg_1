@@ -275,7 +275,7 @@ def plot_active_pair_overlay(day_data, pair_idx, lock_name, band_name, figures_d
 
 
 def plot_active_pair_overlay_single_pct(
-    day_data, pair_idx, lock_name, band_name, figures_dir, pct
+    day_data, pair_idx, lock_name, band_name, figures_dir, pct, subject_df
 ):
     days = sorted(day_data.keys())
     n_pairs = len(pair_idx)
@@ -297,16 +297,82 @@ def plot_active_pair_overlay_single_pct(
     day_colors = get_day_colors(days)
     pct_label = int(round(pct * 100))
 
+    active_pair_rows = []
+    for pair_i in active_pair_idx:
+        i, j = pair_idx[pair_i]
+        active_pair_rows.append(
+            {
+                "ch_i": CHANNEL_SUBSET[i],
+                "ch_j": CHANNEL_SUBSET[j],
+            }
+        )
+    active_pair_df = pd.DataFrame(active_pair_rows)
+    d_subject = subject_df[
+        (subject_df["lock_type"] == lock_name) & (subject_df["band"] == band_name)
+    ].copy()
+    if d_subject.empty:
+        raise ValueError(
+            f"Missing subject-level connectivity rows: {lock_name}, {band_name}"
+        )
+    d_active = d_subject.merge(active_pair_df, on=["ch_i", "ch_j"], how="inner")
+    if d_active.empty:
+        raise ValueError(
+            f"No subject-level rows match top {pct_label}% active sensor-pairs"
+        )
+
+    session_rows = []
+    group_cols = ["subject", "day", "lock_time"]
+    for key, g in d_active.groupby(group_cols):
+        subject, day, lock_time = key
+        session_rows.append(
+            {
+                "subject": int(subject),
+                "day": int(day),
+                "lock_time": float(lock_time),
+                "conn_mean": float(np.mean(g["conn_val"])),
+            }
+        )
+    session_df = pd.DataFrame(session_rows)
+    stat_rows = []
+    for key, g in session_df.groupby(["day", "lock_time"]):
+        day, lock_time = key
+        vals = np.asarray(g["conn_mean"], dtype=float)
+        sem = np.nan
+        if len(vals) > 1:
+            sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+        stat_rows.append(
+            {
+                "day": int(day),
+                "lock_time": float(lock_time),
+                "mean": float(np.mean(vals)),
+                "sem": sem,
+                "n": int(len(vals)),
+            }
+        )
+    stat_df = pd.DataFrame(stat_rows)
+
     fig, ax = plt.subplots(figsize=(6.2, 4.0))
     for day in days:
-        times, d = carpets[day]
-        active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+        d_day = stat_df[stat_df["day"] == day].sort_values("lock_time")
+        if d_day.empty:
+            raise ValueError(f"Missing top {pct_label}% overlay stats for day {day}")
+        times = np.asarray(d_day["lock_time"], dtype=float)
+        active_mean = np.asarray(d_day["mean"], dtype=float)
+        active_sem = np.asarray(d_day["sem"], dtype=float)
         ax.plot(
             times,
             active_mean,
             color=day_colors[day],
             linewidth=2.0,
             label=f"D{day}",
+        )
+        ax.fill_between(
+            times,
+            active_mean - active_sem,
+            active_mean + active_sem,
+            color=day_colors[day],
+            alpha=0.16,
+            linewidth=0,
         )
     ax.axvline(0.0, color="0.55", linestyle=":", linewidth=0.8)
     ax.set_xlabel(f"{lock_name.capitalize()}-locked time (s)")
@@ -337,15 +403,24 @@ def save_fig_sensorwide_connectivity(
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     carpet_path = output_dir / "sensorwide_carpet_timeseries.csv"
+    subject_path = output_dir / "sensorwide_carpet_subject_timeseries.csv"
     channels_path = output_dir / "sensorwide_channel_layout.csv"
     if not carpet_path.exists() or not channels_path.exists():
         raise FileNotFoundError(
             f"Missing sensorwide output tables in {output_dir}. "
             "Run connect_sensorwide_analysis.py first."
         )
+    if not subject_path.exists():
+        raise FileNotFoundError(
+            f"Missing subject-level sensorwide output: {subject_path}. "
+            "Run connect_sensorwide_analysis.py first."
+        )
     d_carpet = pd.read_csv(carpet_path)
     if d_carpet.empty:
         raise ValueError(f"Empty sensorwide carpet output table: {carpet_path}")
+    d_subject = pd.read_csv(subject_path)
+    if d_subject.empty:
+        raise ValueError(f"Empty subject-level sensorwide output: {subject_path}")
 
     d_channels = pd.read_csv(channels_path)
     ch_pos_map = {}
@@ -420,6 +495,7 @@ def save_fig_sensorwide_connectivity(
                     band_name,
                     figures_dir,
                     0.20,
+                    d_subject,
                 )
                 figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}

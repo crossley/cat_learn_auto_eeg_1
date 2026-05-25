@@ -92,9 +92,16 @@ def process_sensorwide_session(task):
             feedback_tmin, feedback_tmax - window_sec + 1e-12, step_sec
         )
         if len(stim_starts) == 0 and len(feedback_starts) == 0:
-            return {"ok": False, "subject": subject, "day": day, "reason": "no_windows", "detail": ""}
+            return {
+                "ok": False,
+                "subject": subject,
+                "day": day,
+                "reason": "no_windows",
+                "detail": "",
+            }
 
         agg = {}
+        subject_rows = []
         for band_name, band_limits in bands.items():
             for lock_name, epochs_lock, starts in [
                 ("stim", stim_epochs, stim_starts),
@@ -134,10 +141,35 @@ def process_sensorwide_session(task):
                             agg[key] = [0.0, 0]
                         agg[key][0] += val
                         agg[key][1] += 1
+                        subject_rows.append(
+                            {
+                                "subject": subject,
+                                "day": int(day),
+                                "lock_type": lock_name,
+                                "band": band_name,
+                                "lock_time": lock_time,
+                                "ch_i": channel_subset[i],
+                                "ch_j": channel_subset[j],
+                                "conn_val": val,
+                            }
+                        )
 
-        return {"ok": True, "subject": subject, "day": day, "agg": agg, "info": info}
+        return {
+            "ok": True,
+            "subject": subject,
+            "day": day,
+            "agg": agg,
+            "subject_rows": subject_rows,
+            "info": info,
+        }
     except Exception as exc:
-        return {"ok": False, "subject": subject, "day": day, "reason": "compute_error", "detail": str(exc)}
+        return {
+            "ok": False,
+            "subject": subject,
+            "day": day,
+            "reason": "compute_error",
+            "detail": str(exc),
+        }
 
 
 def agg_to_edges_df(agg, channel_subset):
@@ -158,9 +190,20 @@ def agg_to_edges_df(agg, channel_subset):
         )
     if not agg_rows:
         return pd.DataFrame(
-            columns=["lock_type", "day", "band", "lock_time", "ch_i", "ch_j", "conn_val", "n_session_contrib"]
+            columns=[
+                "lock_type",
+                "day",
+                "band",
+                "lock_time",
+                "ch_i",
+                "ch_j",
+                "conn_val",
+                "n_session_contrib",
+            ]
         )
-    return pd.DataFrame(agg_rows).sort_values(["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"])
+    return pd.DataFrame(agg_rows).sort_values(
+        ["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"]
+    )
 
 
 def channel_xy(info, ch_names):
@@ -204,6 +247,7 @@ def run_sensorwide_connectivity_analysis(
     t0 = time.time()
     progress_json = output_dir / "connect_sensorwide_progress.json"
     carpet_path = output_dir / "sensorwide_carpet_timeseries.csv"
+    subject_path = output_dir / "sensorwide_carpet_subject_timeseries.csv"
     channels_path = output_dir / "sensorwide_channel_layout.csv"
     checkpoint_path = output_dir / "sensorwide_carpet_timeseries_checkpoint.csv"
 
@@ -233,12 +277,14 @@ def run_sensorwide_connectivity_analysis(
             }
         )
     print(
-        f"[connect_sensorwide] Running on {len(tasks)} sessions (n_workers={n_workers})...",
+        "[connect_sensorwide] Running on "
+        f"{len(tasks)} sessions (n_workers={n_workers})...",
         flush=True,
     )
     results = parallel_collect(process_sensorwide_session, tasks, n_workers)
 
     agg = {}
+    subject_rows = []
     info_subset = None
     used = 0
     skipped = []
@@ -254,6 +300,8 @@ def run_sensorwide_connectivity_analysis(
                 agg[key] = [0.0, 0]
             agg[key][0] += val_sum
             agg[key][1] += count
+        for row in r["subject_rows"]:
+            subject_rows.append(row)
 
     progress_json.write_text(
         json.dumps(
@@ -278,6 +326,7 @@ def run_sensorwide_connectivity_analysis(
     d_edges = agg_to_edges_df(agg, channel_subset)
     d_edges.to_csv(carpet_path, index=False)
     d_edges.to_csv(checkpoint_path, index=False)
+    pd.DataFrame(subject_rows).to_csv(subject_path, index=False)
 
     xy = channel_xy(info_subset, channel_subset)
     pd.DataFrame({"channel": channel_subset, "x": xy[:, 0], "y": xy[:, 1]}).to_csv(
@@ -288,7 +337,11 @@ def run_sensorwide_connectivity_analysis(
         f"[connect_sensorwide] Done. Used sessions: {used}, skipped: {len(skipped)}.",
         flush=True,
     )
-    return {"carpet_path": carpet_path, "channels_path": channels_path}
+    return {
+        "carpet_path": carpet_path,
+        "subject_path": subject_path,
+        "channels_path": channels_path,
+    }
 
 
 if __name__ == "__main__":
