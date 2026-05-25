@@ -124,6 +124,140 @@ def peak_time_in_window(times, signal, window):
     return best_idx, float(times[best_idx]), best_val
 
 
+def compute_peak_edge_rows(day_data, pair_idx):
+    days = sorted(day_data.keys())
+    n_pairs = len(pair_idx)
+    carpets = make_carpets(day_data, pair_idx)
+    active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
+    active_pair_idx = active_pair_idx_by_pct[0.20]
+
+    peak_rows = []
+    for day in days:
+        times, d = carpets[day]
+        active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+        for peak_i, window in enumerate(ACTIVE_PAIR_PEAK_WINDOWS, start=1):
+            t_idx, peak_time, peak_val = peak_time_in_window(times, active_mean, window)
+            peak_rows.append(
+                {
+                    "day": day,
+                    "peak": peak_i,
+                    "time_idx": t_idx,
+                    "peak_time": peak_time,
+                    "peak_val": peak_val,
+                    "pair_vals": d[active_pair_idx, t_idx],
+                }
+            )
+    return peak_rows, active_pair_idx
+
+
+def get_peak_row(peak_rows, day, peak):
+    for row in peak_rows:
+        if int(row["day"]) == int(day) and int(row["peak"]) == int(peak):
+            return row
+    raise ValueError(f"Missing peak edge row for day={day}, peak={peak}")
+
+
+def finite_abs_max(vals):
+    finite_vals = []
+    for val in vals:
+        if np.isfinite(val):
+            finite_vals.append(abs(float(val)))
+    if len(finite_vals) == 0:
+        raise ValueError("No finite values available for scaling")
+    return max(finite_vals)
+
+
+def draw_sensor_nodes(ax, ch_xy):
+    ax.scatter(
+        ch_xy[:, 0],
+        ch_xy[:, 1],
+        s=16,
+        color="0.25",
+        zorder=3,
+        linewidths=0,
+    )
+    for ch_i, ch in enumerate(CHANNEL_SUBSET):
+        ax.text(
+            float(ch_xy[ch_i, 0]),
+            float(ch_xy[ch_i, 1]),
+            ch,
+            fontsize=5,
+            ha="center",
+            va="center",
+            color="white",
+            zorder=4,
+        )
+
+
+def format_edge_axis(ax):
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlim(-1.05, 1.05)
+    ax.set_ylim(-1.05, 1.05)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def draw_signed_edges(ax, values, active_pair_idx, pair_idx, ch_xy, vlim):
+    draw_sensor_nodes(ax, ch_xy)
+    denom = max(float(vlim), 1e-12)
+    for edge_i, pair_i in enumerate(active_pair_idx):
+        val = values[edge_i]
+        if not np.isfinite(val):
+            continue
+        pi, pj = pair_idx[pair_i]
+        scaled = min(abs(float(val)) / denom, 1.0)
+        color = "tab:red"
+        if val < 0:
+            color = "tab:blue"
+        ax.plot(
+            [ch_xy[pi, 0], ch_xy[pj, 0]],
+            [ch_xy[pi, 1], ch_xy[pj, 1]],
+            color=color,
+            linewidth=0.35 + 3.4 * scaled,
+            alpha=0.15 + 0.75 * scaled,
+            zorder=2,
+        )
+    format_edge_axis(ax)
+
+
+def draw_positive_edges(ax, values, active_pair_idx, pair_idx, ch_xy, vmin, vmax):
+    draw_sensor_nodes(ax, ch_xy)
+    denom = max(float(vmax) - float(vmin), 1e-12)
+    for edge_i, pair_i in enumerate(active_pair_idx):
+        val = values[edge_i]
+        if not np.isfinite(val):
+            continue
+        pi, pj = pair_idx[pair_i]
+        scaled = min(max((float(val) - float(vmin)) / denom, 0.0), 1.0)
+        ax.plot(
+            [ch_xy[pi, 0], ch_xy[pj, 0]],
+            [ch_xy[pi, 1], ch_xy[pj, 1]],
+            color="tab:blue",
+            linewidth=0.4 + 3.2 * scaled,
+            alpha=0.28 + 0.62 * scaled,
+            zorder=2,
+        )
+    format_edge_axis(ax)
+
+
+def threshold_values_by_abs(values, keep_prop):
+    finite_abs = []
+    for val in values:
+        if np.isfinite(val):
+            finite_abs.append(abs(float(val)))
+    if len(finite_abs) == 0:
+        raise ValueError("No finite contrast values to threshold")
+    top_k = max(1, int(np.ceil(keep_prop * len(finite_abs))))
+    threshold = float(np.sort(np.asarray(finite_abs, dtype=float))[-top_k])
+    out = np.full(len(values), np.nan, dtype=float)
+    for idx, val in enumerate(values):
+        if np.isfinite(val) and abs(float(val)) >= threshold:
+            out[idx] = float(val)
+    return out
+
+
 def plot_sensor_pair_carpet(
     day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
 ):
@@ -403,38 +537,17 @@ def plot_active_pair_peak_edges(
         raise ValueError("Peak-edge figure is only defined for stim broadband")
 
     days = sorted(day_data.keys())
-    n_pairs = len(pair_idx)
-    carpets = make_carpets(day_data, pair_idx)
-    active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
-    active_pair_idx = active_pair_idx_by_pct[0.20]
-
-    peak_rows = []
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
     edge_vals_all = []
-    for day in days:
-        times, d = carpets[day]
-        active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
-        for peak_i, window in enumerate(ACTIVE_PAIR_PEAK_WINDOWS, start=1):
-            t_idx, peak_time, peak_val = peak_time_in_window(times, active_mean, window)
-            pair_vals = d[active_pair_idx, t_idx]
-            for val in pair_vals:
-                if np.isfinite(val):
-                    edge_vals_all.append(float(val))
-            peak_rows.append(
-                {
-                    "day": day,
-                    "peak": peak_i,
-                    "time_idx": t_idx,
-                    "peak_time": peak_time,
-                    "peak_val": peak_val,
-                    "pair_vals": pair_vals,
-                }
-            )
+    for row in peak_rows:
+        for val in row["pair_vals"]:
+            if np.isfinite(val):
+                edge_vals_all.append(float(val))
 
     if len(edge_vals_all) == 0:
         raise ValueError("No finite edge values for top-20 peak-edge figure")
     edge_min = float(np.nanmin(edge_vals_all))
     edge_max = float(np.nanmax(edge_vals_all))
-    edge_range = max(edge_max - edge_min, 1e-12)
 
     fig, axes = plt.subplots(
         len(ACTIVE_PAIR_PEAK_WINDOWS),
@@ -447,52 +560,13 @@ def plot_active_pair_peak_edges(
         peak_i = int(row["peak"])
         ax = axes[peak_i - 1, days.index(day)]
         pair_vals = row["pair_vals"]
-        ax.scatter(
-            ch_xy[:, 0],
-            ch_xy[:, 1],
-            s=16,
-            color="0.25",
-            zorder=3,
-            linewidths=0,
+        draw_positive_edges(
+            ax, pair_vals, active_pair_idx, pair_idx, ch_xy, edge_min, edge_max
         )
-        for edge_i, pair_i in enumerate(active_pair_idx):
-            pi, pj = pair_idx[pair_i]
-            val = pair_vals[edge_i]
-            if not np.isfinite(val):
-                continue
-            scaled = (float(val) - edge_min) / edge_range
-            lw = 0.4 + 3.2 * scaled
-            alpha = 0.28 + 0.62 * scaled
-            ax.plot(
-                [ch_xy[pi, 0], ch_xy[pj, 0]],
-                [ch_xy[pi, 1], ch_xy[pj, 1]],
-                color="tab:blue",
-                linewidth=lw,
-                alpha=alpha,
-                zorder=2,
-            )
-        for ch_i, ch in enumerate(CHANNEL_SUBSET):
-            ax.text(
-                float(ch_xy[ch_i, 0]),
-                float(ch_xy[ch_i, 1]),
-                ch,
-                fontsize=5,
-                ha="center",
-                va="center",
-                color="white",
-                zorder=4,
-            )
         peak_ms = int(round(float(row["peak_time"]) * 1000.0))
         ax.set_title(f"D{day}: {peak_ms} ms", fontsize=9)
         if day == days[0]:
             ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
-        ax.set_aspect("equal")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_xlim(-1.05, 1.05)
-        ax.set_ylim(-1.05, 1.05)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
 
     fig.suptitle("Top 20% Active Sensor-Pair Edges at Estimated Peaks")
     fig.subplots_adjust(
@@ -506,6 +580,217 @@ def plot_active_pair_peak_edges(
     fig_path = (
         figures_dir
         / "sensorwide_active_pair_peak_edges_top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_day_difference_edges(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Day-difference edge figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    contrasts = []
+    all_vals = []
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        ref = get_peak_row(peak_rows, days[0], peak_i)["pair_vals"]
+        for day in days[1:]:
+            vals = get_peak_row(peak_rows, day, peak_i)["pair_vals"] - ref
+            contrasts.append({"day": day, "peak": peak_i, "values": vals})
+            for val in vals:
+                if np.isfinite(val):
+                    all_vals.append(float(val))
+    vlim = finite_abs_max(all_vals)
+    fig, axes = plt.subplots(
+        len(ACTIVE_PAIR_PEAK_WINDOWS),
+        len(days) - 1,
+        figsize=(2.6 * (len(days) - 1), 6.8),
+        squeeze=False,
+    )
+    for row in contrasts:
+        day = int(row["day"])
+        peak_i = int(row["peak"])
+        ax = axes[peak_i - 1, days[1:].index(day)]
+        draw_signed_edges(ax, row["values"], active_pair_idx, pair_idx, ch_xy, vlim)
+        ax.set_title(f"D{day} - D{days[0]}", fontsize=9)
+        if day == days[1]:
+            ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
+    fig.suptitle("Top 20% Edge Change from Day 1")
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.04,
+        left=0.06,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.28,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_day_difference_edges_top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_peak_difference_edges(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Peak-difference edge figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    contrast_defs = [(2, 1), (3, 1), (3, 2)]
+    contrasts = []
+    all_vals = []
+    for day in days:
+        for peak_hi, peak_lo in contrast_defs:
+            vals_hi = get_peak_row(peak_rows, day, peak_hi)["pair_vals"]
+            vals_lo = get_peak_row(peak_rows, day, peak_lo)["pair_vals"]
+            vals = vals_hi - vals_lo
+            contrasts.append(
+                {
+                    "day": day,
+                    "peak_hi": peak_hi,
+                    "peak_lo": peak_lo,
+                    "values": vals,
+                }
+            )
+            for val in vals:
+                if np.isfinite(val):
+                    all_vals.append(float(val))
+    vlim = finite_abs_max(all_vals)
+    fig, axes = plt.subplots(
+        len(days),
+        len(contrast_defs),
+        figsize=(2.8 * len(contrast_defs), 10.0),
+        squeeze=False,
+    )
+    for row in contrasts:
+        day = int(row["day"])
+        col = contrast_defs.index((int(row["peak_hi"]), int(row["peak_lo"])))
+        ax = axes[days.index(day), col]
+        draw_signed_edges(ax, row["values"], active_pair_idx, pair_idx, ch_xy, vlim)
+        ax.set_title(f"P{row['peak_hi']} - P{row['peak_lo']}", fontsize=9)
+        if col == 0:
+            ax.set_ylabel(f"D{day}", fontsize=9)
+    fig.suptitle("Top 20% Edge Change across Peaks")
+    fig.subplots_adjust(
+        top=0.93,
+        bottom=0.04,
+        left=0.08,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.34,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_peak_difference_edges_top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_edge_peak_heatmap(
+    day_data, pair_idx, lock_name, band_name, figures_dir
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError("Peak-edge heatmap is only defined for stim broadband")
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    mat = np.full(
+        (len(active_pair_idx), len(days) * len(ACTIVE_PAIR_PEAK_WINDOWS)),
+        np.nan,
+        dtype=float,
+    )
+    col_labels = []
+    col = 0
+    for day in days:
+        for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+            row = get_peak_row(peak_rows, day, peak_i)
+            mat[:, col] = row["pair_vals"]
+            peak_ms = int(round(float(row["peak_time"]) * 1000.0))
+            col_labels.append(f"D{day} P{peak_i}\n{peak_ms}ms")
+            col += 1
+    row_labels = []
+    for pair_i in active_pair_idx:
+        ch_i, ch_j = pair_idx[pair_i]
+        row_labels.append(f"{CHANNEL_SUBSET[ch_i]}-{CHANNEL_SUBSET[ch_j]}")
+    fig, ax = plt.subplots(figsize=(9.4, 7.0))
+    im = ax.imshow(mat, aspect="auto", origin="lower", cmap="viridis")
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=7)
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=6)
+    ax.set_xlabel("Day and peak")
+    ax.set_ylabel("Active sensor-pair")
+    ax.set_title("Top 20% Edge Strength by Day and Peak")
+    cax = fig.add_axes([0.92, 0.18, 0.018, 0.64])
+    fig.colorbar(im, cax=cax, label="Connectivity")
+    fig.subplots_adjust(left=0.16, right=0.89, bottom=0.20, top=0.90)
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_edge_peak_heatmap_top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_thresholded_difference_edges(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError("Thresholded edge figure is only defined for stim broadband")
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    contrasts = []
+    all_vals = []
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        ref = get_peak_row(peak_rows, days[0], peak_i)["pair_vals"]
+        for day in days[1:]:
+            vals = get_peak_row(peak_rows, day, peak_i)["pair_vals"] - ref
+            vals = threshold_values_by_abs(vals, 0.20)
+            contrasts.append({"day": day, "peak": peak_i, "values": vals})
+            for val in vals:
+                if np.isfinite(val):
+                    all_vals.append(float(val))
+    vlim = finite_abs_max(all_vals)
+    fig, axes = plt.subplots(
+        len(ACTIVE_PAIR_PEAK_WINDOWS),
+        len(days) - 1,
+        figsize=(2.6 * (len(days) - 1), 6.8),
+        squeeze=False,
+    )
+    for row in contrasts:
+        day = int(row["day"])
+        peak_i = int(row["peak"])
+        ax = axes[peak_i - 1, days[1:].index(day)]
+        draw_signed_edges(ax, row["values"], active_pair_idx, pair_idx, ch_xy, vlim)
+        ax.set_title(f"D{day} - D{days[0]}", fontsize=9)
+        if day == days[1]:
+            ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
+    fig.suptitle("Largest Top 20% Edge Changes from Day 1")
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.04,
+        left=0.06,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.28,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_thresholded_day_difference_edges_top20_"
+        "stim_broadband.png"
     )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -618,6 +903,22 @@ def save_fig_sensorwide_connectivity(
                 )
                 figure_paths.append(fig_path)
                 fig_path = plot_active_pair_peak_edges(
+                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_day_difference_edges(
+                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_peak_difference_edges(
+                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_edge_peak_heatmap(
+                    day_data, pair_idx, lock_name, band_name, figures_dir
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_thresholded_difference_edges(
                     day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
                 )
                 figure_paths.append(fig_path)
