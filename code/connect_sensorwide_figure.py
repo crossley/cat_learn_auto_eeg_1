@@ -20,6 +20,11 @@ from connect_sensorwide_analysis import BANDS, CHANNEL_SUBSET, FIGURES_DIR, OUTP
 
 SNAP_TIMES_SEC = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55]
 ACTIVE_PAIR_PCTS = [0.05, 0.10, 0.20, 0.30, 0.80]
+ACTIVE_PAIR_PEAK_WINDOWS = [
+    (0.050, 0.125),
+    (0.145, 0.225),
+    (0.250, 0.340),
+]
 
 
 def get_day_colors(days):
@@ -84,16 +89,9 @@ def get_active_ylim(carpets, active_pair_idx_by_pct):
     return (y_min - y_pad, y_max + y_pad)
 
 
-def plot_sensor_pair_carpet(
-    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
-):
-    days = sorted(day_data.keys())
-    n_days = len(days)
-    n_pairs = len(pair_idx)
-    add_active_row = (lock_name == "stim") and (band_name == "broadband")
-
+def make_carpets(day_data, pair_idx):
     carpets = {}
-    for day in days:
+    for day in sorted(day_data.keys()):
         mats = day_data[day]["mats"]
         times = day_data[day]["times"]
         vals = []
@@ -103,12 +101,37 @@ def plot_sensor_pair_carpet(
                 pair_vals.append(mat[i, j])
             vals.append(pair_vals)
         carpets[day] = (times, np.asarray(vals).T)
-
     if not carpets:
-        raise ValueError(
-            "No sensorwide carpet data available for "
-            f"lock={lock_name}, band={band_name}"
-        )
+        raise ValueError("No sensorwide carpet data available")
+    return carpets
+
+
+def peak_time_in_window(times, signal, window):
+    lo, hi = window
+    candidate_idx = []
+    for idx, time_val in enumerate(times):
+        if time_val >= lo and time_val <= hi and np.isfinite(signal[idx]):
+            candidate_idx.append(idx)
+    if len(candidate_idx) == 0:
+        raise ValueError(f"No finite active-pair values in peak window {window}")
+    best_idx = candidate_idx[0]
+    best_val = float(signal[best_idx])
+    for idx in candidate_idx:
+        val = float(signal[idx])
+        if val > best_val:
+            best_idx = idx
+            best_val = val
+    return best_idx, float(times[best_idx]), best_val
+
+
+def plot_sensor_pair_carpet(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
+    days = sorted(day_data.keys())
+    n_days = len(days)
+    n_pairs = len(pair_idx)
+    add_active_row = (lock_name == "stim") and (band_name == "broadband")
+    carpets = make_carpets(day_data, pair_idx)
 
     vmax_candidates = []
     for _, d in carpets.values():
@@ -211,17 +234,7 @@ def plot_sensor_pair_carpet(
 def plot_active_pair_overlay(day_data, pair_idx, lock_name, band_name, figures_dir):
     days = sorted(day_data.keys())
     n_pairs = len(pair_idx)
-    carpets = {}
-    for day in days:
-        mats = day_data[day]["mats"]
-        times = day_data[day]["times"]
-        vals = []
-        for mat in mats:
-            pair_vals = []
-            for i, j in pair_idx:
-                pair_vals.append(mat[i, j])
-            vals.append(pair_vals)
-        carpets[day] = (times, np.asarray(vals).T)
+    carpets = make_carpets(day_data, pair_idx)
 
     active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
     active_ylim = get_active_ylim(carpets, active_pair_idx_by_pct)
@@ -279,17 +292,7 @@ def plot_active_pair_overlay_single_pct(
 ):
     days = sorted(day_data.keys())
     n_pairs = len(pair_idx)
-    carpets = {}
-    for day in days:
-        mats = day_data[day]["mats"]
-        times = day_data[day]["times"]
-        vals = []
-        for mat in mats:
-            pair_vals = []
-            for i, j in pair_idx:
-                pair_vals.append(mat[i, j])
-            vals.append(pair_vals)
-        carpets[day] = (times, np.asarray(vals).T)
+    carpets = make_carpets(day_data, pair_idx)
 
     active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
     active_pair_idx = active_pair_idx_by_pct[pct]
@@ -387,6 +390,122 @@ def plot_active_pair_overlay_single_pct(
     fig_path = figures_dir / (
         f"sensorwide_active_pair_overlay_top{pct_label}_"
         f"{lock_name}_{band_name}.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_peak_edges(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError("Peak-edge figure is only defined for stim broadband")
+
+    days = sorted(day_data.keys())
+    n_pairs = len(pair_idx)
+    carpets = make_carpets(day_data, pair_idx)
+    active_pair_idx_by_pct = get_active_pair_idx_by_pct(carpets, n_pairs)
+    active_pair_idx = active_pair_idx_by_pct[0.20]
+
+    peak_rows = []
+    edge_vals_all = []
+    for day in days:
+        times, d = carpets[day]
+        active_mean = np.nanmean(d[active_pair_idx, :], axis=0)
+        for peak_i, window in enumerate(ACTIVE_PAIR_PEAK_WINDOWS, start=1):
+            t_idx, peak_time, peak_val = peak_time_in_window(times, active_mean, window)
+            pair_vals = d[active_pair_idx, t_idx]
+            for val in pair_vals:
+                if np.isfinite(val):
+                    edge_vals_all.append(float(val))
+            peak_rows.append(
+                {
+                    "day": day,
+                    "peak": peak_i,
+                    "time_idx": t_idx,
+                    "peak_time": peak_time,
+                    "peak_val": peak_val,
+                    "pair_vals": pair_vals,
+                }
+            )
+
+    if len(edge_vals_all) == 0:
+        raise ValueError("No finite edge values for top-20 peak-edge figure")
+    edge_min = float(np.nanmin(edge_vals_all))
+    edge_max = float(np.nanmax(edge_vals_all))
+    edge_range = max(edge_max - edge_min, 1e-12)
+
+    fig, axes = plt.subplots(
+        len(ACTIVE_PAIR_PEAK_WINDOWS),
+        len(days),
+        figsize=(2.6 * len(days), 6.8),
+        squeeze=False,
+    )
+    for row in peak_rows:
+        day = int(row["day"])
+        peak_i = int(row["peak"])
+        ax = axes[peak_i - 1, days.index(day)]
+        pair_vals = row["pair_vals"]
+        ax.scatter(
+            ch_xy[:, 0],
+            ch_xy[:, 1],
+            s=16,
+            color="0.25",
+            zorder=3,
+            linewidths=0,
+        )
+        for edge_i, pair_i in enumerate(active_pair_idx):
+            pi, pj = pair_idx[pair_i]
+            val = pair_vals[edge_i]
+            if not np.isfinite(val):
+                continue
+            scaled = (float(val) - edge_min) / edge_range
+            lw = 0.4 + 3.2 * scaled
+            alpha = 0.28 + 0.62 * scaled
+            ax.plot(
+                [ch_xy[pi, 0], ch_xy[pj, 0]],
+                [ch_xy[pi, 1], ch_xy[pj, 1]],
+                color="tab:blue",
+                linewidth=lw,
+                alpha=alpha,
+                zorder=2,
+            )
+        for ch_i, ch in enumerate(CHANNEL_SUBSET):
+            ax.text(
+                float(ch_xy[ch_i, 0]),
+                float(ch_xy[ch_i, 1]),
+                ch,
+                fontsize=5,
+                ha="center",
+                va="center",
+                color="white",
+                zorder=4,
+            )
+        peak_ms = int(round(float(row["peak_time"]) * 1000.0))
+        ax.set_title(f"D{day}: {peak_ms} ms", fontsize=9)
+        if day == days[0]:
+            ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlim(-1.05, 1.05)
+        ax.set_ylim(-1.05, 1.05)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    fig.suptitle("Top 20% Active Sensor-Pair Edges at Estimated Peaks")
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.04,
+        left=0.05,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.28,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_peak_edges_top20_stim_broadband.png"
     )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -496,6 +615,10 @@ def save_fig_sensorwide_connectivity(
                     figures_dir,
                     0.20,
                     d_subject,
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_peak_edges(
+                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
                 )
                 figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
