@@ -850,6 +850,190 @@ def plot_active_pair_network_distance_matrices(
     return fig_path
 
 
+def active_pair_table(active_pair_idx, pair_idx, ch_names):
+    rows = []
+    for edge_pos, pair_i in enumerate(active_pair_idx):
+        ch_i_idx, ch_j_idx = pair_idx[pair_i]
+        rows.append(
+            {
+                "edge_pos": int(edge_pos),
+                "ch_i": ch_names[ch_i_idx],
+                "ch_j": ch_names[ch_j_idx],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def subject_peak_edge_vectors(
+    subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
+):
+    active_pairs = active_pair_table(active_pair_idx, pair_idx, ch_names)
+    d_subject = subject_df[
+        (subject_df["lock_type"] == "stim") & (subject_df["band"] == "broadband")
+    ].copy()
+    if d_subject.empty:
+        raise ValueError("Missing subject-level stim broadband connectivity rows")
+    d_active = d_subject.merge(active_pairs, on=["ch_i", "ch_j"], how="inner")
+    if d_active.empty:
+        raise ValueError("No subject-level rows match top-20% active sensor-pairs")
+
+    subjects = sorted(d_active["subject"].dropna().unique().astype(int).tolist())
+    vector_map = {}
+    n_edges = len(active_pair_idx)
+    for subject in subjects:
+        d_subject_one = d_active[d_active["subject"] == subject]
+        for row in peak_rows:
+            day = int(row["day"])
+            peak = int(row["peak"])
+            peak_time = float(row["peak_time"])
+            d_day = d_subject_one[d_subject_one["day"] == day]
+            d_time = d_day[np.isclose(d_day["lock_time"], peak_time)]
+            if d_time.empty:
+                continue
+            vec = np.full(n_edges, np.nan, dtype=float)
+            for _, edge_row in d_time.iterrows():
+                edge_pos = int(edge_row["edge_pos"])
+                vec[edge_pos] = float(edge_row["conn_val"])
+            vector_map[(subject, day, peak)] = vec
+    if len(vector_map) == 0:
+        raise ValueError("No subject-level peak edge vectors could be built")
+    return subjects, vector_map
+
+
+def subject_distance_summary(subjects, vector_map, days, metric, peak):
+    mean_mat = np.full((len(days), len(days)), np.nan, dtype=float)
+    sem_mat = np.full((len(days), len(days)), np.nan, dtype=float)
+    n_mat = np.full((len(days), len(days)), 0, dtype=int)
+    for row_i, day_i in enumerate(days):
+        for col_j, day_j in enumerate(days):
+            if day_i == day_j:
+                continue
+            vals = []
+            for subject in subjects:
+                key_i = (subject, day_i, peak)
+                key_j = (subject, day_j, peak)
+                if key_i not in vector_map or key_j not in vector_map:
+                    continue
+                dist = edge_vector_distance(
+                    vector_map[key_i], vector_map[key_j], metric
+                )
+                if np.isfinite(dist):
+                    vals.append(float(dist))
+            if len(vals) > 0:
+                arr = np.asarray(vals, dtype=float)
+                mean_mat[row_i, col_j] = float(np.mean(arr))
+                n_mat[row_i, col_j] = int(len(arr))
+                if len(arr) > 1:
+                    sem_mat[row_i, col_j] = float(
+                        np.std(arr, ddof=1) / np.sqrt(len(arr))
+                    )
+    return mean_mat, sem_mat, n_mat
+
+
+def plot_active_pair_subject_network_distance_matrices(
+    day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Subject network-distance figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    subjects, vector_map = subject_peak_edge_vectors(
+        subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
+    )
+    metrics = ["euclidean", "correlation"]
+    mean_mats = {}
+    n_mats = {}
+    row_vmax = {}
+    for metric in metrics:
+        finite_vals = []
+        for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+            mean_mat, _sem_mat, n_mat = subject_distance_summary(
+                subjects, vector_map, days, metric, peak_i
+            )
+            mean_mats[(metric, peak_i)] = mean_mat
+            n_mats[(metric, peak_i)] = n_mat
+            for val in mean_mat[np.isfinite(mean_mat)]:
+                finite_vals.append(float(val))
+        if len(finite_vals) == 0:
+            raise ValueError(f"No finite subject distances for metric={metric}")
+        row_vmax[metric] = float(np.nanmax(np.asarray(finite_vals, dtype=float)))
+
+    labels = []
+    for day in days:
+        labels.append(f"D{day}")
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="0.82")
+    fig, axes = plt.subplots(2, 3, figsize=(10.2, 6.5), squeeze=False)
+    for row_i, metric in enumerate(metrics):
+        for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+            ax = axes[row_i, peak_i - 1]
+            mat = mean_mats[(metric, peak_i)]
+            n_mat = n_mats[(metric, peak_i)]
+            im = ax.imshow(
+                np.ma.masked_invalid(mat),
+                origin="upper",
+                cmap=cmap,
+                vmin=0.0,
+                vmax=row_vmax[metric],
+            )
+            ax.set_title(f"Peak {peak_i}")
+            ax.set_xticks(range(len(days)))
+            ax.set_yticks(range(len(days)))
+            ax.set_xticklabels(labels)
+            ax.set_yticklabels(labels)
+            ax.set_xlabel("Day")
+            ax.set_ylabel("Day")
+            for r in range(len(days)):
+                for c in range(len(days)):
+                    if np.isfinite(mat[r, c]):
+                        val = float(mat[r, c])
+                        color = "white"
+                        if val > 0.65 * row_vmax[metric]:
+                            color = "black"
+                        ax.text(
+                            c,
+                            r,
+                            f"{val:.2f}\nn={int(n_mat[r, c])}",
+                            ha="center",
+                            va="center",
+                            fontsize=7,
+                            color=color,
+                        )
+            if peak_i == len(ACTIVE_PAIR_PEAK_WINDOWS):
+                cax = fig.add_axes([0.92, 0.56 - row_i * 0.41, 0.015, 0.28])
+                fig.colorbar(im, cax=cax, label=metric)
+            if peak_i == 1:
+                ax.text(
+                    -0.38,
+                    0.50,
+                    metric,
+                    transform=ax.transAxes,
+                    rotation=90,
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                )
+    fig.suptitle("Subject-Averaged Top 20% Network Distance")
+    fig.subplots_adjust(
+        top=0.88,
+        bottom=0.08,
+        left=0.10,
+        right=0.89,
+        wspace=0.36,
+        hspace=0.42,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_subject_network_distance_matrices_top20_"
+        "stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_sensorwide_connectivity(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -992,6 +1176,16 @@ def save_fig_sensorwide_connectivity(
                     figure_paths.append(fig_path)
                 fig_path = plot_active_pair_network_distance_matrices(
                     day_data, pair_idx, lock_name, band_name, figures_dir
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_subject_network_distance_matrices(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    d_subject,
+                    channel_subset,
                 )
                 figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
