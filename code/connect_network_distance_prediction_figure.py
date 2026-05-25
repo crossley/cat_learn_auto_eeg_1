@@ -11,7 +11,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -27,20 +26,6 @@ def same_stage(day_i, day_j):
     if day_i in STAGE_B_DAYS and day_j in STAGE_B_DAYS:
         return True
     return False
-
-
-def make_one_stage_binary_distance():
-    mat = np.zeros((len(DAYS), len(DAYS)), dtype=float)
-    return mat
-
-
-def make_two_stage_binary_distance():
-    mat = np.zeros((len(DAYS), len(DAYS)), dtype=float)
-    for i, day_i in enumerate(DAYS):
-        for j, day_j in enumerate(DAYS):
-            if not same_stage(day_i, day_j):
-                mat[i, j] = 1.0
-    return mat
 
 
 def make_one_stage_gradient_distance():
@@ -102,33 +87,26 @@ def save_fig_connect_network_distance_prediction(figures_dir=FIGURES_DIR):
     fig_path = figures_dir / "connect_network_distance_prediction_models.png"
 
     matrices = [
-        make_one_stage_binary_distance(),
-        make_two_stage_binary_distance(),
         make_one_stage_gradient_distance(),
         make_two_stage_gradient_distance(),
     ]
     titles = [
-        "One-stage: binary distance",
-        "Two-stage: binary distance",
         "One-stage: graded distance",
         "Two-stage: graded distance",
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.6), squeeze=False)
-    binary_cmap = LinearSegmentedColormap.from_list(
-        "prediction_gray",
-        ["0.22", "0.86"],
-    )
+    fig, axes = plt.subplots(1, 2, figsize=(8.2, 4.2), squeeze=False)
     graded_cmap = plt.get_cmap("viridis")
     ims = []
     for idx, mat in enumerate(matrices):
-        row = idx // 2
-        col = idx % 2
-        ax = axes[row, col]
-        cmap = binary_cmap
-        if row == 1:
-            cmap = graded_cmap
-        im = ax.imshow(mat, origin="upper", cmap=cmap, vmin=0.0, vmax=1.0)
+        ax = axes[0, idx]
+        im = ax.imshow(
+            mat,
+            origin="upper",
+            cmap=graded_cmap,
+            vmin=0.0,
+            vmax=1.0,
+        )
         ims.append(im)
         format_axis(ax, titles[idx])
         add_cell_labels(ax, mat)
@@ -136,13 +114,12 @@ def save_fig_connect_network_distance_prediction(figures_dir=FIGURES_DIR):
     fig.suptitle("A Priori Connectivity Network-Distance Predictions")
     fig.subplots_adjust(
         top=0.90,
-        bottom=0.08,
+        bottom=0.14,
         left=0.08,
         right=0.86,
         wspace=0.32,
-        hspace=0.38,
     )
-    cax = fig.add_axes([0.89, 0.18, 0.018, 0.64])
+    cax = fig.add_axes([0.89, 0.20, 0.018, 0.58])
     fig.colorbar(ims[-1], cax=cax, label="Predicted distance")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
