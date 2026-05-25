@@ -167,7 +167,7 @@ def finite_abs_max(vals):
     return max(finite_vals)
 
 
-def draw_sensor_nodes(ax, ch_xy):
+def draw_sensor_nodes(ax, ch_xy, ch_names):
     ax.scatter(
         ch_xy[:, 0],
         ch_xy[:, 1],
@@ -176,7 +176,7 @@ def draw_sensor_nodes(ax, ch_xy):
         zorder=3,
         linewidths=0,
     )
-    for ch_i, ch in enumerate(CHANNEL_SUBSET):
+    for ch_i, ch in enumerate(ch_names):
         ax.text(
             float(ch_xy[ch_i, 0]),
             float(ch_xy[ch_i, 1]),
@@ -199,8 +199,8 @@ def format_edge_axis(ax):
         spine.set_visible(False)
 
 
-def draw_signed_edges(ax, values, active_pair_idx, pair_idx, ch_xy, vlim):
-    draw_sensor_nodes(ax, ch_xy)
+def draw_signed_edges(ax, values, active_pair_idx, pair_idx, ch_xy, ch_names, vlim):
+    draw_sensor_nodes(ax, ch_xy, ch_names)
     denom = max(float(vlim), 1e-12)
     for edge_i, pair_i in enumerate(active_pair_idx):
         val = values[edge_i]
@@ -222,8 +222,10 @@ def draw_signed_edges(ax, values, active_pair_idx, pair_idx, ch_xy, vlim):
     format_edge_axis(ax)
 
 
-def draw_positive_edges(ax, values, active_pair_idx, pair_idx, ch_xy, vmin, vmax):
-    draw_sensor_nodes(ax, ch_xy)
+def draw_positive_edges(
+    ax, values, active_pair_idx, pair_idx, ch_xy, ch_names, vmin, vmax
+):
+    draw_sensor_nodes(ax, ch_xy, ch_names)
     denom = max(float(vmax) - float(vmin), 1e-12)
     for edge_i, pair_i in enumerate(active_pair_idx):
         val = values[edge_i]
@@ -422,7 +424,7 @@ def plot_active_pair_overlay(day_data, pair_idx, lock_name, band_name, figures_d
 
 
 def plot_active_pair_overlay_single_pct(
-    day_data, pair_idx, lock_name, band_name, figures_dir, pct, subject_df
+    day_data, pair_idx, lock_name, band_name, figures_dir, pct, subject_df, ch_names
 ):
     days = sorted(day_data.keys())
     n_pairs = len(pair_idx)
@@ -439,8 +441,8 @@ def plot_active_pair_overlay_single_pct(
         i, j = pair_idx[pair_i]
         active_pair_rows.append(
             {
-                "ch_i": CHANNEL_SUBSET[i],
-                "ch_j": CHANNEL_SUBSET[j],
+                "ch_i": ch_names[i],
+                "ch_j": ch_names[j],
             }
         )
     active_pair_df = pd.DataFrame(active_pair_rows)
@@ -531,7 +533,7 @@ def plot_active_pair_overlay_single_pct(
 
 
 def plot_active_pair_peak_edges(
-    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
 ):
     if lock_name != "stim" or band_name != "broadband":
         raise ValueError("Peak-edge figure is only defined for stim broadband")
@@ -561,7 +563,14 @@ def plot_active_pair_peak_edges(
         ax = axes[peak_i - 1, days.index(day)]
         pair_vals = row["pair_vals"]
         draw_positive_edges(
-            ax, pair_vals, active_pair_idx, pair_idx, ch_xy, edge_min, edge_max
+            ax,
+            pair_vals,
+            active_pair_idx,
+            pair_idx,
+            ch_xy,
+            ch_names,
+            edge_min,
+            edge_max,
         )
         peak_ms = int(round(float(row["peak_time"]) * 1000.0))
         ax.set_title(f"D{day}: {peak_ms} ms", fontsize=9)
@@ -587,7 +596,7 @@ def plot_active_pair_peak_edges(
 
 
 def plot_active_pair_peak_difference_edges(
-    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
 ):
     if lock_name != "stim" or band_name != "broadband":
         raise ValueError(
@@ -625,7 +634,9 @@ def plot_active_pair_peak_difference_edges(
         day = int(row["day"])
         col = contrast_defs.index((int(row["peak_hi"]), int(row["peak_lo"])))
         ax = axes[days.index(day), col]
-        draw_signed_edges(ax, row["values"], active_pair_idx, pair_idx, ch_xy, vlim)
+        draw_signed_edges(
+            ax, row["values"], active_pair_idx, pair_idx, ch_xy, ch_names, vlim
+        )
         ax.set_title(f"P{row['peak_hi']} - P{row['peak_lo']}", fontsize=9)
         if col == 0:
             ax.set_ylabel(f"D{day}", fontsize=9)
@@ -648,7 +659,7 @@ def plot_active_pair_peak_difference_edges(
 
 
 def plot_active_pair_day_pair_difference_edges(
-    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
 ):
     if lock_name != "stim" or band_name != "broadband":
         raise ValueError(
@@ -686,7 +697,7 @@ def plot_active_pair_day_pair_difference_edges(
                 vals_j = get_peak_row(peak_rows, day_j, peak_i)["pair_vals"]
                 vals = vals_i - vals_j
                 draw_signed_edges(
-                    ax, vals, active_pair_idx, pair_idx, ch_xy, vlim
+                    ax, vals, active_pair_idx, pair_idx, ch_xy, ch_names, vlim
                 )
                 if row_i == 0:
                     ax.set_title(f"- D{day_j}", fontsize=8)
@@ -709,6 +720,134 @@ def plot_active_pair_day_pair_difference_edges(
         plt.close(fig)
         figure_paths.append(fig_path)
     return figure_paths
+
+
+def edge_vector_distance(vec_a, vec_b, metric):
+    vals_a = []
+    vals_b = []
+    for idx, val_a in enumerate(vec_a):
+        val_b = vec_b[idx]
+        if np.isfinite(val_a) and np.isfinite(val_b):
+            vals_a.append(float(val_a))
+            vals_b.append(float(val_b))
+    if len(vals_a) < 2:
+        return np.nan
+    arr_a = np.asarray(vals_a, dtype=float)
+    arr_b = np.asarray(vals_b, dtype=float)
+    if metric == "euclidean":
+        return float(np.sqrt(np.sum((arr_a - arr_b) ** 2)))
+    if metric == "correlation":
+        std_a = float(np.std(arr_a))
+        std_b = float(np.std(arr_b))
+        if std_a <= np.finfo(float).eps or std_b <= np.finfo(float).eps:
+            return np.nan
+        corr = float(np.corrcoef(arr_a, arr_b)[0, 1])
+        return float(1.0 - corr)
+    raise ValueError(f"Unknown edge-vector distance metric: {metric}")
+
+
+def plot_active_pair_network_distance_matrices(
+    day_data, pair_idx, lock_name, band_name, figures_dir
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Network-distance figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, _active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    metrics = ["euclidean", "correlation"]
+    matrices = {}
+    row_vmax = {}
+    for metric in metrics:
+        finite_vals = []
+        for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+            mat = np.full((len(days), len(days)), np.nan, dtype=float)
+            for row_i, day_i in enumerate(days):
+                vals_i = get_peak_row(peak_rows, day_i, peak_i)["pair_vals"]
+                for col_j, day_j in enumerate(days):
+                    if day_i == day_j:
+                        continue
+                    vals_j = get_peak_row(peak_rows, day_j, peak_i)["pair_vals"]
+                    dist = edge_vector_distance(vals_i, vals_j, metric)
+                    mat[row_i, col_j] = dist
+                    if np.isfinite(dist):
+                        finite_vals.append(float(dist))
+            matrices[(metric, peak_i)] = mat
+        if len(finite_vals) == 0:
+            raise ValueError(f"No finite network distances for metric={metric}")
+        row_vmax[metric] = float(np.nanmax(np.asarray(finite_vals, dtype=float)))
+
+    labels = []
+    for day in days:
+        labels.append(f"D{day}")
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="0.82")
+    fig, axes = plt.subplots(2, 3, figsize=(10.2, 6.5), squeeze=False)
+    for row_i, metric in enumerate(metrics):
+        for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+            ax = axes[row_i, peak_i - 1]
+            mat = matrices[(metric, peak_i)]
+            im = ax.imshow(
+                np.ma.masked_invalid(mat),
+                origin="upper",
+                cmap=cmap,
+                vmin=0.0,
+                vmax=row_vmax[metric],
+            )
+            ax.set_title(f"Peak {peak_i}")
+            ax.set_xticks(range(len(days)))
+            ax.set_yticks(range(len(days)))
+            ax.set_xticklabels(labels)
+            ax.set_yticklabels(labels)
+            ax.set_xlabel("Day")
+            ax.set_ylabel("Day")
+            for r in range(len(days)):
+                for c in range(len(days)):
+                    if np.isfinite(mat[r, c]):
+                        val = float(mat[r, c])
+                        color = "white"
+                        if val > 0.65 * row_vmax[metric]:
+                            color = "black"
+                        ax.text(
+                            c,
+                            r,
+                            f"{val:.2f}",
+                            ha="center",
+                            va="center",
+                            fontsize=8,
+                            color=color,
+                        )
+            if peak_i == len(ACTIVE_PAIR_PEAK_WINDOWS):
+                cax = fig.add_axes([0.92, 0.56 - row_i * 0.41, 0.015, 0.28])
+                fig.colorbar(im, cax=cax, label=metric)
+            if peak_i == 1:
+                ax.text(
+                    -0.38,
+                    0.50,
+                    metric,
+                    transform=ax.transAxes,
+                    rotation=90,
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                )
+    fig.suptitle("Top 20% Network Distance across Days")
+    fig.subplots_adjust(
+        top=0.88,
+        bottom=0.08,
+        left=0.10,
+        right=0.89,
+        wspace=0.36,
+        hspace=0.42,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_network_distance_matrices_top20_"
+        "stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
 
 
 def save_fig_sensorwide_connectivity(
@@ -741,6 +880,9 @@ def save_fig_sensorwide_connectivity(
         raise ValueError(f"Empty subject-level sensorwide output: {subject_path}")
 
     d_channels = pd.read_csv(channels_path)
+    channel_subset = []
+    for ch in d_channels["channel"]:
+        channel_subset.append(ch)
     ch_pos_map = {}
     for _, row in d_channels.iterrows():
         ch_pos_map[row["channel"]] = np.array([float(row["x"]), float(row["y"])])
@@ -814,21 +956,44 @@ def save_fig_sensorwide_connectivity(
                     figures_dir,
                     0.20,
                     d_subject,
+                    channel_subset,
                 )
                 figure_paths.append(fig_path)
                 fig_path = plot_active_pair_peak_edges(
-                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    ch_xy,
+                    channel_subset,
                 )
                 figure_paths.append(fig_path)
                 fig_path = plot_active_pair_peak_difference_edges(
-                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    ch_xy,
+                    channel_subset,
                 )
                 figure_paths.append(fig_path)
                 new_paths = plot_active_pair_day_pair_difference_edges(
-                    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    ch_xy,
+                    channel_subset,
                 )
                 for fig_path in new_paths:
                     figure_paths.append(fig_path)
+                fig_path = plot_active_pair_network_distance_matrices(
+                    day_data, pair_idx, lock_name, band_name, figures_dir
+                )
+                figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
 
 
