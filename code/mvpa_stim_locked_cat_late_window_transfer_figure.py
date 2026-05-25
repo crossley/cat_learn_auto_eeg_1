@@ -231,7 +231,13 @@ def save_symmetrised_figure(group_df, figures_dir):
     for c, classifier in enumerate(CLASSIFIERS):
         ax = axes[0, c]
         mat = mats[classifier]
-        im = ax.imshow(np.ma.masked_invalid(mat), origin="upper", cmap=cmap, vmin=vmin, vmax=vmax)
+        im = ax.imshow(
+            np.ma.masked_invalid(mat),
+            origin="upper",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
         ax.set_title(classifier)
         ax.set_xticks(range(len(DAYS)))
         ax.set_yticks(range(len(DAYS)))
@@ -258,6 +264,66 @@ def save_symmetrised_figure(group_df, figures_dir):
     fig.suptitle("Symmetrised Late-Window Transfer")
     fig.subplots_adjust(top=0.80, bottom=0.13, left=0.06, right=0.90, wspace=0.35)
     cax = fig.add_axes([0.92, 0.24, 0.018, 0.46])
+    fig.colorbar(im, cax=cax, label="AUC")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def save_symmetrised_logreg_figure(group_df, figures_dir):
+    fig_path = (
+        figures_dir
+        / "mvpa_stim_locked_cat_late_window_transfer_symmetrised_logreg.png"
+    )
+    classifier = "logreg"
+    mat = symmetrised_transfer_matrix(group_df, classifier)
+    vals = mat[np.isfinite(mat)]
+    if len(vals) == 0:
+        raise ValueError("No finite logreg symmetrised transfer values to plot")
+    vmin = min(0.5, float(np.nanmin(vals)))
+    vmax = float(np.nanmax(vals))
+    if vmax <= vmin:
+        vmax = vmin + 0.01
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="0.82")
+    labels = []
+    for day in DAYS:
+        labels.append(f"D{day}")
+
+    fig, ax = plt.subplots(figsize=(4.6, 4.1))
+    im = ax.imshow(
+        np.ma.masked_invalid(mat),
+        origin="upper",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
+    ax.set_title("logreg")
+    ax.set_xticks(range(len(DAYS)))
+    ax.set_yticks(range(len(DAYS)))
+    ax.set_xticklabels(labels)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Day")
+    ax.set_ylabel("Day")
+    for i in range(len(DAYS)):
+        for j in range(len(DAYS)):
+            if np.isfinite(mat[i, j]):
+                val = float(mat[i, j])
+                color = "white"
+                if val > (vmin + 0.65 * (vmax - vmin)):
+                    color = "black"
+                ax.text(
+                    j,
+                    i,
+                    f"{val:.3f}",
+                    ha="center",
+                    va="center",
+                    color=color,
+                    fontsize=9,
+                )
+    fig.suptitle("Symmetrised Late-Window Transfer: logreg")
+    fig.subplots_adjust(top=0.84, bottom=0.12, left=0.16, right=0.82)
+    cax = fig.add_axes([0.85, 0.22, 0.030, 0.52])
     fig.colorbar(im, cax=cax, label="AUC")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -363,22 +429,27 @@ def save_fig_mvpa_stim_locked_cat_late_window_transfer(
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
-    progress_json = output_dir / "mvpa_stim_locked_cat_late_window_transfer_progress.json"
+    progress_json = (
+        output_dir / "mvpa_stim_locked_cat_late_window_transfer_progress.json"
+    )
     group_csv = output_dir / "mvpa_stim_locked_cat_late_window_transfer_group_pairs.csv"
 
     require_completed_progress(progress_json)
     group_df = require_csv(group_csv)
     transfer_path = save_transfer_figure(group_df, figures_dir)
     symmetrised_path = save_symmetrised_figure(group_df, figures_dir)
+    symmetrised_logreg_path = save_symmetrised_logreg_figure(group_df, figures_dir)
     cluster_path = save_cluster_embedding_figure(group_df, figures_dir)
     offdiag_path = save_offdiag_figure(group_df, figures_dir)
     print(f"[MVPA late-window transfer] Wrote {transfer_path}")
     print(f"[MVPA late-window transfer] Wrote {symmetrised_path}")
+    print(f"[MVPA late-window transfer] Wrote {symmetrised_logreg_path}")
     print(f"[MVPA late-window transfer] Wrote {cluster_path}")
     print(f"[MVPA late-window transfer] Wrote {offdiag_path}")
     return {
         "transfer": transfer_path,
         "symmetrised": symmetrised_path,
+        "symmetrised_logreg": symmetrised_logreg_path,
         "clusters": cluster_path,
         "offdiag": offdiag_path,
     }
