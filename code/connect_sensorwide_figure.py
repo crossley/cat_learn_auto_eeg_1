@@ -260,6 +260,22 @@ def threshold_values_by_abs(values, keep_prop):
     return out
 
 
+def threshold_values_by_value(values, keep_prop):
+    finite_vals = []
+    for val in values:
+        if np.isfinite(val):
+            finite_vals.append(float(val))
+    if len(finite_vals) == 0:
+        raise ValueError("No finite contribution values to threshold")
+    top_k = max(1, int(np.ceil(keep_prop * len(finite_vals))))
+    threshold = float(np.sort(np.asarray(finite_vals, dtype=float))[-top_k])
+    out = np.full(len(values), np.nan, dtype=float)
+    for idx, val in enumerate(values):
+        if np.isfinite(val) and float(val) >= threshold:
+            out[idx] = float(val)
+    return out
+
+
 def plot_sensor_pair_carpet(
     day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
 ):
@@ -754,6 +770,38 @@ def edge_vector_distance(vec_a, vec_b, metric):
     raise ValueError(f"Unknown edge-vector distance metric: {metric}")
 
 
+def edge_vector_contribution(vec_a, vec_b, metric):
+    valid_idx = []
+    vals_a = []
+    vals_b = []
+    for idx, val_a in enumerate(vec_a):
+        val_b = vec_b[idx]
+        if np.isfinite(val_a) and np.isfinite(val_b):
+            valid_idx.append(idx)
+            vals_a.append(float(val_a))
+            vals_b.append(float(val_b))
+    out = np.full(len(vec_a), np.nan, dtype=float)
+    if len(vals_a) < 2:
+        return out
+    arr_a = np.asarray(vals_a, dtype=float)
+    arr_b = np.asarray(vals_b, dtype=float)
+    if metric == "euclidean":
+        contrib = np.abs(arr_a - arr_b)
+    elif metric == "z_euclidean":
+        std_a = float(np.std(arr_a))
+        std_b = float(np.std(arr_b))
+        if std_a <= np.finfo(float).eps or std_b <= np.finfo(float).eps:
+            return out
+        z_a = (arr_a - float(np.mean(arr_a))) / std_a
+        z_b = (arr_b - float(np.mean(arr_b))) / std_b
+        contrib = np.abs(z_a - z_b)
+    else:
+        raise ValueError(f"Contribution is not defined for metric: {metric}")
+    for contrib_i, edge_i in enumerate(valid_idx):
+        out[edge_i] = float(contrib[contrib_i])
+    return out
+
+
 def distance_metric_label(metric):
     if metric == "euclidean":
         return "raw euclidean"
@@ -956,6 +1004,109 @@ def subject_distance_summary(subjects, vector_map, days, metric, peak):
     return mean_mat, sem_mat, n_mat
 
 
+def subject_contribution_summary(subjects, vector_map, days, metric, peak):
+    n_edges = None
+    for vec in vector_map.values():
+        n_edges = len(vec)
+        break
+    if n_edges is None:
+        raise ValueError("No subject edge vectors available for contributions")
+
+    contrib_map = {}
+    n_map = {}
+    for day_i in days:
+        for day_j in days:
+            if day_i == day_j:
+                continue
+            vals = []
+            for subject in subjects:
+                key_i = (subject, day_i, peak)
+                key_j = (subject, day_j, peak)
+                if key_i not in vector_map or key_j not in vector_map:
+                    continue
+                contrib = edge_vector_contribution(
+                    vector_map[key_i], vector_map[key_j], metric
+                )
+                if np.isfinite(contrib).any():
+                    vals.append(contrib)
+            if len(vals) == 0:
+                continue
+            arr = np.asarray(vals, dtype=float)
+            contrib_map[(day_i, day_j)] = np.nanmean(arr, axis=0)
+            n_map[(day_i, day_j)] = int(len(vals))
+    if len(contrib_map) == 0:
+        raise ValueError(f"No finite subject contributions for metric={metric}")
+    return contrib_map, n_map, n_edges
+
+
+def draw_contribution_edges(
+    ax, values, active_pair_idx, pair_idx, ch_xy, ch_names, vmax
+):
+    draw_sensor_nodes(ax, ch_xy, ch_names)
+    denom = max(float(vmax), 1e-12)
+    for edge_i, pair_i in enumerate(active_pair_idx):
+        val = values[edge_i]
+        if not np.isfinite(val):
+            continue
+        pi, pj = pair_idx[pair_i]
+        scaled = min(float(val) / denom, 1.0)
+        ax.plot(
+            [ch_xy[pi, 0], ch_xy[pj, 0]],
+            [ch_xy[pi, 1], ch_xy[pj, 1]],
+            color="tab:purple",
+            linewidth=0.35 + 3.4 * scaled,
+            alpha=0.12 + 0.78 * scaled,
+            zorder=2,
+        )
+    format_edge_axis(ax)
+
+
+def edge_contributions_to_node_scores(values, active_pair_idx, pair_idx, n_channels):
+    scores = np.zeros(n_channels, dtype=float)
+    for edge_i, pair_i in enumerate(active_pair_idx):
+        val = values[edge_i]
+        if not np.isfinite(val):
+            continue
+        pi, pj = pair_idx[pair_i]
+        scores[pi] += float(val)
+        scores[pj] += float(val)
+    return scores
+
+
+def draw_node_contribution_scores(ax, scores, ch_xy, ch_names, vmax):
+    denom = max(float(vmax), 1e-12)
+    scaled = np.asarray(scores, dtype=float) / denom
+    scaled = np.clip(scaled, 0.0, 1.0)
+    sizes = 20.0 + 210.0 * scaled
+    ax.scatter(
+        ch_xy[:, 0],
+        ch_xy[:, 1],
+        s=sizes,
+        c=scores,
+        cmap="magma",
+        vmin=0.0,
+        vmax=vmax,
+        edgecolors="0.15",
+        linewidths=0.35,
+        zorder=3,
+    )
+    for ch_i, ch in enumerate(ch_names):
+        color = "black"
+        if scaled[ch_i] > 0.55:
+            color = "white"
+        ax.text(
+            float(ch_xy[ch_i, 0]),
+            float(ch_xy[ch_i, 1]),
+            ch,
+            fontsize=5,
+            ha="center",
+            va="center",
+            color=color,
+            zorder=4,
+        )
+    format_edge_axis(ax)
+
+
 def plot_active_pair_subject_network_distance_matrices(
     day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names
 ):
@@ -1058,6 +1209,194 @@ def plot_active_pair_subject_network_distance_matrices(
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
+
+
+def plot_active_pair_subject_contribution_edges(
+    day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Subject contribution-edge figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    subjects, vector_map = subject_peak_edge_vectors(
+        subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
+    )
+    metric = "z_euclidean"
+    figure_paths = []
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        contrib_map, n_map, _n_edges = subject_contribution_summary(
+            subjects, vector_map, days, metric, peak_i
+        )
+        all_vals = []
+        plot_map = {}
+        for day_i in days:
+            for day_j in days:
+                if day_i == day_j:
+                    continue
+                key = (day_i, day_j)
+                if key not in contrib_map:
+                    continue
+                vals = threshold_values_by_value(contrib_map[key], 0.10)
+                plot_map[key] = vals
+                for val in vals:
+                    if np.isfinite(val):
+                        all_vals.append(float(val))
+        vmax = finite_abs_max(all_vals)
+        fig, axes = plt.subplots(
+            len(days),
+            len(days),
+            figsize=(2.15 * len(days), 2.15 * len(days)),
+            squeeze=False,
+        )
+        for row_i, day_i in enumerate(days):
+            for col_j, day_j in enumerate(days):
+                ax = axes[row_i, col_j]
+                if day_i == day_j:
+                    ax.axis("off")
+                    continue
+                key = (day_i, day_j)
+                if key not in plot_map:
+                    raise ValueError(
+                        f"Missing contribution values for D{day_i}-D{day_j}, "
+                        f"peak={peak_i}"
+                    )
+                draw_contribution_edges(
+                    ax,
+                    plot_map[key],
+                    active_pair_idx,
+                    pair_idx,
+                    ch_xy,
+                    ch_names,
+                    vmax,
+                )
+                if row_i == 0:
+                    ax.set_title(f"vs D{day_j}", fontsize=8)
+                if col_j == 0:
+                    ax.set_ylabel(f"D{day_i}", fontsize=8)
+                ax.text(
+                    0.03,
+                    0.05,
+                    f"n={n_map[key]}",
+                    transform=ax.transAxes,
+                    fontsize=6,
+                    color="0.15",
+                )
+        fig.suptitle(
+            f"Subject Top Edge Contributions to z-Euclidean Distance: Peak {peak_i}"
+        )
+        fig.subplots_adjust(
+            top=0.92,
+            bottom=0.03,
+            left=0.05,
+            right=0.99,
+            wspace=0.08,
+            hspace=0.08,
+        )
+        fig_path = figures_dir / (
+            "sensorwide_active_pair_subject_distance_contribution_edges_"
+            f"peak{peak_i}_top20_stim_broadband.png"
+        )
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        figure_paths.append(fig_path)
+    return figure_paths
+
+
+def plot_active_pair_subject_contribution_nodes(
+    day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names, ch_xy
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Subject contribution-node figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    subjects, vector_map = subject_peak_edge_vectors(
+        subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
+    )
+    metric = "z_euclidean"
+    figure_paths = []
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        contrib_map, n_map, _n_edges = subject_contribution_summary(
+            subjects, vector_map, days, metric, peak_i
+        )
+        node_map = {}
+        all_node_vals = []
+        for day_i in days:
+            for day_j in days:
+                if day_i == day_j:
+                    continue
+                key = (day_i, day_j)
+                if key not in contrib_map:
+                    continue
+                scores = edge_contributions_to_node_scores(
+                    contrib_map[key], active_pair_idx, pair_idx, len(ch_names)
+                )
+                node_map[key] = scores
+                for val in scores:
+                    if np.isfinite(val):
+                        all_node_vals.append(float(val))
+        if len(all_node_vals) == 0:
+            raise ValueError(f"No finite node contribution scores for peak {peak_i}")
+        vmax = float(np.nanmax(np.asarray(all_node_vals, dtype=float)))
+        fig, axes = plt.subplots(
+            len(days),
+            len(days),
+            figsize=(2.15 * len(days), 2.15 * len(days)),
+            squeeze=False,
+        )
+        im = None
+        for row_i, day_i in enumerate(days):
+            for col_j, day_j in enumerate(days):
+                ax = axes[row_i, col_j]
+                if day_i == day_j:
+                    ax.axis("off")
+                    continue
+                key = (day_i, day_j)
+                if key not in node_map:
+                    raise ValueError(
+                        f"Missing node contribution scores for D{day_i}-D{day_j}, "
+                        f"peak={peak_i}"
+                    )
+                draw_node_contribution_scores(
+                    ax, node_map[key], ch_xy, ch_names, vmax
+                )
+                im = ax.collections[0]
+                if row_i == 0:
+                    ax.set_title(f"vs D{day_j}", fontsize=8)
+                if col_j == 0:
+                    ax.set_ylabel(f"D{day_i}", fontsize=8)
+                ax.text(
+                    0.03,
+                    0.05,
+                    f"n={n_map[key]}",
+                    transform=ax.transAxes,
+                    fontsize=6,
+                    color="0.15",
+                )
+        fig.suptitle(
+            f"Subject Node Contributions to z-Euclidean Distance: Peak {peak_i}"
+        )
+        fig.subplots_adjust(
+            top=0.92,
+            bottom=0.03,
+            left=0.05,
+            right=0.91,
+            wspace=0.08,
+            hspace=0.08,
+        )
+        cax = fig.add_axes([0.93, 0.20, 0.012, 0.55])
+        fig.colorbar(im, cax=cax, label="Node contribution")
+        fig_path = figures_dir / (
+            "sensorwide_active_pair_subject_distance_contribution_nodes_"
+            f"peak{peak_i}_top20_stim_broadband.png"
+        )
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        figure_paths.append(fig_path)
+    return figure_paths
 
 
 def save_fig_sensorwide_connectivity(
@@ -1214,6 +1553,30 @@ def save_fig_sensorwide_connectivity(
                     channel_subset,
                 )
                 figure_paths.append(fig_path)
+                new_paths = plot_active_pair_subject_contribution_edges(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    d_subject,
+                    channel_subset,
+                    ch_xy,
+                )
+                for fig_path in new_paths:
+                    figure_paths.append(fig_path)
+                new_paths = plot_active_pair_subject_contribution_nodes(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    d_subject,
+                    channel_subset,
+                    ch_xy,
+                )
+                for fig_path in new_paths:
+                    figure_paths.append(fig_path)
     return {"figure_paths": figure_paths}
 
 
