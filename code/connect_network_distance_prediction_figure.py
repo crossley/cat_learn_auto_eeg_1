@@ -16,8 +16,8 @@ import numpy as np
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 FIGURES_DIR = PROJECT_DIR / "figures"
 DAYS = [1, 2, 3, 4, 5]
-STAGE_A_DAYS = [1, 2, 3]
-STAGE_B_DAYS = [4, 5]
+STAGE_A_DAYS = [1, 2]
+STAGE_B_DAYS = [3, 4, 5]
 
 
 def same_stage(day_i, day_j):
