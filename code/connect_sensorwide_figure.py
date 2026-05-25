@@ -736,6 +736,14 @@ def edge_vector_distance(vec_a, vec_b, metric):
     arr_b = np.asarray(vals_b, dtype=float)
     if metric == "euclidean":
         return float(np.sqrt(np.sum((arr_a - arr_b) ** 2)))
+    if metric == "z_euclidean":
+        std_a = float(np.std(arr_a))
+        std_b = float(np.std(arr_b))
+        if std_a <= np.finfo(float).eps or std_b <= np.finfo(float).eps:
+            return np.nan
+        z_a = (arr_a - float(np.mean(arr_a))) / std_a
+        z_b = (arr_b - float(np.mean(arr_b))) / std_b
+        return float(np.sqrt(np.sum((z_a - z_b) ** 2)))
     if metric == "correlation":
         std_a = float(np.std(arr_a))
         std_b = float(np.std(arr_b))
@@ -746,16 +754,26 @@ def edge_vector_distance(vec_a, vec_b, metric):
     raise ValueError(f"Unknown edge-vector distance metric: {metric}")
 
 
+def distance_metric_label(metric):
+    if metric == "euclidean":
+        return "raw euclidean"
+    if metric == "z_euclidean":
+        return "z euclidean"
+    if metric == "correlation":
+        return "correlation"
+    raise ValueError(f"Unknown edge-vector distance metric: {metric}")
+
+
 def plot_active_pair_network_distance_matrices(
     day_data, pair_idx, lock_name, band_name, figures_dir
 ):
     if lock_name != "stim" or band_name != "broadband":
         raise ValueError(
             "Network-distance figure is only defined for stim broadband"
-        )
+    )
     days = sorted(day_data.keys())
     peak_rows, _active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
-    metrics = ["euclidean", "correlation"]
+    metrics = ["euclidean", "z_euclidean", "correlation"]
     matrices = {}
     row_vmax = {}
     for metric in metrics:
@@ -783,7 +801,7 @@ def plot_active_pair_network_distance_matrices(
         labels.append(f"D{day}")
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color="0.82")
-    fig, axes = plt.subplots(2, 3, figsize=(10.2, 6.5), squeeze=False)
+    fig, axes = plt.subplots(3, 3, figsize=(10.2, 9.0), squeeze=False)
     for row_i, metric in enumerate(metrics):
         for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
             ax = axes[row_i, peak_i - 1]
@@ -819,13 +837,13 @@ def plot_active_pair_network_distance_matrices(
                             color=color,
                         )
             if peak_i == len(ACTIVE_PAIR_PEAK_WINDOWS):
-                cax = fig.add_axes([0.92, 0.56 - row_i * 0.41, 0.015, 0.28])
-                fig.colorbar(im, cax=cax, label=metric)
+                cax = fig.add_axes([0.92, 0.68 - row_i * 0.27, 0.015, 0.20])
+                fig.colorbar(im, cax=cax, label=distance_metric_label(metric))
             if peak_i == 1:
                 ax.text(
                     -0.38,
                     0.50,
-                    metric,
+                    distance_metric_label(metric),
                     transform=ax.transAxes,
                     rotation=90,
                     ha="center",
@@ -834,12 +852,12 @@ def plot_active_pair_network_distance_matrices(
                 )
     fig.suptitle("Top 20% Network Distance across Days")
     fig.subplots_adjust(
-        top=0.88,
-        bottom=0.08,
+        top=0.91,
+        bottom=0.06,
         left=0.10,
         right=0.89,
         wspace=0.36,
-        hspace=0.42,
+        hspace=0.44,
     )
     fig_path = (
         figures_dir
@@ -950,7 +968,7 @@ def plot_active_pair_subject_network_distance_matrices(
     subjects, vector_map = subject_peak_edge_vectors(
         subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
     )
-    metrics = ["euclidean", "correlation"]
+    metrics = ["euclidean", "z_euclidean", "correlation"]
     mean_mats = {}
     n_mats = {}
     row_vmax = {}
@@ -973,7 +991,7 @@ def plot_active_pair_subject_network_distance_matrices(
         labels.append(f"D{day}")
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color="0.82")
-    fig, axes = plt.subplots(2, 3, figsize=(10.2, 6.5), squeeze=False)
+    fig, axes = plt.subplots(3, 3, figsize=(10.2, 9.0), squeeze=False)
     for row_i, metric in enumerate(metrics):
         for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
             ax = axes[row_i, peak_i - 1]
@@ -1010,13 +1028,13 @@ def plot_active_pair_subject_network_distance_matrices(
                             color=color,
                         )
             if peak_i == len(ACTIVE_PAIR_PEAK_WINDOWS):
-                cax = fig.add_axes([0.92, 0.56 - row_i * 0.41, 0.015, 0.28])
-                fig.colorbar(im, cax=cax, label=metric)
+                cax = fig.add_axes([0.92, 0.68 - row_i * 0.27, 0.015, 0.20])
+                fig.colorbar(im, cax=cax, label=distance_metric_label(metric))
             if peak_i == 1:
                 ax.text(
                     -0.38,
                     0.50,
-                    metric,
+                    distance_metric_label(metric),
                     transform=ax.transAxes,
                     rotation=90,
                     ha="center",
@@ -1025,12 +1043,12 @@ def plot_active_pair_subject_network_distance_matrices(
                 )
     fig.suptitle("Subject-Averaged Top 20% Network Distance")
     fig.subplots_adjust(
-        top=0.88,
-        bottom=0.08,
+        top=0.91,
+        bottom=0.06,
         left=0.10,
         right=0.89,
         wspace=0.36,
-        hspace=0.42,
+        hspace=0.44,
     )
     fig_path = (
         figures_dir
