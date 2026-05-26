@@ -296,6 +296,27 @@ def zscore_finite_values(values):
     return out
 
 
+def minmax_finite_values(values):
+    out = np.full(len(values), np.nan, dtype=float)
+    finite_vals = []
+    finite_idx = []
+    for idx, val in enumerate(values):
+        if np.isfinite(val):
+            finite_idx.append(idx)
+            finite_vals.append(float(val))
+    if len(finite_vals) < 2:
+        return out
+    arr = np.asarray(finite_vals, dtype=float)
+    val_min = float(np.min(arr))
+    val_max = float(np.max(arr))
+    denom = val_max - val_min
+    if denom <= np.finfo(float).eps:
+        return out
+    for arr_i, idx in enumerate(finite_idx):
+        out[idx] = (float(arr[arr_i]) - val_min) / denom
+    return out
+
+
 def plot_sensor_pair_carpet(
     day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy
 ):
@@ -569,14 +590,32 @@ def plot_active_pair_overlay_single_pct(
 
 
 def midline_channel_names(ch_names):
-    preferred = ["Fpz", "AFz", "Fz", "FCz", "Cz", "CPz", "Pz", "POz", "Oz", "Iz"]
-    out = []
-    for ch in preferred:
+    posterior_to_frontal = [
+        "Iz",
+        "Oz",
+        "POz",
+        "Pz",
+        "CPz",
+        "Cz",
+        "FCz",
+        "Fz",
+        "AFz",
+        "Fpz",
+    ]
+    available = []
+    for ch in posterior_to_frontal:
         if ch in ch_names:
-            out.append(ch)
-    if len(out) < 2:
-        raise ValueError(f"Need at least two midline channels, found: {out}")
-    return out
+            available.append(ch)
+    if len(available) < 4:
+        raise ValueError(
+            f"Need at least four midline channels, found: {available}"
+        )
+    chosen = []
+    idx_vals = np.linspace(0, len(available) - 1, 4)
+    for idx_val in idx_vals:
+        idx = int(round(float(idx_val)))
+        chosen.append(available[idx])
+    return chosen
 
 
 def plot_midline_pair_overlay(
@@ -792,21 +831,16 @@ def plot_active_pair_peak_edges_normalized(
     days = sorted(day_data.keys())
     peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
     plot_rows = []
-    all_vals = []
     for row in peak_rows:
-        z_vals = zscore_finite_values(row["pair_vals"])
+        norm_vals = minmax_finite_values(row["pair_vals"])
         plot_rows.append(
             {
                 "day": int(row["day"]),
                 "peak": int(row["peak"]),
                 "peak_time": float(row["peak_time"]),
-                "pair_vals": z_vals,
+                "pair_vals": norm_vals,
             }
         )
-        for val in z_vals:
-            if np.isfinite(val):
-                all_vals.append(float(val))
-    vlim = finite_abs_max(all_vals)
 
     fig, axes = plt.subplots(
         len(ACTIVE_PAIR_PEAK_WINDOWS),
@@ -818,21 +852,22 @@ def plot_active_pair_peak_edges_normalized(
         day = int(row["day"])
         peak_i = int(row["peak"])
         ax = axes[peak_i - 1, days.index(day)]
-        draw_signed_edges(
+        draw_positive_edges(
             ax,
             row["pair_vals"],
             active_pair_idx,
             pair_idx,
             ch_xy,
             ch_names,
-            vlim,
+            0.0,
+            1.0,
         )
         peak_ms = int(round(float(row["peak_time"]) * 1000.0))
         ax.set_title(f"D{day}: {peak_ms} ms", fontsize=9)
         if day == days[0]:
             ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
 
-    fig.suptitle("Top 20% Z-Normalized Active Sensor-Pair Edges")
+    fig.suptitle("Top 20% Min-Max Normalized Active Sensor-Pair Edges")
     fig.subplots_adjust(
         top=0.90,
         bottom=0.04,
@@ -989,18 +1024,18 @@ def plot_active_pair_day_pair_difference_edges_normalized(
     peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
     figure_paths = []
     for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
-        z_rows = {}
+        norm_rows = {}
         for day in days:
             vals = get_peak_row(peak_rows, day, peak_i)["pair_vals"]
-            z_rows[day] = zscore_finite_values(vals)
+            norm_rows[day] = minmax_finite_values(vals)
 
         all_vals = []
         for day_i in days:
-            vals_i = z_rows[day_i]
+            vals_i = norm_rows[day_i]
             for day_j in days:
                 if day_i == day_j:
                     continue
-                vals_j = z_rows[day_j]
+                vals_j = norm_rows[day_j]
                 vals = vals_i - vals_j
                 for val in vals:
                     if np.isfinite(val):
@@ -1013,13 +1048,13 @@ def plot_active_pair_day_pair_difference_edges_normalized(
             squeeze=False,
         )
         for row_i, day_i in enumerate(days):
-            vals_i = z_rows[day_i]
+            vals_i = norm_rows[day_i]
             for col_j, day_j in enumerate(days):
                 ax = axes[row_i, col_j]
                 if day_i == day_j:
                     ax.axis("off")
                     continue
-                vals_j = z_rows[day_j]
+                vals_j = norm_rows[day_j]
                 vals = vals_i - vals_j
                 draw_signed_edges(
                     ax, vals, active_pair_idx, pair_idx, ch_xy, ch_names, vlim
@@ -1029,7 +1064,7 @@ def plot_active_pair_day_pair_difference_edges_normalized(
                 if col_j == 0:
                     ax.set_ylabel(f"D{day_i}", fontsize=8)
         fig.suptitle(
-            f"Top 20% Z-Normalized Day-Pair Edge Differences: Peak {peak_i}"
+            f"Top 20% Min-Max Normalized Day-Pair Edge Differences: Peak {peak_i}"
         )
         fig.subplots_adjust(
             top=0.92,
