@@ -457,6 +457,126 @@ def plot_change_score_scatter(beh, erp, conn, mvpa, figures_dir):
     return fig_path
 
 
+def plot_within_day_scatter_grid(
+    feature_df,
+    beh,
+    feature_specs,
+    fig_title,
+    fig_path,
+):
+    days = sorted(beh["day"].dropna().unique().astype(int).tolist())
+    colors = day_colors(days)
+    outcomes = [
+        ("accuracy", "Accuracy"),
+        ("rt_correct", "Correct RT"),
+    ]
+    fig, axes = plt.subplots(
+        len(outcomes),
+        len(feature_specs),
+        figsize=(3.2 * len(feature_specs), 6.2),
+        squeeze=False,
+    )
+    for col_i, spec in enumerate(feature_specs):
+        feature_label, feature_col, feature_data = spec
+        d_feature = feature_data[["subject", "day", feature_col]].copy()
+        d_feature = d_feature.rename(columns={feature_col: "feature_value"})
+        d_plot = d_feature.merge(
+            beh[["subject", "day", "accuracy", "rt_correct"]],
+            on=["subject", "day"],
+            how="inner",
+        )
+        if d_plot.empty:
+            raise ValueError(f"No rows for within-day figure: {feature_label}")
+        for row_i, outcome in enumerate(outcomes):
+            outcome_col, outcome_label = outcome
+            ax = axes[row_i, col_i]
+            for day in days:
+                d_day = d_plot[d_plot["day"] == day]
+                if d_day.empty:
+                    continue
+                x = d_day["feature_value"].to_numpy(dtype=float)
+                y = d_day[outcome_col].to_numpy(dtype=float)
+                ok = np.isfinite(x) & np.isfinite(y)
+                ax.scatter(
+                    x[ok],
+                    y[ok],
+                    color=colors[day],
+                    s=20,
+                    alpha=0.72,
+                    label=f"D{day}",
+                )
+                if int(np.sum(ok)) >= 2:
+                    coef = np.polyfit(x[ok], y[ok], deg=1)
+                    x_min = float(np.min(x[ok]))
+                    x_max = float(np.max(x[ok]))
+                    x_line = np.linspace(x_min, x_max, 50)
+                    y_line = coef[0] * x_line + coef[1]
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        color=colors[day],
+                        linewidth=1.0,
+                        alpha=0.85,
+                    )
+            ax.set_title(feature_label)
+            ax.set_xlabel(feature_label)
+            ax.set_ylabel(outcome_label)
+            ax.grid(alpha=0.25)
+            if row_i == 0 and col_i == 0:
+                ax.legend(frameon=False, fontsize=7, loc="best")
+    fig.suptitle(fig_title)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_erp_within_day_scatter(erp, beh, figures_dir):
+    specs = []
+    for peak in [1, 2, 3]:
+        d_peak = erp[erp["peak"] == peak].copy()
+        specs.append((f"ERP P{peak} amp", "amplitude_uv", d_peak))
+        specs.append((f"ERP P{peak} latency", "latency_sec", d_peak))
+    fig_path = figures_dir / "link_behave_neuro_erp_within_day_scatter.png"
+    return plot_within_day_scatter_grid(
+        erp,
+        beh,
+        specs,
+        "Within-Day Behaviour vs ERP Peak Features",
+        fig_path,
+    )
+
+
+def plot_connect_within_day_scatter(conn, beh, figures_dir):
+    specs = []
+    for peak in [1, 2, 3]:
+        d_peak = conn[conn["peak"] == peak].copy()
+        specs.append((f"Conn P{peak}", "connectivity", d_peak))
+    fig_path = figures_dir / "link_behave_neuro_connect_within_day_scatter.png"
+    return plot_within_day_scatter_grid(
+        conn,
+        beh,
+        specs,
+        "Within-Day Behaviour vs Connectivity Strength",
+        fig_path,
+    )
+
+
+def plot_mvpa_within_day_scatter(mvpa, beh, figures_dir):
+    specs = []
+    for window in ["early", "late"]:
+        d_win = mvpa[mvpa["window"] == window].copy()
+        specs.append((f"MVPA {window}", "auc", d_win))
+    fig_path = figures_dir / "link_behave_neuro_mvpa_within_day_scatter.png"
+    return plot_within_day_scatter_grid(
+        mvpa,
+        beh,
+        specs,
+        "Within-Day Behaviour vs MVPA AUC",
+        fig_path,
+    )
+
+
 def save_fig_link_behave_neuro(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -477,6 +597,13 @@ def save_fig_link_behave_neuro(
     paths["mvpa"] = plot_mvpa_trajectories(mvpa, figures_dir)
     paths["change_score"] = plot_change_score_scatter(
         beh, erp, conn, mvpa, figures_dir
+    )
+    paths["erp_within_day"] = plot_erp_within_day_scatter(erp, beh, figures_dir)
+    paths["connect_within_day"] = plot_connect_within_day_scatter(
+        conn, beh, figures_dir
+    )
+    paths["mvpa_within_day"] = plot_mvpa_within_day_scatter(
+        mvpa, beh, figures_dir
     )
     return paths
 
