@@ -237,8 +237,8 @@ def draw_positive_edges(
             [ch_xy[pi, 0], ch_xy[pj, 0]],
             [ch_xy[pi, 1], ch_xy[pj, 1]],
             color="tab:blue",
-            linewidth=0.4 + 3.2 * scaled,
-            alpha=0.28 + 0.62 * scaled,
+            linewidth=0.25 + 1.8 * scaled,
+            alpha=0.10 + 0.45 * scaled,
             zorder=2,
         )
     format_edge_axis(ax)
@@ -273,6 +273,26 @@ def threshold_values_by_value(values, keep_prop):
     for idx, val in enumerate(values):
         if np.isfinite(val) and float(val) >= threshold:
             out[idx] = float(val)
+    return out
+
+
+def zscore_finite_values(values):
+    out = np.full(len(values), np.nan, dtype=float)
+    finite_vals = []
+    finite_idx = []
+    for idx, val in enumerate(values):
+        if np.isfinite(val):
+            finite_idx.append(idx)
+            finite_vals.append(float(val))
+    if len(finite_vals) < 2:
+        return out
+    arr = np.asarray(finite_vals, dtype=float)
+    std = float(np.std(arr))
+    if std <= np.finfo(float).eps:
+        return out
+    mean = float(np.mean(arr))
+    for arr_i, idx in enumerate(finite_idx):
+        out[idx] = (float(arr[arr_i]) - mean) / std
     return out
 
 
@@ -731,6 +751,78 @@ def plot_active_pair_day_pair_difference_edges(
         fig_path = figures_dir / (
             f"sensorwide_active_pair_day_pair_difference_edges_peak{peak_i}_"
             "top20_stim_broadband.png"
+        )
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        figure_paths.append(fig_path)
+    return figure_paths
+
+
+def plot_active_pair_day_pair_difference_edges_normalized(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Normalized day-pair difference edge figure is only defined for "
+            "stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    figure_paths = []
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        z_rows = {}
+        for day in days:
+            vals = get_peak_row(peak_rows, day, peak_i)["pair_vals"]
+            z_rows[day] = zscore_finite_values(vals)
+
+        all_vals = []
+        for day_i in days:
+            vals_i = z_rows[day_i]
+            for day_j in days:
+                if day_i == day_j:
+                    continue
+                vals_j = z_rows[day_j]
+                vals = vals_i - vals_j
+                for val in vals:
+                    if np.isfinite(val):
+                        all_vals.append(float(val))
+        vlim = finite_abs_max(all_vals)
+        fig, axes = plt.subplots(
+            len(days),
+            len(days),
+            figsize=(2.15 * len(days), 2.15 * len(days)),
+            squeeze=False,
+        )
+        for row_i, day_i in enumerate(days):
+            vals_i = z_rows[day_i]
+            for col_j, day_j in enumerate(days):
+                ax = axes[row_i, col_j]
+                if day_i == day_j:
+                    ax.axis("off")
+                    continue
+                vals_j = z_rows[day_j]
+                vals = vals_i - vals_j
+                draw_signed_edges(
+                    ax, vals, active_pair_idx, pair_idx, ch_xy, ch_names, vlim
+                )
+                if row_i == 0:
+                    ax.set_title(f"- D{day_j}", fontsize=8)
+                if col_j == 0:
+                    ax.set_ylabel(f"D{day_i}", fontsize=8)
+        fig.suptitle(
+            f"Top 20% Z-Normalized Day-Pair Edge Differences: Peak {peak_i}"
+        )
+        fig.subplots_adjust(
+            top=0.92,
+            bottom=0.03,
+            left=0.05,
+            right=0.99,
+            wspace=0.08,
+            hspace=0.08,
+        )
+        fig_path = figures_dir / (
+            "sensorwide_active_pair_day_pair_difference_edges_normalized_"
+            f"peak{peak_i}_top20_stim_broadband.png"
         )
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
@@ -1529,6 +1621,17 @@ def save_fig_sensorwide_connectivity(
                 )
                 figure_paths.append(fig_path)
                 new_paths = plot_active_pair_day_pair_difference_edges(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    ch_xy,
+                    channel_subset,
+                )
+                for fig_path in new_paths:
+                    figure_paths.append(fig_path)
+                new_paths = plot_active_pair_day_pair_difference_edges_normalized(
                     day_data,
                     pair_idx,
                     lock_name,
