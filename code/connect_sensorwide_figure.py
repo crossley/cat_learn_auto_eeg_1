@@ -1586,6 +1586,86 @@ def plot_active_pair_subject_network_distance_matrices(
     return fig_path
 
 
+def plot_active_pair_subject_z_euclidean_scaled_matrices(
+    day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Subject z-Euclidean figure is only defined for stim broadband"
+        )
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    subjects, vector_map = subject_peak_edge_vectors(
+        subject_df, peak_rows, active_pair_idx, pair_idx, ch_names
+    )
+    display_mats = {}
+    metric = "z_euclidean"
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        mean_mat, _sem_mat, _n_mat = subject_distance_summary(
+            subjects, vector_map, days, metric, peak_i
+        )
+        display_mats[peak_i] = matrix_offdiag_minmax_scaled(mean_mat)
+
+    labels = []
+    for day in days:
+        labels.append(f"D{day}")
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="0.82")
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.7), squeeze=False)
+    im = None
+    for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
+        ax = axes[0, peak_i - 1]
+        mat = display_mats[peak_i]
+        im = ax.imshow(
+            np.ma.masked_invalid(mat),
+            origin="upper",
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+        )
+        ax.set_title(f"Peak {peak_i}")
+        ax.set_xticks(range(len(days)))
+        ax.set_yticks(range(len(days)))
+        ax.set_xticklabels(labels)
+        ax.set_yticklabels(labels)
+        ax.set_xlabel("Day")
+        ax.set_ylabel("Day")
+        for r in range(len(days)):
+            for c in range(len(days)):
+                if np.isfinite(mat[r, c]):
+                    val = float(mat[r, c])
+                    color = "white"
+                    if val > 0.65:
+                        color = "black"
+                    ax.text(
+                        c,
+                        r,
+                        f"{val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                        color=color,
+                    )
+    fig.suptitle("Subject-Averaged Z-Euclidean Network Distance")
+    fig.subplots_adjust(
+        top=0.82,
+        bottom=0.16,
+        left=0.07,
+        right=0.90,
+        wspace=0.32,
+    )
+    cax = fig.add_axes([0.92, 0.22, 0.014, 0.52])
+    fig.colorbar(im, cax=cax, label="Scaled distance")
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_subject_z_euclidean_scaled_matrices_"
+        "top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def plot_active_pair_subject_contribution_edges(
     day_data, pair_idx, lock_name, band_name, figures_dir, subject_df, ch_names, ch_xy
 ):
@@ -1949,6 +2029,16 @@ def save_fig_sensorwide_connectivity(
                 )
                 figure_paths.append(fig_path)
                 fig_path = plot_active_pair_subject_network_distance_matrices(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    d_subject,
+                    channel_subset,
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_subject_z_euclidean_scaled_matrices(
                     day_data,
                     pair_idx,
                     lock_name,
