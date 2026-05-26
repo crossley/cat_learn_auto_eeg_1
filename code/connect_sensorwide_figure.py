@@ -568,6 +568,156 @@ def plot_active_pair_overlay_single_pct(
     return fig_path
 
 
+def midline_channel_names(ch_names):
+    preferred = ["Fpz", "AFz", "Fz", "FCz", "Cz", "CPz", "Pz", "POz", "Oz", "Iz"]
+    out = []
+    for ch in preferred:
+        if ch in ch_names:
+            out.append(ch)
+    if len(out) < 2:
+        raise ValueError(f"Need at least two midline channels, found: {out}")
+    return out
+
+
+def plot_midline_pair_overlay(
+    day_data, lock_name, band_name, figures_dir, subject_df, ch_names
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError("Midline-pair overlay is only defined for stim broadband")
+    days = sorted(day_data.keys())
+    midline_ch = midline_channel_names(ch_names)
+    ch_order = {}
+    for idx, ch in enumerate(ch_names):
+        ch_order[ch] = idx
+    pair_rows = []
+    for i in range(len(midline_ch)):
+        for j in range(i + 1, len(midline_ch)):
+            ch_a = midline_ch[i]
+            ch_b = midline_ch[j]
+            ch_i = ch_a
+            ch_j = ch_b
+            if ch_order[ch_a] > ch_order[ch_b]:
+                ch_i = ch_b
+                ch_j = ch_a
+            pair_rows.append(
+                {
+                    "ch_i": ch_i,
+                    "ch_j": ch_j,
+                    "pair_label": f"{ch_a}-{ch_b}",
+                }
+            )
+    pair_df = pd.DataFrame(pair_rows)
+    d_subject = subject_df[
+        (subject_df["lock_type"] == lock_name) & (subject_df["band"] == band_name)
+    ].copy()
+    if d_subject.empty:
+        raise ValueError(
+            f"Missing subject-level connectivity rows: {lock_name}, {band_name}"
+        )
+    d_midline = d_subject.merge(pair_df, on=["ch_i", "ch_j"], how="inner")
+    if d_midline.empty:
+        raise ValueError("No subject-level rows match midline sensor pairs")
+
+    stat_rows = []
+    group_cols = ["pair_label", "day", "lock_time"]
+    for key, g in d_midline.groupby(group_cols):
+        pair_label, day, lock_time = key
+        vals = np.asarray(g["conn_val"], dtype=float)
+        sem = np.nan
+        if len(vals) > 1:
+            sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+        stat_rows.append(
+            {
+                "pair_label": pair_label,
+                "day": int(day),
+                "lock_time": float(lock_time),
+                "mean": float(np.mean(vals)),
+                "sem": sem,
+                "n": int(len(vals)),
+            }
+        )
+    stat_df = pd.DataFrame(stat_rows)
+    pair_labels = []
+    for row in pair_rows:
+        pair_labels.append(row["pair_label"])
+    n_pairs = len(pair_labels)
+    n_cols = 5
+    n_rows = int(np.ceil(n_pairs / n_cols))
+    day_colors = get_day_colors(days)
+    y_vals = []
+    for val in stat_df["mean"]:
+        if np.isfinite(val):
+            y_vals.append(float(val))
+    if len(y_vals) == 0:
+        raise ValueError("No finite midline-pair mean values to plot")
+    y_min = float(np.min(np.asarray(y_vals, dtype=float)))
+    y_max = float(np.max(np.asarray(y_vals, dtype=float)))
+    y_pad = 0.08 * max(y_max - y_min, 1e-12)
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(3.0 * n_cols, 2.3 * n_rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    for idx, pair_label in enumerate(pair_labels):
+        row_i = idx // n_cols
+        col_i = idx % n_cols
+        ax = axes[row_i, col_i]
+        for day in days:
+            d_day = stat_df[
+                (stat_df["pair_label"] == pair_label) & (stat_df["day"] == day)
+            ].sort_values("lock_time")
+            if d_day.empty:
+                raise ValueError(f"Missing midline pair {pair_label}, day {day}")
+            times = np.asarray(d_day["lock_time"], dtype=float)
+            mean = np.asarray(d_day["mean"], dtype=float)
+            sem = np.asarray(d_day["sem"], dtype=float)
+            ax.plot(
+                times,
+                mean,
+                color=day_colors[day],
+                linewidth=1.3,
+                label=f"D{day}",
+            )
+            ax.fill_between(
+                times,
+                mean - sem,
+                mean + sem,
+                color=day_colors[day],
+                alpha=0.12,
+                linewidth=0,
+            )
+        ax.axvline(0.0, color="0.55", linestyle=":", linewidth=0.7)
+        ax.set_title(pair_label, fontsize=8)
+        ax.grid(alpha=0.22)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        if col_i == 0:
+            ax.set_ylabel("Connectivity")
+        if row_i == n_rows - 1:
+            ax.set_xlabel("Time (s)")
+    for idx in range(n_pairs, n_rows * n_cols):
+        row_i = idx // n_cols
+        col_i = idx % n_cols
+        axes[row_i, col_i].axis("off")
+    axes[0, 0].legend(frameon=False, fontsize=7, loc="best")
+    fig.suptitle("Midline Sensor-Pair Connectivity: Stim, Broadband")
+    fig.subplots_adjust(
+        top=0.92,
+        bottom=0.06,
+        left=0.05,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.42,
+    )
+    fig_path = figures_dir / "sensorwide_midline_pair_overlay_stim_broadband.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def plot_active_pair_peak_edges(
     day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
 ):
@@ -625,6 +775,75 @@ def plot_active_pair_peak_edges(
     fig_path = (
         figures_dir
         / "sensorwide_active_pair_peak_edges_top20_stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def plot_active_pair_peak_edges_normalized(
+    day_data, pair_idx, lock_name, band_name, figures_dir, ch_xy, ch_names
+):
+    if lock_name != "stim" or band_name != "broadband":
+        raise ValueError(
+            "Normalized peak-edge figure is only defined for stim broadband"
+        )
+
+    days = sorted(day_data.keys())
+    peak_rows, active_pair_idx = compute_peak_edge_rows(day_data, pair_idx)
+    plot_rows = []
+    all_vals = []
+    for row in peak_rows:
+        z_vals = zscore_finite_values(row["pair_vals"])
+        plot_rows.append(
+            {
+                "day": int(row["day"]),
+                "peak": int(row["peak"]),
+                "peak_time": float(row["peak_time"]),
+                "pair_vals": z_vals,
+            }
+        )
+        for val in z_vals:
+            if np.isfinite(val):
+                all_vals.append(float(val))
+    vlim = finite_abs_max(all_vals)
+
+    fig, axes = plt.subplots(
+        len(ACTIVE_PAIR_PEAK_WINDOWS),
+        len(days),
+        figsize=(2.6 * len(days), 6.8),
+        squeeze=False,
+    )
+    for row in plot_rows:
+        day = int(row["day"])
+        peak_i = int(row["peak"])
+        ax = axes[peak_i - 1, days.index(day)]
+        draw_signed_edges(
+            ax,
+            row["pair_vals"],
+            active_pair_idx,
+            pair_idx,
+            ch_xy,
+            ch_names,
+            vlim,
+        )
+        peak_ms = int(round(float(row["peak_time"]) * 1000.0))
+        ax.set_title(f"D{day}: {peak_ms} ms", fontsize=9)
+        if day == days[0]:
+            ax.set_ylabel(f"Peak {peak_i}", fontsize=9)
+
+    fig.suptitle("Top 20% Z-Normalized Active Sensor-Pair Edges")
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.04,
+        left=0.05,
+        right=0.99,
+        wspace=0.18,
+        hspace=0.28,
+    )
+    fig_path = (
+        figures_dir
+        / "sensorwide_active_pair_peak_edges_normalized_top20_stim_broadband.png"
     )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -1600,7 +1819,26 @@ def save_fig_sensorwide_connectivity(
                     channel_subset,
                 )
                 figure_paths.append(fig_path)
+                fig_path = plot_midline_pair_overlay(
+                    day_data,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    d_subject,
+                    channel_subset,
+                )
+                figure_paths.append(fig_path)
                 fig_path = plot_active_pair_peak_edges(
+                    day_data,
+                    pair_idx,
+                    lock_name,
+                    band_name,
+                    figures_dir,
+                    ch_xy,
+                    channel_subset,
+                )
+                figure_paths.append(fig_path)
+                fig_path = plot_active_pair_peak_edges_normalized(
                     day_data,
                     pair_idx,
                     lock_name,
