@@ -1158,6 +1158,34 @@ def distance_metric_label(metric):
     raise ValueError(f"Unknown edge-vector distance metric: {metric}")
 
 
+def matrix_offdiag_minmax_scaled(mat):
+    out = np.full(mat.shape, np.nan, dtype=float)
+    vals = []
+    for r in range(mat.shape[0]):
+        for c in range(mat.shape[1]):
+            val = mat[r, c]
+            if r != c and np.isfinite(val):
+                vals.append(float(val))
+    if len(vals) == 0:
+        raise ValueError("No finite off-diagonal matrix values to scale")
+    arr = np.asarray(vals, dtype=float)
+    val_min = float(np.min(arr))
+    val_max = float(np.max(arr))
+    denom = val_max - val_min
+    for r in range(mat.shape[0]):
+        for c in range(mat.shape[1]):
+            val = mat[r, c]
+            if not np.isfinite(val):
+                continue
+            if r == c:
+                out[r, c] = 0.0
+            elif denom <= np.finfo(float).eps:
+                out[r, c] = 0.5
+            else:
+                out[r, c] = (float(val) - val_min) / denom
+    return out
+
+
 def plot_active_pair_network_distance_matrices(
     day_data, pair_idx, lock_name, band_name, figures_dir
 ):
@@ -1467,21 +1495,16 @@ def plot_active_pair_subject_network_distance_matrices(
     )
     metrics = ["euclidean", "z_euclidean", "correlation"]
     mean_mats = {}
+    display_mats = {}
     n_mats = {}
-    row_vmax = {}
     for metric in metrics:
-        finite_vals = []
         for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
             mean_mat, _sem_mat, n_mat = subject_distance_summary(
                 subjects, vector_map, days, metric, peak_i
             )
             mean_mats[(metric, peak_i)] = mean_mat
+            display_mats[(metric, peak_i)] = matrix_offdiag_minmax_scaled(mean_mat)
             n_mats[(metric, peak_i)] = n_mat
-            for val in mean_mat[np.isfinite(mean_mat)]:
-                finite_vals.append(float(val))
-        if len(finite_vals) == 0:
-            raise ValueError(f"No finite subject distances for metric={metric}")
-        row_vmax[metric] = float(np.nanmax(np.asarray(finite_vals, dtype=float)))
 
     labels = []
     for day in days:
@@ -1493,13 +1516,14 @@ def plot_active_pair_subject_network_distance_matrices(
         for peak_i in range(1, len(ACTIVE_PAIR_PEAK_WINDOWS) + 1):
             ax = axes[row_i, peak_i - 1]
             mat = mean_mats[(metric, peak_i)]
+            display_mat = display_mats[(metric, peak_i)]
             n_mat = n_mats[(metric, peak_i)]
             im = ax.imshow(
-                np.ma.masked_invalid(mat),
+                np.ma.masked_invalid(display_mat),
                 origin="upper",
                 cmap=cmap,
                 vmin=0.0,
-                vmax=row_vmax[metric],
+                vmax=1.0,
             )
             ax.set_title(f"Peak {peak_i}")
             ax.set_xticks(range(len(days)))
@@ -1512,8 +1536,9 @@ def plot_active_pair_subject_network_distance_matrices(
                 for c in range(len(days)):
                     if np.isfinite(mat[r, c]):
                         val = float(mat[r, c])
+                        display_val = float(display_mat[r, c])
                         color = "white"
-                        if val > 0.65 * row_vmax[metric]:
+                        if display_val > 0.65:
                             color = "black"
                         ax.text(
                             c,
@@ -1526,7 +1551,11 @@ def plot_active_pair_subject_network_distance_matrices(
                         )
             if peak_i == len(ACTIVE_PAIR_PEAK_WINDOWS):
                 cax = fig.add_axes([0.92, 0.68 - row_i * 0.27, 0.015, 0.20])
-                fig.colorbar(im, cax=cax, label=distance_metric_label(metric))
+                fig.colorbar(
+                    im,
+                    cax=cax,
+                    label=f"{distance_metric_label(metric)} scaled",
+                )
             if peak_i == 1:
                 ax.text(
                     -0.38,
