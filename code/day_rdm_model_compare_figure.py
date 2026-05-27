@@ -74,8 +74,10 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
     )
     colors = {
         "gradual": "#2a7f62",
-        "two_stage": "#9370b8",
-        "two_stage_shared_best": "#5e3c99",
+        "two_stage_binary": "#9370b8",
+        "two_stage_binary_shared_best": "#5e3c99",
+        "two_stage_hybrid": "#d18f3f",
+        "two_stage_hybrid_shared_best": "#a45a00",
     }
     for row_i, condition in enumerate(conditions):
         measure, window, value_kind = condition
@@ -95,22 +97,26 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
             vals.append(float(d_grad["mean_rho"].iloc[0]))
             errs.append(float(d_grad["sem_rho"].iloc[0]))
             bar_colors.append(colors["gradual"])
-        d_two = d_condition[d_condition["model"] == "two_stage"]
-        for split_day in [1, 2, 3, 4]:
-            d_split = d_two[d_two["split_day"] == split_day]
-            if d_split.empty:
-                continue
-            labels.append(f"2-stage D{split_day}")
-            vals.append(float(d_split["mean_rho"].iloc[0]))
-            errs.append(float(d_split["sem_rho"].iloc[0]))
-            bar_colors.append(colors["two_stage"])
-        d_best = d_condition[d_condition["model"] == "two_stage_shared_best"]
-        if not d_best.empty:
-            split_day = int(d_best["split_day"].iloc[0])
-            labels.append(f"shared best D{split_day}")
-            vals.append(float(d_best["mean_rho"].iloc[0]))
-            errs.append(float(d_best["sem_rho"].iloc[0]))
-            bar_colors.append(colors["two_stage_shared_best"])
+        for stage_model, prefix in [
+            ("two_stage_binary", "binary"),
+            ("two_stage_hybrid", "hybrid"),
+        ]:
+            d_two = d_condition[d_condition["model"] == stage_model]
+            for split_day in [1, 2, 3, 4]:
+                d_split = d_two[d_two["split_day"] == split_day]
+                if d_split.empty:
+                    continue
+                labels.append(f"{prefix} D{split_day}")
+                vals.append(float(d_split["mean_rho"].iloc[0]))
+                errs.append(float(d_split["sem_rho"].iloc[0]))
+                bar_colors.append(colors[stage_model])
+            d_best = d_condition[d_condition["model"] == f"{stage_model}_shared_best"]
+            if not d_best.empty:
+                split_day = int(d_best["split_day"].iloc[0])
+                labels.append(f"{prefix} best D{split_day}")
+                vals.append(float(d_best["mean_rho"].iloc[0]))
+                errs.append(float(d_best["sem_rho"].iloc[0]))
+                bar_colors.append(colors[f"{stage_model}_shared_best"])
         x = np.arange(len(vals), dtype=float)
         ax.bar(
             x,
@@ -132,12 +138,16 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
             & (pairwise_df["value_kind"] == value_kind)
         ]
         if not d_pair.empty:
-            diff = float(d_pair["mean_diff_shared_two_minus_gradual"].iloc[0])
-            p_val = float(d_pair["p_perm_shared_two_greater_gradual"].iloc[0])
+            text_lines = []
+            for _, pair_row in d_pair.iterrows():
+                family = str(pair_row["stage_family"]).replace("two_stage_", "")
+                diff = float(pair_row["mean_diff_shared_stage_minus_gradual"])
+                p_val = float(pair_row["p_perm_shared_stage_greater_gradual"])
+                text_lines.append(f"{family} - gradual = {diff:.2f}, p={p_val:.3f}")
             ax.text(
                 0.99,
                 0.96,
-                f"shared two - gradual = {diff:.2f}, p={p_val:.3f}",
+                "\n".join(text_lines),
                 ha="right",
                 va="top",
                 transform=ax.transAxes,
@@ -192,8 +202,8 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
         labels.append(f"D{day}")
     fig, axes = plt.subplots(
         len(conditions),
-        6,
-        figsize=(14.8, max(3.0, 2.35 * len(conditions))),
+        10,
+        figsize=(22.0, max(3.0, 2.35 * len(conditions))),
         squeeze=False,
     )
     for row_i, condition in enumerate(conditions):
@@ -210,18 +220,26 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
         mats = [
             observed,
             model_matrix("gradual"),
-            model_matrix("two_stage", split_day=1),
-            model_matrix("two_stage", split_day=2),
-            model_matrix("two_stage", split_day=3),
-            model_matrix("two_stage", split_day=4),
+            model_matrix("two_stage_binary", split_day=1),
+            model_matrix("two_stage_binary", split_day=2),
+            model_matrix("two_stage_binary", split_day=3),
+            model_matrix("two_stage_binary", split_day=4),
+            model_matrix("two_stage_hybrid", split_day=1),
+            model_matrix("two_stage_hybrid", split_day=2),
+            model_matrix("two_stage_hybrid", split_day=3),
+            model_matrix("two_stage_hybrid", split_day=4),
         ]
         titles = [
             "observed",
             "gradual model",
-            "two-stage D1",
-            "two-stage D2",
-            "two-stage D3",
-            "two-stage D4",
+            "binary D1",
+            "binary D2",
+            "binary D3",
+            "binary D4",
+            "hybrid D1",
+            "hybrid D2",
+            "hybrid D3",
+            "hybrid D4",
         ]
         for col_i, mat in enumerate(mats):
             ax = axes[row_i, col_i]
@@ -319,7 +337,7 @@ def save_model_correlation_figure(model_corr_df, figures_dir):
     )
     display_labels = []
     for label in labels:
-        display_labels.append(label.replace("two_stage_", "2-stage "))
+        display_labels.append(label.replace("_", " "))
     ax.set_xticks(range(len(labels)))
     ax.set_yticks(range(len(labels)))
     ax.set_xticklabels(display_labels, rotation=35, ha="right")

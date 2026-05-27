@@ -135,15 +135,24 @@ def model_distance(model, day_i, day_j, split_day=None, day_map=None):
     day_i = remap_day(day_i, day_map)
     day_j = remap_day(day_j, day_map)
     if model == "gradual":
-        return float(abs(day_i - day_j))
-    if model == "two_stage":
+        return float(abs(day_i - day_j) / 4.0)
+    if model == "two_stage_binary":
         if split_day is None:
-            raise ValueError("two_stage model requires split_day")
+            raise ValueError("two_stage_binary model requires split_day")
         i_late = day_i > split_day
         j_late = day_j > split_day
         if i_late == j_late:
             return 0.0
         return 1.0
+    if model == "two_stage_hybrid":
+        if split_day is None:
+            raise ValueError("two_stage_hybrid model requires split_day")
+        gradual = float(abs(day_i - day_j) / 4.0)
+        i_late = day_i > split_day
+        j_late = day_j > split_day
+        if i_late == j_late:
+            return 0.5 * gradual
+        return 0.5 + 0.5 * gradual
     raise ValueError(f"Unknown day-RDM model: {model}")
 
 
@@ -172,24 +181,32 @@ def empirical_vector(day_rows):
 def model_specs():
     rows = []
     rows.append({"model": "gradual", "split_day": np.nan, "label": "gradual"})
-    for split_day in [1, 2, 3, 4]:
-        rows.append(
-            {
-                "model": "two_stage",
-                "split_day": split_day,
-                "label": f"two_stage_{split_day}",
-            }
-        )
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        for split_day in [1, 2, 3, 4]:
+            rows.append(
+                {
+                    "model": model,
+                    "split_day": split_day,
+                    "label": f"{model}_{split_day}",
+                }
+            )
     return rows
 
 
-def best_two_stage(day_rows, emp_vec, day_map=None):
+def score_label(score):
+    model = str(score["model"])
+    if model in ["two_stage_binary", "two_stage_hybrid"]:
+        return f"{model}_{int(score['split_day'])}"
+    return model
+
+
+def best_two_stage(day_rows, emp_vec, model, day_map=None):
     best_rho = np.nan
     best_split = np.nan
     for split_day in [1, 2, 3, 4]:
         pred = model_vector(
             day_rows,
-            "two_stage",
+            model,
             split_day=split_day,
             day_map=day_map,
         )
@@ -213,15 +230,16 @@ def score_subject(day_rows):
             "rho": spearman_corr(emp_vec, gradual_pred),
         }
     )
-    for split_day in [1, 2, 3, 4]:
-        pred = model_vector(day_rows, "two_stage", split_day=split_day)
-        rows.append(
-            {
-                "model": "two_stage",
-                "split_day": split_day,
-                "rho": spearman_corr(emp_vec, pred),
-            }
-        )
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        for split_day in [1, 2, 3, 4]:
+            pred = model_vector(day_rows, model, split_day=split_day)
+            rows.append(
+                {
+                    "model": model,
+                    "split_day": split_day,
+                    "rho": spearman_corr(emp_vec, pred),
+                }
+            )
     return rows
 
 
@@ -248,11 +266,11 @@ def permutation_score(spec, day_rows, emp_vec, rng):
     return spearman_corr(emp_vec, pred)
 
 
-def split_mean_from_subject_scores(payloads, split_day):
+def split_mean_from_subject_scores(payloads, model, split_day):
     vals = []
     for payload in payloads:
         for score in payload["scores"]:
-            if score["model"] != "two_stage":
+            if score["model"] != model:
                 continue
             if int(score["split_day"]) != int(split_day):
                 continue
@@ -284,7 +302,7 @@ def gradual_mean_from_subject_scores(payloads):
     return float(np.mean(arr)), sem, int(len(arr))
 
 
-def shared_best_split(payloads):
+def shared_best_split(payloads, model):
     best_split = np.nan
     best_mean = np.nan
     best_sem = np.nan
@@ -292,6 +310,7 @@ def shared_best_split(payloads):
     for split_day in [1, 2, 3, 4]:
         mean_val, sem_val, n_val = split_mean_from_subject_scores(
             payloads,
+            model,
             split_day,
         )
         if not np.isfinite(mean_val):
@@ -307,9 +326,10 @@ def shared_best_split(payloads):
 def permuted_shared_scores(payloads, specs, rng):
     split_accum = {}
     split_counts = {}
-    for split_day in [1, 2, 3, 4]:
-        split_accum[split_day] = 0.0
-        split_counts[split_day] = 0
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        for split_day in [1, 2, 3, 4]:
+            split_accum[(model, split_day)] = 0.0
+            split_counts[(model, split_day)] = 0
     gradual_accum = 0.0
     gradual_count = 0
     for payload in payloads:
@@ -330,23 +350,28 @@ def permuted_shared_scores(payloads, specs, rng):
             if spec["model"] == "gradual":
                 gradual_accum += float(rho)
                 gradual_count += 1
-            elif spec["model"] == "two_stage":
+            elif spec["model"] in ["two_stage_binary", "two_stage_hybrid"]:
                 split_day = int(spec["split_day"])
-                split_accum[split_day] += float(rho)
-                split_counts[split_day] += 1
+                split_key = (spec["model"], split_day)
+                split_accum[split_key] += float(rho)
+                split_counts[split_key] += 1
     gradual_mean = np.nan
     if gradual_count > 0:
         gradual_mean = gradual_accum / float(gradual_count)
-    best_mean = np.nan
-    best_split = np.nan
-    for split_day in [1, 2, 3, 4]:
-        if split_counts[split_day] == 0:
-            continue
-        mean_val = split_accum[split_day] / float(split_counts[split_day])
-        if not np.isfinite(best_mean) or mean_val > best_mean:
-            best_mean = float(mean_val)
-            best_split = int(split_day)
-    return gradual_mean, best_mean, best_split
+    best = {}
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        best_mean = np.nan
+        best_split = np.nan
+        for split_day in [1, 2, 3, 4]:
+            split_key = (model, split_day)
+            if split_counts[split_key] == 0:
+                continue
+            mean_val = split_accum[split_key] / float(split_counts[split_key])
+            if not np.isfinite(best_mean) or mean_val > best_mean:
+                best_mean = float(mean_val)
+                best_split = int(split_day)
+        best[model] = {"mean": best_mean, "split_day": best_split}
+    return gradual_mean, best
 
 
 def condition_results(condition_key, d_condition, rng):
@@ -383,13 +408,19 @@ def condition_results(condition_key, d_condition, rng):
         observed[spec["label"]] = []
     for payload in payloads:
         for score in payload["scores"]:
-            label = str(score["model"])
-            if label == "two_stage":
-                label = f"two_stage_{int(score['split_day'])}"
+            label = score_label(score)
             if label in observed and np.isfinite(score["rho"]):
                 observed[label].append(float(score["rho"]))
 
-    shared_split, shared_mean, shared_sem, shared_n = shared_best_split(payloads)
+    shared = {}
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        split_day, mean_val, sem_val, n_val = shared_best_split(payloads, model)
+        shared[model] = {
+            "split_day": split_day,
+            "mean": mean_val,
+            "sem": sem_val,
+            "n": n_val,
+        }
     gradual_mean, _gradual_sem, _gradual_n = gradual_mean_from_subject_scores(
         payloads
     )
@@ -397,8 +428,11 @@ def condition_results(condition_key, d_condition, rng):
     perm_scores = {}
     for spec in specs:
         perm_scores[spec["label"]] = []
-    perm_shared_scores = []
-    perm_shared_diffs = []
+    perm_shared_scores = {}
+    perm_shared_diffs = {}
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        perm_shared_scores[model] = []
+        perm_shared_diffs[model] = []
     for _perm_i in range(N_PERMUTATIONS):
         accum = {}
         counts = {}
@@ -425,15 +459,19 @@ def condition_results(condition_key, d_condition, rng):
             label = spec["label"]
             if counts[label] > 0:
                 perm_scores[label].append(accum[label] / float(counts[label]))
-        perm_gradual, perm_shared, _perm_split = permuted_shared_scores(
+        perm_gradual, perm_shared = permuted_shared_scores(
             payloads,
             specs,
             rng,
         )
-        if np.isfinite(perm_shared):
-            perm_shared_scores.append(float(perm_shared))
-        if np.isfinite(perm_shared) and np.isfinite(perm_gradual):
-            perm_shared_diffs.append(float(perm_shared) - float(perm_gradual))
+        for model in ["two_stage_binary", "two_stage_hybrid"]:
+            model_mean = perm_shared[model]["mean"]
+            if np.isfinite(model_mean):
+                perm_shared_scores[model].append(float(model_mean))
+            if np.isfinite(model_mean) and np.isfinite(perm_gradual):
+                perm_shared_diffs[model].append(
+                    float(model_mean) - float(perm_gradual)
+                )
 
     summary_rows = []
     for spec in specs:
@@ -454,15 +492,6 @@ def condition_results(condition_key, d_condition, rng):
                     count += 1
             p_greater = float((count + 1.0) / (len(perm_scores[label]) + 1.0))
         split_day = spec["split_day"]
-        if spec["model"] == "two_stage_best":
-            split_vals = []
-            for payload in payloads:
-                for score in payload["scores"]:
-                    if score["model"] == "two_stage_best":
-                        if np.isfinite(score["split_day"]):
-                            split_vals.append(float(score["split_day"]))
-            if len(split_vals) > 0:
-                split_day = float(pd.Series(split_vals).mode().iloc[0])
         summary_rows.append(
             {
                 "modality": modality,
@@ -479,53 +508,62 @@ def condition_results(condition_key, d_condition, rng):
             }
         )
 
-    p_shared = np.nan
-    if len(perm_shared_scores) > 0 and np.isfinite(shared_mean):
-        count = 0
-        for val in perm_shared_scores:
-            if val >= shared_mean:
-                count += 1
-        p_shared = float((count + 1.0) / (len(perm_shared_scores) + 1.0))
-    summary_rows.append(
-        {
-            "modality": modality,
-            "measure": measure,
-            "window": window,
-            "value_kind": value_kind,
-            "model": "two_stage_shared_best",
-            "split_day": shared_split,
-            "mean_rho": shared_mean,
-            "sem_rho": shared_sem,
-            "n_subjects": shared_n,
-            "p_perm_greater": p_shared,
-            "n_permutations": int(len(perm_shared_scores)),
-        }
-    )
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        shared_mean = shared[model]["mean"]
+        p_shared = np.nan
+        if len(perm_shared_scores[model]) > 0 and np.isfinite(shared_mean):
+            count = 0
+            for val in perm_shared_scores[model]:
+                if val >= shared_mean:
+                    count += 1
+            p_shared = float(
+                (count + 1.0) / (len(perm_shared_scores[model]) + 1.0)
+            )
+        summary_rows.append(
+            {
+                "modality": modality,
+                "measure": measure,
+                "window": window,
+                "value_kind": value_kind,
+                "model": f"{model}_shared_best",
+                "split_day": shared[model]["split_day"],
+                "mean_rho": shared[model]["mean"],
+                "sem_rho": shared[model]["sem"],
+                "n_subjects": shared[model]["n"],
+                "p_perm_greater": p_shared,
+                "n_permutations": int(len(perm_shared_scores[model])),
+            }
+        )
 
     pairwise_rows = []
-    observed_delta = np.nan
-    if np.isfinite(shared_mean) and np.isfinite(gradual_mean):
-        observed_delta = float(shared_mean) - float(gradual_mean)
-    p_greater = np.nan
-    if len(perm_shared_diffs) > 0 and np.isfinite(observed_delta):
-        count = 0
-        for val in perm_shared_diffs:
-            if val >= observed_delta:
-                count += 1
-        p_greater = float((count + 1.0) / (len(perm_shared_diffs) + 1.0))
-    pairwise_rows.append(
-        {
-            "modality": modality,
-            "measure": measure,
-            "window": window,
-            "value_kind": value_kind,
-            "shared_best_split_day": shared_split,
-            "mean_diff_shared_two_minus_gradual": observed_delta,
-            "n_subjects": int(min(shared_n, _gradual_n)),
-            "p_perm_shared_two_greater_gradual": p_greater,
-            "n_permutations": int(len(perm_shared_diffs)),
-        }
-    )
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        shared_mean = shared[model]["mean"]
+        observed_delta = np.nan
+        if np.isfinite(shared_mean) and np.isfinite(gradual_mean):
+            observed_delta = float(shared_mean) - float(gradual_mean)
+        p_greater = np.nan
+        if len(perm_shared_diffs[model]) > 0 and np.isfinite(observed_delta):
+            count = 0
+            for val in perm_shared_diffs[model]:
+                if val >= observed_delta:
+                    count += 1
+            p_greater = float(
+                (count + 1.0) / (len(perm_shared_diffs[model]) + 1.0)
+            )
+        pairwise_rows.append(
+            {
+                "modality": modality,
+                "measure": measure,
+                "window": window,
+                "value_kind": value_kind,
+                "stage_family": model,
+                "shared_best_split_day": shared[model]["split_day"],
+                "mean_diff_shared_stage_minus_gradual": observed_delta,
+                "n_subjects": int(min(shared[model]["n"], _gradual_n)),
+                "p_perm_shared_stage_greater_gradual": p_greater,
+                "n_permutations": int(len(perm_shared_diffs[model])),
+            }
+        )
     return score_rows, summary_rows, pairwise_rows
 
 
@@ -593,11 +631,17 @@ def write_model_rdm_correlations(output_dir):
     pair_rows = pair_list()
     models = [
         {"model": "gradual", "split_day": np.nan, "label": "gradual"},
-        {"model": "two_stage", "split_day": 1, "label": "two_stage_D1"},
-        {"model": "two_stage", "split_day": 2, "label": "two_stage_D2"},
-        {"model": "two_stage", "split_day": 3, "label": "two_stage_D3"},
-        {"model": "two_stage", "split_day": 4, "label": "two_stage_D4"},
     ]
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        for split_day in [1, 2, 3, 4]:
+            label = model.replace("two_stage_", "")
+            models.append(
+                {
+                    "model": model,
+                    "split_day": split_day,
+                    "label": f"{label}_D{split_day}",
+                }
+            )
     vectors = {}
     for spec in models:
         split_arg = None
