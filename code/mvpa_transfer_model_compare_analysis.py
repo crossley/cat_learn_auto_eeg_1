@@ -24,7 +24,8 @@ def require_csv(path):
     if not path.exists():
         raise FileNotFoundError(
             f"Missing MVPA transfer input: {path}. "
-            "Run mvpa_stim_locked_cat_late_window_transfer_analysis.py first."
+            "Run the matching mvpa_stim_locked_cat_*_window_transfer_analysis.py "
+            "script first."
         )
     d = pd.read_csv(path)
     if d.empty:
@@ -485,8 +486,14 @@ def condition_results(condition_key, d_condition, rng, include_diagonal):
 
 
 def mvpa_rows(output_dir):
-    path = output_dir / "mvpa_stim_locked_cat_late_window_transfer_subject_pairs.csv"
-    d = require_csv(path)
+    frames = []
+    for window in ["early", "late"]:
+        path = (
+            output_dir
+            / f"mvpa_stim_locked_cat_{window}_window_transfer_subject_pairs.csv"
+        )
+        frames.append(require_csv(path))
+    d = pd.concat(frames, ignore_index=True)
     d = d[d["classifier"].isin(CLASSIFIERS)].copy()
     d = d[d["fit_status"].isin(["transfer", "cv"])].copy()
     if d.empty:

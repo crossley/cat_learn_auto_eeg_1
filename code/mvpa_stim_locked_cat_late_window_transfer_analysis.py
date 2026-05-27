@@ -61,6 +61,9 @@ def prepare_late_window_session(task):
     subject = int(task["subject"])
     day = int(task["day"])
     min_epochs = int(task["min_epochs"])
+    window = str(task["window"])
+    window_start_sec = float(task["window_start_sec"])
+    window_end_sec = float(task["window_end_sec"])
 
     try:
         epochs = mne.read_epochs(task["epo_path"], preload=False, verbose="ERROR")
@@ -136,7 +139,7 @@ def prepare_late_window_session(task):
             },
         }
 
-    time_mask = (times >= WINDOW_START_SEC) & (times <= WINDOW_END_SEC)
+    time_mask = (times >= window_start_sec) & (times <= window_end_sec)
     if int(np.sum(time_mask)) < 2:
         return {
             "ok": False,
@@ -146,7 +149,7 @@ def prepare_late_window_session(task):
                 "day": day,
                 "stage": "window_select",
                 "reason": "insufficient_timepoints",
-                "detail": f"window={WINDOW_START_SEC}-{WINDOW_END_SEC}",
+                "detail": f"window={window_start_sec}-{window_end_sec}",
             },
         }
     X_win = X[:, :, time_mask]
@@ -163,12 +166,19 @@ def prepare_late_window_session(task):
         "n_b": n_b,
         "n_channels": int(X_win.shape[1]),
         "n_timepoints": int(X_win.shape[2]),
+        "window": window,
+        "window_start_sec": window_start_sec,
+        "window_end_sec": window_end_sec,
     }
 
 
 def fit_transfer_subject(subject, day_data, random_state):
     rows = []
     qc_rows = []
+    first_day = sorted(day_data.keys())[0]
+    window = day_data[first_day]["window"]
+    window_start_sec = float(day_data[first_day]["window_start_sec"])
+    window_end_sec = float(day_data[first_day]["window_end_sec"])
     for classifier in CLASSIFIERS:
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
         for train_day in DAYS:
@@ -244,9 +254,9 @@ def fit_transfer_subject(subject, day_data, random_state):
                         "train_day": int(train_day),
                         "test_day": int(test_day),
                         "day_distance": int(abs(train_day - test_day)),
-                        "window": WINDOW,
-                        "window_start_sec": float(WINDOW_START_SEC),
-                        "window_end_sec": float(WINDOW_END_SEC),
+                        "window": window,
+                        "window_start_sec": window_start_sec,
+                        "window_end_sec": window_end_sec,
                         "auc": auc,
                         "fit_status": status,
                         "train_n_trials": int(train_item["n_trials"]),
@@ -262,18 +272,20 @@ def fit_transfer_subject(subject, day_data, random_state):
 
 def make_group_summary(subject_df):
     rows = []
-    for (classifier, train_day, test_day), g in subject_df.groupby(
-        ["classifier", "train_day", "test_day"]
+    for (classifier, window, train_day, test_day), g in subject_df.groupby(
+        ["classifier", "window", "train_day", "test_day"]
     ):
+        window_start_sec = float(g["window_start_sec"].iloc[0])
+        window_end_sec = float(g["window_end_sec"].iloc[0])
         rows.append(
             {
                 "classifier": classifier,
                 "train_day": int(train_day),
                 "test_day": int(test_day),
                 "day_distance": int(abs(train_day - test_day)),
-                "window": WINDOW,
-                "window_start_sec": float(WINDOW_START_SEC),
-                "window_end_sec": float(WINDOW_END_SEC),
+                "window": window,
+                "window_start_sec": window_start_sec,
+                "window_end_sec": window_end_sec,
                 "auc_mean": float(np.mean(g["auc"])),
                 "auc_sem": sem(g["auc"]),
                 "n_subjects": int(g["subject"].nunique()),
@@ -290,6 +302,10 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
     min_epochs: int = 20,
     random_state: int = RANDOM_STATE,
     n_workers: int | None = None,
+    window: str = WINDOW,
+    window_start_sec: float = WINDOW_START_SEC,
+    window_end_sec: float = WINDOW_END_SEC,
+    file_window: str = WINDOW,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,10 +317,11 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
         module=r"sklearn\.linear_model\._logistic",
     )
 
-    subject_csv = output_dir / "mvpa_stim_locked_cat_late_window_transfer_subject_pairs.csv"
-    group_csv = output_dir / "mvpa_stim_locked_cat_late_window_transfer_group_pairs.csv"
-    qc_csv = output_dir / "mvpa_stim_locked_cat_late_window_transfer_qc_log.csv"
-    progress_json = output_dir / "mvpa_stim_locked_cat_late_window_transfer_progress.json"
+    stem = f"mvpa_stim_locked_cat_{file_window}_window_transfer"
+    subject_csv = output_dir / f"{stem}_subject_pairs.csv"
+    group_csv = output_dir / f"{stem}_group_pairs.csv"
+    qc_csv = output_dir / f"{stem}_qc_log.csv"
+    progress_json = output_dir / f"{stem}_progress.json"
 
     qc_columns = [
         "session_file",
@@ -339,6 +356,9 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
                 "epo_file": item["epo_file"],
                 "epo_path": str(item["epo_path"]),
                 "min_epochs": int(min_epochs),
+                "window": window,
+                "window_start_sec": float(window_start_sec),
+                "window_end_sec": float(window_end_sec),
             }
         )
     if n_workers is None:
@@ -349,8 +369,8 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
     qc_rows = []
     write_progress("prepare", 0, len(tasks))
     print(
-        f"[MVPA late-window transfer] Preparing {len(tasks)} sessions "
-        f"(n_workers={n_workers}, window={WINDOW_START_SEC}-{WINDOW_END_SEC}s)...",
+        f"[MVPA {file_window}-window transfer] Preparing {len(tasks)} sessions "
+        f"(n_workers={n_workers}, window={window_start_sec}-{window_end_sec}s)...",
         flush=True,
     )
 
@@ -503,7 +523,7 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
     if subject_df.empty:
         subject_df.to_csv(subject_csv, index=False)
         qc_df.to_csv(qc_csv, index=False)
-        raise RuntimeError("Late-window transfer produced no subject rows")
+        raise RuntimeError(f"{file_window}-window transfer produced no subject rows")
     group_df = make_group_summary(subject_df.dropna(subset=["auc"]))
 
     subject_df.to_csv(subject_csv, index=False)
@@ -511,9 +531,9 @@ def run_mvpa_stim_locked_cat_late_window_transfer(
     qc_df.to_csv(qc_csv, index=False)
     write_progress("completed", len(subjects), len(subjects))
 
-    print(f"[MVPA late-window transfer] Wrote {subject_csv}")
-    print(f"[MVPA late-window transfer] Wrote {group_csv}")
-    print(f"[MVPA late-window transfer] Wrote {qc_csv}")
+    print(f"[MVPA {file_window}-window transfer] Wrote {subject_csv}")
+    print(f"[MVPA {file_window}-window transfer] Wrote {group_csv}")
+    print(f"[MVPA {file_window}-window transfer] Wrote {qc_csv}")
     return {
         "subject_df": subject_df,
         "group_df": group_df,
