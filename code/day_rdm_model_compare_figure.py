@@ -192,8 +192,8 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
         labels.append(f"D{day}")
     fig, axes = plt.subplots(
         len(conditions),
-        3,
-        figsize=(8.3, max(3.0, 2.4 * len(conditions))),
+        6,
+        figsize=(14.8, max(3.0, 2.35 * len(conditions))),
         squeeze=False,
     )
     for row_i, condition in enumerate(conditions):
@@ -207,40 +207,35 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
         if d_group.empty:
             raise ValueError(f"Missing group day RDM for {modality}, {condition}")
         observed = rdm_matrix_from_group(d_group)
-        d_best = d_mod[
-            (d_mod["measure"] == measure)
-            & (d_mod["window"] == window)
-            & (d_mod["value_kind"] == value_kind)
-            & (d_mod["model"] == "two_stage_shared_best")
-        ]
-        split_day = 2
-        if not d_best.empty and np.isfinite(float(d_best["split_day"].iloc[0])):
-            split_day = int(d_best["split_day"].iloc[0])
         mats = [
             observed,
             model_matrix("gradual"),
-            model_matrix("two_stage", split_day=split_day),
+            model_matrix("two_stage", split_day=1),
+            model_matrix("two_stage", split_day=2),
+            model_matrix("two_stage", split_day=3),
+            model_matrix("two_stage", split_day=4),
         ]
         titles = [
             "observed",
             "gradual model",
-            f"shared best two-stage D{split_day}",
+            "two-stage D1",
+            "two-stage D2",
+            "two-stage D3",
+            "two-stage D4",
         ]
-        vals = []
-        for mat in mats:
+        for col_i, mat in enumerate(mats):
+            ax = axes[row_i, col_i]
+            vals = []
             for val in mat.ravel():
                 if np.isfinite(val):
                     vals.append(float(val))
-        vmin = float(np.min(vals))
-        vmax = float(np.max(vals))
-        if vmax <= vmin:
-            vmax = vmin + 1e-6
-        cmap = plt.get_cmap("viridis").copy()
-        cmap.set_bad(color="0.82")
-        im = None
-        for col_i, mat in enumerate(mats):
-            ax = axes[row_i, col_i]
-            im = ax.imshow(
+            vmin = float(np.min(vals))
+            vmax = float(np.max(vals))
+            if vmax <= vmin:
+                vmax = vmin + 1e-6
+            cmap = plt.get_cmap("viridis").copy()
+            cmap.set_bad(color="0.82")
+            ax.imshow(
                 np.ma.masked_invalid(mat),
                 origin="upper",
                 cmap=cmap,
@@ -271,22 +266,29 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
                             fontsize=7,
                             color=color,
                         )
-        cax = fig.add_axes(
-            [
-                0.91,
-                0.12 + (len(conditions) - row_i - 1) * 0.78 / len(conditions),
-                0.012,
-                0.56 / len(conditions),
-            ]
-        )
-        fig.colorbar(im, cax=cax)
-    fig.suptitle(f"{modality_title(modality)} Day RDMs")
+            ax.text(
+                0.98,
+                0.02,
+                f"{vmin:.2f}-{vmax:.2f}",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=6,
+                color="white",
+                bbox={
+                    "boxstyle": "round,pad=0.12",
+                    "facecolor": "black",
+                    "alpha": 0.35,
+                    "linewidth": 0,
+                },
+            )
+    fig.suptitle(f"{modality_title(modality)} Day RDMs: Independent Panel Scales")
     fig.subplots_adjust(
-        top=0.92,
+        top=0.90,
         bottom=0.06,
-        left=0.10,
-        right=0.89,
-        wspace=0.32,
+        left=0.08,
+        right=0.98,
+        wspace=0.28,
         hspace=0.45,
     )
     fig_path = figures_dir / f"day_rdm_model_compare_matrices_{modality}.png"
