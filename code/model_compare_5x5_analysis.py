@@ -258,7 +258,9 @@ def mvpa_empirical_rows(output_dir):
     d = require_csv(path)
     rows = []
     for _, row in d.iterrows():
-        if str(row["fit_status"]) != "ok":
+        if str(row["fit_status"]) not in ["transfer", "cv"]:
+            continue
+        if int(row["train_day"]) == int(row["test_day"]):
             continue
         classifier = str(row["classifier"])
         if classifier not in CLASSIFIERS:

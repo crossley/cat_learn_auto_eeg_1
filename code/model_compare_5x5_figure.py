@@ -117,10 +117,23 @@ def ordered_conditions(summary_df):
     return rows
 
 
-def save_score_figure(scores_df, figures_dir):
+def modality_title(modality):
+    if modality == "mvpa":
+        return "MVPA"
+    if modality == "connectivity":
+        return "Connectivity"
+    if modality == "rsa":
+        return "RSA"
+    return str(modality)
+
+
+def save_score_figure(scores_df, figures_dir, modality):
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     summary_df, _best_df = family_score_summary(scores_df)
+    summary_df = summary_df[summary_df["modality"] == modality].copy()
+    if summary_df.empty:
+        raise ValueError(f"No model-comparison score rows for modality={modality}")
     conditions = ordered_conditions(summary_df)
     if len(conditions) == 0:
         raise ValueError("No model-comparison score conditions to plot")
@@ -173,11 +186,11 @@ def save_score_figure(scores_df, figures_dir):
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
     ax.set_xlabel("BIC support relative to subject's best model")
-    ax.set_title("5x5 Day-Structure Model Comparison")
+    ax.set_title(f"{modality_title(modality)} 5x5 Model Comparison")
     ax.grid(axis="x", alpha=0.25)
     ax.legend(frameon=False, loc="lower right")
     fig.tight_layout()
-    fig_path = figures_dir / "model_compare_5x5_scores.png"
+    fig_path = figures_dir / f"model_compare_5x5_scores_{modality}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -249,10 +262,13 @@ def best_two_stage_group_template(mat):
     return best_mat, best_fit, best_split
 
 
-def save_matrix_figure(group_df, scores_df, figures_dir):
+def save_matrix_figure(group_df, scores_df, figures_dir, modality):
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     summary_df, _best_df = family_score_summary(scores_df)
+    summary_df = summary_df[summary_df["modality"] == modality].copy()
+    if summary_df.empty:
+        raise ValueError(f"No model-comparison matrix rows for modality={modality}")
     conditions = ordered_conditions(summary_df)
     if len(conditions) == 0:
         raise ValueError("No model-comparison matrices to plot")
@@ -332,7 +348,9 @@ def save_matrix_figure(group_df, scores_df, figures_dir):
             ]
         )
         fig.colorbar(im, cax=cax)
-    fig.suptitle("Observed 5x5 Day Structure and Fitted Template Models")
+    fig.suptitle(
+        f"{modality_title(modality)} Observed Day Structure and Template Models"
+    )
     fig.subplots_adjust(
         top=0.96,
         bottom=0.04,
@@ -341,7 +359,7 @@ def save_matrix_figure(group_df, scores_df, figures_dir):
         wspace=0.30,
         hspace=0.42,
     )
-    fig_path = figures_dir / "model_compare_5x5_matrices.png"
+    fig_path = figures_dir / f"model_compare_5x5_matrices_{modality}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -353,10 +371,13 @@ def save_fig_model_compare_5x5(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
     scores = require_csv(output_dir / "model_compare_5x5_scores.csv")
     group = require_csv(output_dir / "model_compare_5x5_group_matrices.csv")
     paths = {}
-    paths["scores"] = save_score_figure(scores, figures_dir)
-    paths["matrices"] = save_matrix_figure(group, scores, figures_dir)
-    print(f"[5x5 model comparison] wrote {paths['scores']}", flush=True)
-    print(f"[5x5 model comparison] wrote {paths['matrices']}", flush=True)
+    for modality in ["mvpa", "connectivity", "rsa"]:
+        score_key = f"scores_{modality}"
+        matrix_key = f"matrices_{modality}"
+        paths[score_key] = save_score_figure(scores, figures_dir, modality)
+        paths[matrix_key] = save_matrix_figure(group, scores, figures_dir, modality)
+        print(f"[5x5 model comparison] wrote {paths[score_key]}", flush=True)
+        print(f"[5x5 model comparison] wrote {paths[matrix_key]}", flush=True)
     return paths
 
 
