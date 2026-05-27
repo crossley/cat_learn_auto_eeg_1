@@ -180,13 +180,6 @@ def model_specs():
                 "label": f"two_stage_{split_day}",
             }
         )
-    rows.append(
-        {
-            "model": "two_stage_best",
-            "split_day": np.nan,
-            "label": "two_stage_best",
-        }
-    )
     return rows
 
 
@@ -229,14 +222,6 @@ def score_subject(day_rows):
                 "rho": spearman_corr(emp_vec, pred),
             }
         )
-    best_rho, best_split = best_two_stage(day_rows, emp_vec)
-    rows.append(
-        {
-            "model": "two_stage_best",
-            "split_day": best_split,
-            "rho": best_rho,
-        }
-    )
     return rows
 
 
@@ -251,9 +236,6 @@ def permuted_day_map(rng):
 
 def permutation_score(spec, day_rows, emp_vec, rng):
     day_map = permuted_day_map(rng)
-    if spec["model"] == "two_stage_best":
-        rho, _split = best_two_stage(day_rows, emp_vec, day_map=day_map)
-        return rho
     split_arg = None
     if np.isfinite(spec["split_day"]):
         split_arg = int(spec["split_day"])
@@ -264,6 +246,107 @@ def permutation_score(spec, day_rows, emp_vec, rng):
         day_map=day_map,
     )
     return spearman_corr(emp_vec, pred)
+
+
+def split_mean_from_subject_scores(payloads, split_day):
+    vals = []
+    for payload in payloads:
+        for score in payload["scores"]:
+            if score["model"] != "two_stage":
+                continue
+            if int(score["split_day"]) != int(split_day):
+                continue
+            if np.isfinite(score["rho"]):
+                vals.append(float(score["rho"]))
+    if len(vals) == 0:
+        return np.nan, np.nan, 0
+    arr = np.asarray(vals, dtype=float)
+    sem = np.nan
+    if len(arr) > 1:
+        sem = float(np.std(arr, ddof=1) / np.sqrt(len(arr)))
+    return float(np.mean(arr)), sem, int(len(arr))
+
+
+def gradual_mean_from_subject_scores(payloads):
+    vals = []
+    for payload in payloads:
+        for score in payload["scores"]:
+            if score["model"] != "gradual":
+                continue
+            if np.isfinite(score["rho"]):
+                vals.append(float(score["rho"]))
+    if len(vals) == 0:
+        return np.nan, np.nan, 0
+    arr = np.asarray(vals, dtype=float)
+    sem = np.nan
+    if len(arr) > 1:
+        sem = float(np.std(arr, ddof=1) / np.sqrt(len(arr)))
+    return float(np.mean(arr)), sem, int(len(arr))
+
+
+def shared_best_split(payloads):
+    best_split = np.nan
+    best_mean = np.nan
+    best_sem = np.nan
+    best_n = 0
+    for split_day in [1, 2, 3, 4]:
+        mean_val, sem_val, n_val = split_mean_from_subject_scores(
+            payloads,
+            split_day,
+        )
+        if not np.isfinite(mean_val):
+            continue
+        if not np.isfinite(best_mean) or mean_val > best_mean:
+            best_split = int(split_day)
+            best_mean = float(mean_val)
+            best_sem = sem_val
+            best_n = int(n_val)
+    return best_split, best_mean, best_sem, best_n
+
+
+def permuted_shared_scores(payloads, specs, rng):
+    split_accum = {}
+    split_counts = {}
+    for split_day in [1, 2, 3, 4]:
+        split_accum[split_day] = 0.0
+        split_counts[split_day] = 0
+    gradual_accum = 0.0
+    gradual_count = 0
+    for payload in payloads:
+        day_map = permuted_day_map(rng)
+        for spec in specs:
+            split_arg = None
+            if np.isfinite(spec["split_day"]):
+                split_arg = int(spec["split_day"])
+            pred = model_vector(
+                payload["day_rows"],
+                spec["model"],
+                split_day=split_arg,
+                day_map=day_map,
+            )
+            rho = spearman_corr(payload["emp_vec"], pred)
+            if not np.isfinite(rho):
+                continue
+            if spec["model"] == "gradual":
+                gradual_accum += float(rho)
+                gradual_count += 1
+            elif spec["model"] == "two_stage":
+                split_day = int(spec["split_day"])
+                split_accum[split_day] += float(rho)
+                split_counts[split_day] += 1
+    gradual_mean = np.nan
+    if gradual_count > 0:
+        gradual_mean = gradual_accum / float(gradual_count)
+    best_mean = np.nan
+    best_split = np.nan
+    for split_day in [1, 2, 3, 4]:
+        if split_counts[split_day] == 0:
+            continue
+        mean_val = split_accum[split_day] / float(split_counts[split_day])
+        if not np.isfinite(best_mean) or mean_val > best_mean:
+            best_mean = float(mean_val)
+            best_split = int(split_day)
+    return gradual_mean, best_mean, best_split
 
 
 def condition_results(condition_key, d_condition, rng):
@@ -306,42 +389,51 @@ def condition_results(condition_key, d_condition, rng):
             if label in observed and np.isfinite(score["rho"]):
                 observed[label].append(float(score["rho"]))
 
+    shared_split, shared_mean, shared_sem, shared_n = shared_best_split(payloads)
+    gradual_mean, _gradual_sem, _gradual_n = gradual_mean_from_subject_scores(
+        payloads
+    )
+
     perm_scores = {}
     for spec in specs:
         perm_scores[spec["label"]] = []
-    perm_diffs = []
+    perm_shared_scores = []
+    perm_shared_diffs = []
     for _perm_i in range(N_PERMUTATIONS):
         accum = {}
         counts = {}
         for spec in specs:
             accum[spec["label"]] = 0.0
             counts[spec["label"]] = 0
-        diffs = []
         for payload in payloads:
-            gradual_rho = np.nan
-            best_rho = np.nan
+            day_map = permuted_day_map(rng)
             for spec in specs:
-                rho = permutation_score(
-                    spec,
+                split_arg = None
+                if np.isfinite(spec["split_day"]):
+                    split_arg = int(spec["split_day"])
+                pred = model_vector(
                     payload["day_rows"],
-                    payload["emp_vec"],
-                    rng,
+                    spec["model"],
+                    split_day=split_arg,
+                    day_map=day_map,
                 )
+                rho = spearman_corr(payload["emp_vec"], pred)
                 if np.isfinite(rho):
                     accum[spec["label"]] += float(rho)
                     counts[spec["label"]] += 1
-                if spec["label"] == "gradual":
-                    gradual_rho = rho
-                if spec["label"] == "two_stage_best":
-                    best_rho = rho
-            if np.isfinite(gradual_rho) and np.isfinite(best_rho):
-                diffs.append(float(gradual_rho) - float(best_rho))
         for spec in specs:
             label = spec["label"]
             if counts[label] > 0:
                 perm_scores[label].append(accum[label] / float(counts[label]))
-        if len(diffs) > 0:
-            perm_diffs.append(float(np.mean(diffs)))
+        perm_gradual, perm_shared, _perm_split = permuted_shared_scores(
+            payloads,
+            specs,
+            rng,
+        )
+        if np.isfinite(perm_shared):
+            perm_shared_scores.append(float(perm_shared))
+        if np.isfinite(perm_shared) and np.isfinite(perm_gradual):
+            perm_shared_diffs.append(float(perm_shared) - float(perm_gradual))
 
     summary_rows = []
     for spec in specs:
@@ -387,38 +479,53 @@ def condition_results(condition_key, d_condition, rng):
             }
         )
 
+    p_shared = np.nan
+    if len(perm_shared_scores) > 0 and np.isfinite(shared_mean):
+        count = 0
+        for val in perm_shared_scores:
+            if val >= shared_mean:
+                count += 1
+        p_shared = float((count + 1.0) / (len(perm_shared_scores) + 1.0))
+    summary_rows.append(
+        {
+            "modality": modality,
+            "measure": measure,
+            "window": window,
+            "value_kind": value_kind,
+            "model": "two_stage_shared_best",
+            "split_day": shared_split,
+            "mean_rho": shared_mean,
+            "sem_rho": shared_sem,
+            "n_subjects": shared_n,
+            "p_perm_greater": p_shared,
+            "n_permutations": int(len(perm_shared_scores)),
+        }
+    )
+
     pairwise_rows = []
-    gradual_vals = np.asarray(observed["gradual"], dtype=float)
-    best_vals = np.asarray(observed["two_stage_best"], dtype=float)
-    n_pair = min(len(gradual_vals), len(best_vals))
-    if n_pair > 0:
-        diffs = gradual_vals[:n_pair] - best_vals[:n_pair]
-        diffs = diffs[np.isfinite(diffs)]
-        if len(diffs) > 0:
-            observed_diff = float(np.mean(diffs))
-            sem = np.nan
-            if len(diffs) > 1:
-                sem = float(np.std(diffs, ddof=1) / np.sqrt(len(diffs)))
-            p_two = np.nan
-            if len(perm_diffs) > 0:
-                count = 0
-                for val in perm_diffs:
-                    if abs(val) >= abs(observed_diff):
-                        count += 1
-                p_two = float((count + 1.0) / (len(perm_diffs) + 1.0))
-            pairwise_rows.append(
-                {
-                    "modality": modality,
-                    "measure": measure,
-                    "window": window,
-                    "value_kind": value_kind,
-                    "mean_diff_gradual_minus_two_best": observed_diff,
-                    "sem_diff": sem,
-                    "n_subjects": int(len(diffs)),
-                    "p_perm_two_sided": p_two,
-                    "n_permutations": int(len(perm_diffs)),
-                }
-            )
+    observed_delta = np.nan
+    if np.isfinite(shared_mean) and np.isfinite(gradual_mean):
+        observed_delta = float(shared_mean) - float(gradual_mean)
+    p_greater = np.nan
+    if len(perm_shared_diffs) > 0 and np.isfinite(observed_delta):
+        count = 0
+        for val in perm_shared_diffs:
+            if val >= observed_delta:
+                count += 1
+        p_greater = float((count + 1.0) / (len(perm_shared_diffs) + 1.0))
+    pairwise_rows.append(
+        {
+            "modality": modality,
+            "measure": measure,
+            "window": window,
+            "value_kind": value_kind,
+            "shared_best_split_day": shared_split,
+            "mean_diff_shared_two_minus_gradual": observed_delta,
+            "n_subjects": int(min(shared_n, _gradual_n)),
+            "p_perm_shared_two_greater_gradual": p_greater,
+            "n_permutations": int(len(perm_shared_diffs)),
+        }
+    )
     return score_rows, summary_rows, pairwise_rows
 
 
@@ -481,6 +588,45 @@ def write_group_day_rdms(empirical_df, output_dir):
     return path
 
 
+def write_model_rdm_correlations(output_dir):
+    rows = []
+    pair_rows = pair_list()
+    models = [
+        {"model": "gradual", "split_day": np.nan, "label": "gradual"},
+        {"model": "two_stage", "split_day": 1, "label": "two_stage_D1"},
+        {"model": "two_stage", "split_day": 2, "label": "two_stage_D2"},
+        {"model": "two_stage", "split_day": 3, "label": "two_stage_D3"},
+        {"model": "two_stage", "split_day": 4, "label": "two_stage_D4"},
+    ]
+    vectors = {}
+    for spec in models:
+        split_arg = None
+        if np.isfinite(spec["split_day"]):
+            split_arg = int(spec["split_day"])
+        vectors[spec["label"]] = model_vector(
+            pair_rows,
+            spec["model"],
+            split_day=split_arg,
+        )
+    for spec_i in models:
+        for spec_j in models:
+            label_i = spec_i["label"]
+            label_j = spec_j["label"]
+            rows.append(
+                {
+                    "model_i": label_i,
+                    "model_j": label_j,
+                    "spearman_rho": spearman_corr(
+                        vectors[label_i],
+                        vectors[label_j],
+                    ),
+                }
+            )
+    path = output_dir / "day_rdm_model_compare_model_correlations.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
 def run_day_rdm_model_compare(output_dir=OUTPUT_DIR):
     output_dir = Path(output_dir)
     empirical_path = output_dir / "model_compare_5x5_empirical_values.csv"
@@ -494,15 +640,18 @@ def run_day_rdm_model_compare(output_dir=OUTPUT_DIR):
     summary_df.to_csv(summary_path, index=False)
     pairwise_df.to_csv(pairwise_path, index=False)
     group_path = write_group_day_rdms(empirical_df, output_dir)
+    model_corr_path = write_model_rdm_correlations(output_dir)
     print(f"[day RDM] wrote {scores_path}", flush=True)
     print(f"[day RDM] wrote {summary_path}", flush=True)
     print(f"[day RDM] wrote {pairwise_path}", flush=True)
     print(f"[day RDM] wrote {group_path}", flush=True)
+    print(f"[day RDM] wrote {model_corr_path}", flush=True)
     return {
         "subject_scores": scores_path,
         "summary": summary_path,
         "pairwise": pairwise_path,
         "group_rdms": group_path,
+        "model_correlations": model_corr_path,
     }
 
 

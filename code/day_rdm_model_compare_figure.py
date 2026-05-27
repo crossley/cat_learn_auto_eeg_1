@@ -75,7 +75,7 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
     colors = {
         "gradual": "#2a7f62",
         "two_stage": "#9370b8",
-        "two_stage_best": "#5e3c99",
+        "two_stage_shared_best": "#5e3c99",
     }
     for row_i, condition in enumerate(conditions):
         measure, window, value_kind = condition
@@ -104,12 +104,13 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
             vals.append(float(d_split["mean_rho"].iloc[0]))
             errs.append(float(d_split["sem_rho"].iloc[0]))
             bar_colors.append(colors["two_stage"])
-        d_best = d_condition[d_condition["model"] == "two_stage_best"]
+        d_best = d_condition[d_condition["model"] == "two_stage_shared_best"]
         if not d_best.empty:
-            labels.append("best 2-stage")
+            split_day = int(d_best["split_day"].iloc[0])
+            labels.append(f"shared best D{split_day}")
             vals.append(float(d_best["mean_rho"].iloc[0]))
             errs.append(float(d_best["sem_rho"].iloc[0]))
-            bar_colors.append(colors["two_stage_best"])
+            bar_colors.append(colors["two_stage_shared_best"])
         x = np.arange(len(vals), dtype=float)
         ax.bar(
             x,
@@ -131,12 +132,12 @@ def save_modality_score_figure(summary_df, pairwise_df, figures_dir, modality):
             & (pairwise_df["value_kind"] == value_kind)
         ]
         if not d_pair.empty:
-            diff = float(d_pair["mean_diff_gradual_minus_two_best"].iloc[0])
-            p_val = float(d_pair["p_perm_two_sided"].iloc[0])
+            diff = float(d_pair["mean_diff_shared_two_minus_gradual"].iloc[0])
+            p_val = float(d_pair["p_perm_shared_two_greater_gradual"].iloc[0])
             ax.text(
                 0.99,
                 0.96,
-                f"gradual - best two = {diff:.2f}, p={p_val:.3f}",
+                f"shared two - gradual = {diff:.2f}, p={p_val:.3f}",
                 ha="right",
                 va="top",
                 transform=ax.transAxes,
@@ -210,7 +211,7 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
             (d_mod["measure"] == measure)
             & (d_mod["window"] == window)
             & (d_mod["value_kind"] == value_kind)
-            & (d_mod["model"] == "two_stage_best")
+            & (d_mod["model"] == "two_stage_shared_best")
         ]
         split_day = 2
         if not d_best.empty and np.isfinite(float(d_best["split_day"].iloc[0])):
@@ -223,7 +224,7 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
         titles = [
             "observed",
             "gradual model",
-            f"best two-stage D{split_day}",
+            f"shared best two-stage D{split_day}",
         ]
         vals = []
         for mat in mats:
@@ -294,6 +295,63 @@ def save_modality_matrix_figure(group_df, summary_df, figures_dir, modality):
     return fig_path
 
 
+def save_model_correlation_figure(model_corr_df, figures_dir):
+    labels = []
+    for label in model_corr_df["model_i"]:
+        if label not in labels:
+            labels.append(label)
+    mat = np.full((len(labels), len(labels)), np.nan, dtype=float)
+    for _, row in model_corr_df.iterrows():
+        i = labels.index(row["model_i"])
+        j = labels.index(row["model_j"])
+        mat[i, j] = float(row["spearman_rho"])
+    fig, ax = plt.subplots(figsize=(5.7, 5.0))
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad(color="0.82")
+    im = ax.imshow(
+        np.ma.masked_invalid(mat),
+        origin="upper",
+        cmap=cmap,
+        vmin=-1.0,
+        vmax=1.0,
+    )
+    display_labels = []
+    for label in labels:
+        display_labels.append(label.replace("two_stage_", "2-stage "))
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(display_labels, rotation=35, ha="right")
+    ax.set_yticklabels(display_labels)
+    for r in range(len(labels)):
+        for c in range(len(labels)):
+            if np.isfinite(mat[r, c]):
+                color = "white"
+                if abs(mat[r, c]) < 0.55:
+                    color = "black"
+                ax.text(
+                    c,
+                    r,
+                    f"{mat[r, c]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color=color,
+                )
+    ax.set_title("Model RDM Correlations")
+    fig.subplots_adjust(
+        top=0.90,
+        bottom=0.22,
+        left=0.24,
+        right=0.86,
+    )
+    cax = fig.add_axes([0.88, 0.25, 0.020, 0.56])
+    fig.colorbar(im, cax=cax, label="Spearman rho")
+    fig_path = figures_dir / "day_rdm_model_compare_model_correlations.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_day_rdm_model_compare(
     output_dir=OUTPUT_DIR,
     figures_dir=FIGURES_DIR,
@@ -304,6 +362,9 @@ def save_fig_day_rdm_model_compare(
     summary = require_csv(output_dir / "day_rdm_model_compare_summary.csv")
     pairwise = require_csv(output_dir / "day_rdm_model_compare_pairwise.csv")
     group = require_csv(output_dir / "day_rdm_model_compare_group_rdms.csv")
+    model_corr = require_csv(
+        output_dir / "day_rdm_model_compare_model_correlations.csv"
+    )
     paths = {}
     for modality in ["mvpa", "connectivity", "rsa"]:
         score_key = f"scores_{modality}"
@@ -322,6 +383,11 @@ def save_fig_day_rdm_model_compare(
         )
         print(f"[day RDM] wrote {paths[score_key]}", flush=True)
         print(f"[day RDM] wrote {paths[matrix_key]}", flush=True)
+    paths["model_correlations"] = save_model_correlation_figure(
+        model_corr,
+        figures_dir,
+    )
+    print(f"[day RDM] wrote {paths['model_correlations']}", flush=True)
     return paths
 
 
