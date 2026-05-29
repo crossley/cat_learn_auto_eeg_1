@@ -4,6 +4,7 @@
 from pathlib import Path
 import os
 import re
+import shutil
 
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
@@ -14,6 +15,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon
 import numpy as np
 import pandas as pd
 
@@ -78,51 +80,17 @@ def corr_text(x, y):
 def setup_axis(ax):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.grid(alpha=0.22)
 
 
 def plot_presentation_erp_stim(output_dir, figures_dir):
-    d = require_csv(
-        output_dir / "erp_grand_average_by_day_lock_condition.csv",
-        "ERP grand-average output",
-    )
-    d = d[(d["lock_type"] == "stim") & (d["condition"] == "all")].copy()
-    if d.empty:
-        raise ValueError("No stim/all rows in ERP grand-average output")
-    fig, axes = plt.subplots(1, len(DAYS), figsize=(15, 3.2), sharex=True, sharey=True)
-    channels = sorted(d["channel"].drop_duplicates().tolist())
-    for ax_i, day in enumerate(DAYS):
-        ax = axes[ax_i]
-        d_day = d[d["day"] == day]
-        if d_day.empty:
-            raise ValueError(f"Missing stim ERP rows for day={day}")
-        for channel in channels:
-            d_ch = d_day[d_day["channel"] == channel].sort_values("time_s")
-            ax.plot(
-                d_ch["time_s"].to_numpy(dtype=float),
-                d_ch["amplitude_v"].to_numpy(dtype=float) * 1e6,
-                color="0.35",
-                alpha=0.22,
-                linewidth=0.55,
-            )
-        gfp = []
-        times = sorted(d_day["time_s"].drop_duplicates().tolist())
-        for time_s in times:
-            vals = d_day[d_day["time_s"] == time_s]["amplitude_v"].to_numpy(float)
-            gfp.append(float(np.sqrt(np.nanmean(vals**2))) * 1e6)
-        ax.plot(times, gfp, color="#c23b22", linewidth=2.1, label="GFP")
-        ax.axvline(0, color="0.25", linewidth=0.8)
-        ax.set_title(f"Day {day}")
-        ax.set_xlim(-0.1, 0.8)
-        setup_axis(ax)
-        if ax_i == 0:
-            ax.set_ylabel("amplitude / GFP (uV)")
-        ax.set_xlabel("time from stimulus (s)")
-    fig.suptitle("Stimulus-Locked ERPs")
-    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    source_path = figures_dir / "erp_grand_average_stim_all.png"
+    if not source_path.exists():
+        raise FileNotFoundError(
+            f"Missing MNE-style ERP figure: {source_path}. "
+            "Run code/erp_grand_average_figure.py first."
+        )
     fig_path = figures_dir / "presentation_erp_stim_all.png"
-    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    shutil.copyfile(source_path, fig_path)
     return fig_path
 
 
@@ -135,6 +103,10 @@ def plot_presentation_connect_overlay(output_dir, figures_dir):
         output_dir / "sensorwide_carpet_timeseries.csv",
         "connectivity carpet output",
     )
+    subject = require_csv(
+        output_dir / "sensorwide_carpet_subject_timeseries.csv",
+        "connectivity subject carpet output",
+    )
     active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
     if active.empty:
         raise ValueError("Missing active-pair rows for active_pct=0.10")
@@ -146,26 +118,58 @@ def plot_presentation_connect_overlay(output_dir, figures_dir):
     ].copy()
     if d.empty:
         raise ValueError("No top-10% stim/broadband connectivity rows found")
+    d_subject = subject[
+        (subject["lock_type"] == "stim")
+        & (subject["band"] == "broadband")
+        & (subject["ch_i"] + "--" + subject["ch_j"]).isin(pair_labels)
+    ].copy()
+    if d_subject.empty:
+        raise ValueError("No top-10% subject connectivity rows found")
     fig, ax = plt.subplots(figsize=(7.2, 3.8))
     for day in DAYS:
         d_day = d[d["day"] == day]
         rows = []
         for time_s in sorted(d_day["lock_time"].drop_duplicates().tolist()):
             vals = d_day[d_day["lock_time"] == time_s]["conn_val"].to_numpy(float)
-            rows.append({"time": time_s, "mean": float(np.nanmean(vals))})
+            g_time = d_subject[
+                (d_subject["day"] == day)
+                & np.isclose(d_subject["lock_time"].astype(float), float(time_s))
+            ]
+            subject_vals = []
+            for subject_id, g_subject in g_time.groupby("subject"):
+                vals_sub = g_subject["conn_val"].to_numpy(float)
+                subject_vals.append(float(np.nanmean(vals_sub)))
+            rows.append(
+                {
+                    "time": time_s,
+                    "mean": float(np.nanmean(vals)),
+                    "sem": sem(subject_vals),
+                }
+            )
         plot_df = pd.DataFrame(rows)
+        x = plot_df["time"].to_numpy(float)
+        y = plot_df["mean"].to_numpy(float)
+        y_sem = plot_df["sem"].to_numpy(float)
         ax.plot(
-            plot_df["time"],
-            plot_df["mean"],
+            x,
+            y,
             color=DAY_COLORS[day],
             linewidth=2.0,
             label=f"D{day}",
+        )
+        ax.fill_between(
+            x,
+            y - y_sem,
+            y + y_sem,
+            color=DAY_COLORS[day],
+            alpha=0.13,
+            linewidth=0,
         )
     ax.axvline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("mean connectivity")
     ax.set_title("Broadband Connectivity, Top 10% Active Edges")
-    ax.legend(frameon=False, ncol=5, loc="upper left")
+    ax.legend(frameon=False, ncol=1, loc="upper right")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_connectivity_top10_overlay.png"
@@ -233,41 +237,24 @@ def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
             label=plot_label,
             zorder=zorder,
         )
-    shape = require_csv_any(
-        [
-            output_dir / "connect_sensorwide_model_posterior_shape_summary_top10.csv",
-            output_dir / "connect_sensorwide_model_posterior_shape_summary.csv",
-        ],
-        "connectivity posterior-shape output",
-    )
-    g = shape[
-        np.isclose(shape["active_pct"].astype(float), 0.10)
-        & (shape["contrast"] == "two_stage_hybrid_D1_minus_gradual")
-        & (shape["shape_model"] == "two_window")
-    ]
-    if g.empty:
-        raise ValueError(
-            "Missing top-10% posterior-shape row. Run "
-            "ACTIVE_PCT=0.10 "
-            "python code/connect_sensorwide_model_posterior_shape_analysis.py first."
-        )
-    row = g.iloc[0]
-    for lo_col, hi_col in [("lb_early", "ub_early"), ("lb_late", "ub_late")]:
-        ax.axvspan(
-            float(row[lo_col]),
-            float(row[hi_col]),
-            color="#7b3294",
-            alpha=0.12,
-            linewidth=0,
-        )
-    odds = float(row["posterior_model_prob"])
-    text = f"P(two-window)={odds:.2f}"
-    ax.text(0.98, 0.94, text, transform=ax.transAxes, ha="right", va="top")
+        if label in ["gradual", "two_stage_binary_D1", "two_stage_hybrid_D1"]:
+            x = g["time_center_sec"].to_numpy(float)
+            y = g["rho_mean"].to_numpy(float)
+            y_sem = g["rho_sem"].to_numpy(float)
+            ax.fill_between(
+                x,
+                y - y_sem,
+                y + y_sem,
+                color=model_color(label),
+                alpha=0.13,
+                linewidth=0,
+                zorder=zorder - 1,
+            )
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("model correlation")
     ax.set_title("Connectivity Model Evidence Over Time")
-    ax.legend(frameon=False, fontsize=8, ncol=3, loc="lower right")
+    ax.legend(frameon=False, fontsize=8, ncol=3, loc="lower center")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_connectivity_model_timecourse_top10.png"
@@ -276,7 +263,26 @@ def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
     return fig_path
 
 
+def draw_head_outline(ax):
+    head = Circle((0, 0), 1.02, fill=False, color="0.30", linewidth=1.0, zorder=1)
+    nose = Polygon(
+        [[-0.08, 1.00], [0.00, 1.13], [0.08, 1.00]],
+        closed=False,
+        fill=False,
+        color="0.30",
+        linewidth=1.0,
+        zorder=1,
+    )
+    left_ear = Circle((-1.04, 0.0), 0.08, fill=False, color="0.30", linewidth=1.0)
+    right_ear = Circle((1.04, 0.0), 0.08, fill=False, color="0.30", linewidth=1.0)
+    ax.add_patch(head)
+    ax.add_patch(nose)
+    ax.add_patch(left_ear)
+    ax.add_patch(right_ear)
+
+
 def draw_edge_panel(ax, rows, layout, value_col, title, vlim):
+    draw_head_outline(ax)
     ax.scatter(layout["x"], layout["y"], s=18, color="0.25", zorder=3)
     ch_pos = {}
     for row in layout.itertuples(index=False):
@@ -291,34 +297,36 @@ def draw_edge_panel(ax, rows, layout, value_col, title, vlim):
         color = "#b2182b"
         if val < 0:
             color = "#2166ac"
-        ax.plot([x1, x2], [y1, y2], color=color, alpha=0.25 + 0.55 * scaled,
-                linewidth=0.4 + 2.2 * scaled, zorder=2)
+        ax.plot(
+            [x1, x2],
+            [y1, y2],
+            color=color,
+            alpha=0.16 + 0.42 * scaled,
+            linewidth=0.25 + 1.25 * scaled,
+            zorder=2,
+        )
     ax.set_title(title)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_aspect("equal")
+    ax.set_xlim(-1.18, 1.18)
+    ax.set_ylim(-1.12, 1.18)
     for spine in ax.spines.values():
         spine.set_visible(False)
 
 
-def plot_presentation_connect_edges(output_dir, figures_dir):
-    edges = require_csv(
-        output_dir / "connect_sensorwide_window_average_subject_edges.csv",
-        "connectivity window-average edge output",
-    )
-    active = require_csv(
-        output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
-        "connectivity active-pair output",
-    )
-    layout = require_csv(
-        output_dir / "sensorwide_channel_layout.csv",
-        "connectivity channel layout output",
-    )
+def plot_presentation_connect_edges_for_window(
+    edges,
+    active,
+    layout,
+    figures_dir,
+    window,
+):
     active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
     pair_labels = set(active["pair_label"].tolist())
-    d = edges[(edges["window"] == "late") & edges["pair_label"].isin(pair_labels)]
+    d = edges[(edges["window"] == window) & edges["pair_label"].isin(pair_labels)]
     if d.empty:
-        raise ValueError("No late-window top-10% edge rows available")
+        raise ValueError(f"No {window}-window top-10% edge rows available")
     rows = []
     for pair_label in sorted(pair_labels):
         g = d[d["pair_label"] == pair_label]
@@ -346,12 +354,44 @@ def plot_presentation_connect_edges(output_dir, figures_dir):
     draw_edge_panel(axes[0], plot_df, layout, "day1", "Day 1", vlim)
     draw_edge_panel(axes[1], plot_df, layout, "later", "Days 2-5", vlim)
     draw_edge_panel(axes[2], plot_df, layout, "difference", "Day 1 - Days 2-5", vlim)
-    fig.suptitle("Late-Window Connectivity Edges, Top 10%")
+    fig.suptitle(f"{window.title()}-Window Connectivity Edges, Top 10%")
     fig.tight_layout(rect=[0, 0, 1, 0.9])
-    fig_path = figures_dir / "presentation_connectivity_d1_later_edges_top10.png"
+    fig_path = figures_dir / (
+        f"presentation_connectivity_d1_later_edges_{window}_top10.png"
+    )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
+
+
+def plot_presentation_connect_edges(output_dir, figures_dir):
+    edges = require_csv(
+        output_dir / "connect_sensorwide_window_average_subject_edges.csv",
+        "connectivity window-average edge output",
+    )
+    active = require_csv(
+        output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
+        "connectivity active-pair output",
+    )
+    layout = require_csv(
+        output_dir / "sensorwide_channel_layout.csv",
+        "connectivity channel layout output",
+    )
+    paths = []
+    for window in ["early", "late"]:
+        paths.append(
+            plot_presentation_connect_edges_for_window(
+                edges,
+                active,
+                layout,
+                figures_dir,
+                window,
+            )
+        )
+    legacy_path = figures_dir / "presentation_connectivity_d1_later_edges_top10.png"
+    shutil.copyfile(paths[1], legacy_path)
+    paths.append(legacy_path)
+    return paths
 
 
 def plot_presentation_mvpa_auc(output_dir, figures_dir):
@@ -376,7 +416,7 @@ def plot_presentation_mvpa_auc(output_dir, figures_dir):
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("AUC")
     ax.set_title("Time-Resolved Category Decoding")
-    ax.legend(frameon=False, ncol=5, loc="upper left")
+    ax.legend(frameon=False, ncol=1, loc="upper left")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_mvpa_time_resolved_auc.png"
@@ -471,7 +511,7 @@ def plot_presentation_mvpa_peak_behavior(output_dir, figures_dir):
                        alpha=0.8, label=f"D{day}")
         ax.set_title(f"{window} AUC vs accuracy, {corr_text(g['auc'], g['accuracy'])}")
         ax.set_xlabel("AUC")
-        ax.set_ylabel("accuracy")
+        ax.set_ylabel("Human Category Choice Accuracy")
         setup_axis(ax)
     axes[1, 1].legend(frameon=False, fontsize=8, loc="lower right")
     fig.tight_layout()
@@ -531,17 +571,28 @@ def transfer_matrix(group, classifier, window):
     return mat
 
 
-def template_matrix(kind):
+def template_matrix(kind, split_day=None):
     mat = np.full((5, 5), np.nan)
     for train_day in DAYS:
         for test_day in DAYS:
             if kind == "gradual":
                 val = (min(train_day, test_day) - 1.0) / 4.0
-            elif kind == "d1_split":
+            elif kind == "split_gradual":
+                if split_day is None:
+                    raise ValueError("split_gradual requires split_day")
+                train_late = train_day > split_day
+                test_late = test_day > split_day
+                if train_late != test_late:
+                    val = 0.0
+                else:
+                    val = (min(train_day, test_day) - 1.0) / 4.0
+            elif kind == "split_binary":
+                if split_day is None:
+                    raise ValueError("split_binary requires split_day")
                 val = 1.0
-                if (train_day == 1 and test_day > 1) or (
-                    train_day > 1 and test_day == 1
-                ):
+                train_late = train_day > split_day
+                test_late = test_day > split_day
+                if train_late != test_late:
                     val = 0.0
             else:
                 raise ValueError(f"Unknown template: {kind}")
@@ -573,22 +624,45 @@ def plot_presentation_mvpa_window_model(output_dir, figures_dir):
         "late MVPA transfer output",
     )
     group = pd.concat([early, late], ignore_index=True)
-    fig, axes = plt.subplots(2, 3, figsize=(9.8, 6.0))
+    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.4))
     for row_i, window in enumerate(["early", "late"]):
         mat = transfer_matrix(group, "logreg", window)
-        im0 = plot_matrix(axes[row_i, 0], mat, f"{window} observed AUC",
-                          "viridis", 0.50, 0.62)
-        plot_matrix(axes[row_i, 1], template_matrix("gradual"),
-                    "gradual prediction", "Greys", 0, 1)
-        plot_matrix(axes[row_i, 2], template_matrix("d1_split"),
-                    "D1 split prediction", "Greys", 0, 1)
-        fig.colorbar(im0, ax=axes[row_i, 0], fraction=0.046)
-    fig.suptitle("Windowed MVPA Transfer Matrices")
+        image = plot_matrix(axes[row_i], mat, f"{window} observed AUC",
+                            "viridis", 0.50, 0.62)
+        fig.colorbar(image, ax=axes[row_i], fraction=0.046)
+    fig.suptitle("Windowed MVPA Transfer")
     fig.tight_layout(rect=[0, 0, 1, 0.94])
-    fig_path = figures_dir / "presentation_mvpa_window_transfer_model_compare.png"
+    fig_path = figures_dir / "presentation_mvpa_window_transfer_empirical.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    return fig_path
+
+    fig, axes = plt.subplots(2, 5, figsize=(13.2, 5.6))
+    plot_matrix(axes[0, 0], template_matrix("gradual"), "gradual", "Greys", 0, 1)
+    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
+        plot_matrix(
+            axes[0, idx],
+            template_matrix("split_gradual", split_day=split_day),
+            f"D{split_day} split gradual",
+            "Greys",
+            0,
+            1,
+        )
+    axes[1, 0].axis("off")
+    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
+        plot_matrix(
+            axes[1, idx],
+            template_matrix("split_binary", split_day=split_day),
+            f"D{split_day} split binary",
+            "Greys",
+            0,
+            1,
+        )
+    fig.suptitle("MVPA Transfer Model Predictions")
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    model_path = figures_dir / "presentation_mvpa_window_transfer_model_predictions.png"
+    fig.savefig(model_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return [fig_path, model_path]
 
 
 def plot_presentation_rsa(output_dir, figures_dir):
@@ -596,68 +670,75 @@ def plot_presentation_rsa(output_dir, figures_dir):
         output_dir / "rsa_stim_model_fit_timecourses.csv",
         "stim RSA model-fit output",
     )
-    fig, ax = plt.subplots(figsize=(7.4, 3.8))
-    models = ["Physical distance", "Category / response"]
-    for model in models:
-        rows = []
-        g_model = d[d["model"] == model]
-        for time_s in sorted(g_model["time_sec"].drop_duplicates().tolist()):
-            vals = g_model[g_model["time_sec"] == time_s]["rho"].to_numpy(float)
-            rows.append({"time": time_s, "mean": float(np.nanmean(vals)),
-                         "sem": sem(vals)})
-        g = pd.DataFrame(rows)
-        color = "#4c78a8"
-        if model == "Category / response":
-            color = "#f58518"
-        ax.plot(g["time"], g["mean"], color=color, linewidth=2.0, label=model)
-        ax.fill_between(g["time"], g["mean"] - g["sem"], g["mean"] + g["sem"],
-                        color=color, alpha=0.15, linewidth=0)
-    ax.axhline(0, color="0.25", linewidth=0.8)
-    ax.set_xlabel("time from stimulus (s)")
-    ax.set_ylabel("RSA model fit")
-    ax.set_title("RSA Mainly Tracks Stimulus Geometry")
-    ax.legend(frameon=False)
-    setup_axis(ax)
-    fig.tight_layout()
+    fig, axes = plt.subplots(1, 5, figsize=(16.0, 3.4), sharex=True, sharey=True)
+    models = [
+        "Physical distance",
+        "Category / response",
+        "Boundary difficulty",
+        "Signed boundary position",
+    ]
+    colors = {
+        "Physical distance": "#4c78a8",
+        "Category / response": "#f58518",
+        "Boundary difficulty": "#54a24b",
+        "Signed boundary position": "#b279a2",
+    }
+    for ax_i, day in enumerate(DAYS):
+        ax = axes[ax_i]
+        d_day = d[d["day"] == day]
+        if d_day.empty:
+            raise ValueError(f"Missing RSA rows for day={day}")
+        for model in models:
+            rows = []
+            g_model = d_day[d_day["model"] == model]
+            for time_s in sorted(g_model["time_sec"].drop_duplicates().tolist()):
+                vals = g_model[g_model["time_sec"] == time_s]["rho"].to_numpy(float)
+                rows.append(
+                    {
+                        "time": time_s,
+                        "mean": float(np.nanmean(vals)),
+                        "sem": sem(vals),
+                    }
+                )
+            g = pd.DataFrame(rows)
+            ax.plot(
+                g["time"],
+                g["mean"],
+                color=colors[model],
+                linewidth=1.8,
+                label=model,
+            )
+            ax.fill_between(
+                g["time"],
+                g["mean"] - g["sem"],
+                g["mean"] + g["sem"],
+                color=colors[model],
+                alpha=0.12,
+                linewidth=0,
+            )
+        ax.axhline(0, color="0.25", linewidth=0.8)
+        ax.set_title(f"Day {day}")
+        ax.set_xlabel("time from stimulus (s)")
+        setup_axis(ax)
+        if ax_i == 0:
+            ax.set_ylabel("RSA model fit")
+        if ax_i == 4:
+            ax.legend(frameon=False, fontsize=7, loc="upper right")
+    fig.suptitle("Stimulus-Locked RSA Model Fits")
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
     fig_path = figures_dir / "presentation_rsa_model_fit_timecourses.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    comp = require_csv(
-        output_dir / "day_rdm_model_compare_summary.csv",
-        "day-RDM model comparison output",
-    )
-    comp = comp[
-        (comp["modality"] == "rsa")
-        & (comp["measure"] == "stim_windowed")
-        & (comp["window"] == "late")
-        & (comp["value_kind"] == "similarity")
-    ]
-    if comp.empty:
-        raise ValueError("Missing RSA day-RDM model comparison rows")
-    fig, ax = plt.subplots(figsize=(7.4, 3.8))
-    labels = []
-    vals = []
-    errs = []
-    for row in comp.itertuples(index=False):
-        label = str(row.model)
-        if np.isfinite(float(row.split_day)):
-            label = f"{label} D{int(row.split_day)}"
-        labels.append(label)
-        vals.append(float(row.mean_rho))
-        errs.append(float(row.sem_rho))
-    x = np.arange(len(vals))
-    ax.bar(x, vals, yerr=errs, color="0.45", error_kw={"capsize": 2})
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=40, ha="right")
-    ax.set_ylabel("model correlation")
-    ax.set_title("RSA Cross-Day Geometry Model Comparison")
-    setup_axis(ax)
-    fig.tight_layout()
-    fig_path2 = figures_dir / "presentation_rsa_cross_day_model_compare.png"
-    fig.savefig(fig_path2, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return [fig_path, fig_path2]
+    source_path = figures_dir / "rsa_model_prediction_rdms.png"
+    if not source_path.exists():
+        raise FileNotFoundError(
+            f"Missing RSA prediction figure: {source_path}. "
+            "Run code/rsa_model_prediction_figure.py first."
+        )
+    pred_path = figures_dir / "presentation_rsa_model_prediction_rdms.png"
+    shutil.copyfile(source_path, pred_path)
+    return [fig_path, pred_path]
 
 
 def save_fig_presentation(
@@ -675,7 +756,10 @@ def save_fig_presentation(
     paths["connect_model"] = plot_presentation_connect_model_timecourse(
         output_dir, figures_dir
     )
-    paths["connect_edges"] = plot_presentation_connect_edges(output_dir, figures_dir)
+    connect_edge_paths = plot_presentation_connect_edges(output_dir, figures_dir)
+    paths["connect_edges_early"] = connect_edge_paths[0]
+    paths["connect_edges_late"] = connect_edge_paths[1]
+    paths["connect_edges"] = connect_edge_paths[2]
     paths["mvpa_auc"] = plot_presentation_mvpa_auc(output_dir, figures_dir)
     paths["mvpa_peak_behavior"] = plot_presentation_mvpa_peak_behavior(
         output_dir, figures_dir
@@ -683,12 +767,14 @@ def save_fig_presentation(
     paths["mvpa_model_timecourse"] = plot_presentation_mvpa_model_timecourse(
         output_dir, figures_dir
     )
-    paths["mvpa_window_model"] = plot_presentation_mvpa_window_model(
+    mvpa_window_paths = plot_presentation_mvpa_window_model(
         output_dir, figures_dir
     )
+    paths["mvpa_window_empirical"] = mvpa_window_paths[0]
+    paths["mvpa_window_predictions"] = mvpa_window_paths[1]
     rsa_paths = plot_presentation_rsa(output_dir, figures_dir)
     paths["rsa_model_fit"] = rsa_paths[0]
-    paths["rsa_day_model"] = rsa_paths[1]
+    paths["rsa_model_predictions"] = rsa_paths[1]
     for key, path in paths.items():
         print(f"[presentation] {key}: {path}", flush=True)
     return paths
