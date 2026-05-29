@@ -38,29 +38,6 @@ def empirical_distance(value, value_kind):
     raise ValueError(f"Unknown empirical value kind: {value_kind}")
 
 
-def rank_vector(vals):
-    vals = np.asarray(vals, dtype=float)
-    good = np.isfinite(vals)
-    out = np.full(vals.shape, np.nan, dtype=float)
-    if int(np.sum(good)) == 0:
-        return out
-    finite = vals[good]
-    order = np.argsort(finite, kind="mergesort")
-    ranks = np.empty(len(finite), dtype=float)
-    sorted_vals = finite[order]
-    start = 0
-    while start < len(sorted_vals):
-        stop = start + 1
-        while stop < len(sorted_vals) and sorted_vals[stop] == sorted_vals[start]:
-            stop += 1
-        rank_val = (start + stop - 1) / 2.0
-        for idx in range(start, stop):
-            ranks[order[idx]] = rank_val
-        start = stop
-    out[good] = ranks
-    return out
-
-
 def finite_corr(x, y):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -77,8 +54,8 @@ def finite_corr(x, y):
     return float(np.sum(x * y) / denom)
 
 
-def spearman_corr(x, y):
-    return finite_corr(rank_vector(x), rank_vector(y))
+def pearson_corr(x, y):
+    return finite_corr(x, y)
 
 
 def pair_list():
@@ -210,7 +187,7 @@ def best_two_stage(day_rows, emp_vec, model, day_map=None):
             split_day=split_day,
             day_map=day_map,
         )
-        rho = spearman_corr(emp_vec, pred)
+        rho = pearson_corr(emp_vec, pred)
         if not np.isfinite(rho):
             continue
         if not np.isfinite(best_rho) or rho > best_rho:
@@ -227,7 +204,7 @@ def score_subject(day_rows):
         {
             "model": "gradual",
             "split_day": np.nan,
-            "rho": spearman_corr(emp_vec, gradual_pred),
+            "rho": pearson_corr(emp_vec, gradual_pred),
         }
     )
     for model in ["two_stage_binary", "two_stage_hybrid"]:
@@ -237,7 +214,7 @@ def score_subject(day_rows):
                 {
                     "model": model,
                     "split_day": split_day,
-                    "rho": spearman_corr(emp_vec, pred),
+                    "rho": pearson_corr(emp_vec, pred),
                 }
             )
     return rows
@@ -263,7 +240,7 @@ def permutation_score(spec, day_rows, emp_vec, rng):
         split_day=split_arg,
         day_map=day_map,
     )
-    return spearman_corr(emp_vec, pred)
+    return pearson_corr(emp_vec, pred)
 
 
 def split_mean_from_subject_scores(payloads, model, split_day):
@@ -344,7 +321,7 @@ def permuted_shared_scores(payloads, specs, rng):
                 split_day=split_arg,
                 day_map=day_map,
             )
-            rho = spearman_corr(payload["emp_vec"], pred)
+            rho = pearson_corr(payload["emp_vec"], pred)
             if not np.isfinite(rho):
                 continue
             if spec["model"] == "gradual":
@@ -451,7 +428,7 @@ def condition_results(condition_key, d_condition, rng):
                     split_day=split_arg,
                     day_map=day_map,
                 )
-                rho = spearman_corr(payload["emp_vec"], pred)
+                rho = pearson_corr(payload["emp_vec"], pred)
                 if np.isfinite(rho):
                     accum[spec["label"]] += float(rho)
                     counts[spec["label"]] += 1
@@ -660,7 +637,7 @@ def write_model_rdm_correlations(output_dir):
                 {
                     "model_i": label_i,
                     "model_j": label_j,
-                    "spearman_rho": spearman_corr(
+                    "pearson_rho": pearson_corr(
                         vectors[label_i],
                         vectors[label_j],
                     ),

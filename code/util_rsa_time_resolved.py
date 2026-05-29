@@ -345,7 +345,7 @@ def compute_model_fit_timecourses(rdm_df, model_vec_df):
             rho = np.nan
         else:
             rho = g["dissimilarity"].corr(
-                g["model_dissimilarity"], method="spearman"
+                g["model_dissimilarity"], method="pearson"
             )
         rows.append(
             {
@@ -392,7 +392,7 @@ def compute_cross_day_geometry_similarity(rdm_df):
                         rho = np.nan
                     else:
                         rho = merged["dissimilarity_train"].corr(
-                            merged["dissimilarity_test"], method="spearman"
+                            merged["dissimilarity_test"], method="pearson"
                         )
                     rows.append(
                         {

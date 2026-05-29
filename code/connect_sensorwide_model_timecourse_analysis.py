@@ -90,29 +90,6 @@ def select_active_pairs(ranked_pair_df, active_pct):
     return active_df
 
 
-def rank_vector(vals):
-    vals = np.asarray(vals, dtype=float)
-    good = np.isfinite(vals)
-    out = np.full(vals.shape, np.nan, dtype=float)
-    if int(np.sum(good)) == 0:
-        return out
-    finite = vals[good]
-    order = np.argsort(finite, kind="mergesort")
-    ranks = np.empty(len(finite), dtype=float)
-    sorted_vals = finite[order]
-    start = 0
-    while start < len(sorted_vals):
-        stop = start + 1
-        while stop < len(sorted_vals) and sorted_vals[stop] == sorted_vals[start]:
-            stop += 1
-        rank_val = (start + stop - 1) / 2.0
-        for idx in range(start, stop):
-            ranks[order[idx]] = rank_val
-        start = stop
-    out[good] = ranks
-    return out
-
-
 def finite_corr(x, y):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -129,8 +106,8 @@ def finite_corr(x, y):
     return float(np.sum(x * y) / denom)
 
 
-def spearman_corr(x, y):
-    return finite_corr(rank_vector(x), rank_vector(y))
+def pearson_corr(x, y):
+    return finite_corr(x, y)
 
 
 def edge_vector_distance(vec_a, vec_b):
@@ -277,7 +254,7 @@ def score_subject_time(day_rows, emp_vals):
                 "model": spec["model"],
                 "split_day": spec["split_day"],
                 "model_label": spec["model_label"],
-                "rho": spearman_corr(emp_vals, pred),
+                "rho": pearson_corr(emp_vals, pred),
             }
         )
     return rows

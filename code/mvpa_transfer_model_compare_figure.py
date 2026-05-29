@@ -292,7 +292,7 @@ def save_model_correlation_figure(corr_df, figures_dir):
     for _, row in corr_df.iterrows():
         i = labels.index(row["model_i"])
         j = labels.index(row["model_j"])
-        mat[i, j] = float(row["spearman_rho"])
+        mat[i, j] = float(row["pearson_rho"])
     display_labels = []
     for label in labels:
         display_labels.append(

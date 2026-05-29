@@ -324,7 +324,7 @@ def save_model_correlation_figure(model_corr_df, figures_dir):
     for _, row in model_corr_df.iterrows():
         i = labels.index(row["model_i"])
         j = labels.index(row["model_j"])
-        mat[i, j] = float(row["spearman_rho"])
+        mat[i, j] = float(row["pearson_rho"])
     fig, ax = plt.subplots(figsize=(5.7, 5.0))
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad(color="0.82")
