@@ -345,7 +345,7 @@ def draw_head_outline(ax):
     ax.add_patch(right_ear)
 
 
-def draw_edge_panel(ax, rows, layout, value_col, title, vlim):
+def draw_edge_panel(ax, rows, layout, value_col, title, vlim, signed=True):
     draw_head_outline(ax)
     ax.scatter(layout["x"], layout["y"], s=18, color="0.25", zorder=3)
     ch_pos = {}
@@ -359,8 +359,12 @@ def draw_edge_panel(ax, rows, layout, value_col, title, vlim):
         val = float(getattr(row, value_col))
         scaled = min(abs(val) / max(vlim, 1e-12), 1.0)
         color = "#b2182b"
-        if val < 0:
-            color = "#2166ac"
+        if signed:
+            if val < 0:
+                color = "#2166ac"
+        else:
+            scaled = min(max(val, 0.0) / max(vlim, 1e-12), 1.0)
+            color = "#2c7fb8"
         ax.plot(
             [x1, x2],
             [y1, y2],
@@ -389,6 +393,34 @@ def panel_vlim(rows, value_col):
     return float(np.nanpercentile(vals, 95))
 
 
+def minmax_normalized_edges(d):
+    norm_rows = []
+    group_cols = ["subject", "day"]
+    for key, g in d.groupby(group_cols):
+        subject, day = key
+        vals = g["conn_mean"].to_numpy(float)
+        min_val = float(np.nanmin(vals))
+        max_val = float(np.nanmax(vals))
+        denom = max_val - min_val
+        if denom <= np.finfo(float).eps:
+            continue
+        for row in g.itertuples(index=False):
+            norm_rows.append(
+                {
+                    "subject": int(subject),
+                    "day": int(day),
+                    "pair_label": row.pair_label,
+                    "ch_i": row.ch_i,
+                    "ch_j": row.ch_j,
+                    "conn_norm": (float(row.conn_mean) - min_val) / denom,
+                }
+            )
+    out = pd.DataFrame(norm_rows)
+    if out.empty:
+        raise ValueError("No normalized edge rows available")
+    return out
+
+
 def plot_presentation_connect_edges_for_window(
     edges,
     active,
@@ -401,34 +433,12 @@ def plot_presentation_connect_edges_for_window(
     d = edges[(edges["window"] == window) & edges["pair_label"].isin(pair_labels)]
     if d.empty:
         raise ValueError(f"No {window}-window top-10% edge rows available")
-    z_rows = []
-    group_cols = ["subject", "day"]
-    for key, g in d.groupby(group_cols):
-        subject, day = key
-        vals = g["conn_mean"].to_numpy(float)
-        mean_val = float(np.nanmean(vals))
-        std_val = float(np.nanstd(vals))
-        if std_val <= np.finfo(float).eps:
-            continue
-        for row in g.itertuples(index=False):
-            z_rows.append(
-                {
-                    "subject": int(subject),
-                    "day": int(day),
-                    "pair_label": row.pair_label,
-                    "ch_i": row.ch_i,
-                    "ch_j": row.ch_j,
-                    "conn_z": (float(row.conn_mean) - mean_val) / std_val,
-                }
-            )
-    d_z = pd.DataFrame(z_rows)
-    if d_z.empty:
-        raise ValueError(f"No z-scored {window}-window edge rows available")
+    d_norm = minmax_normalized_edges(d)
     rows = []
     for pair_label in sorted(pair_labels):
-        g = d_z[d_z["pair_label"] == pair_label]
-        d1 = g[g["day"] == 1]["conn_z"].to_numpy(float)
-        dl = g[g["day"] > 1]["conn_z"].to_numpy(float)
+        g = d_norm[d_norm["pair_label"] == pair_label]
+        d1 = g[g["day"] == 1]["conn_norm"].to_numpy(float)
+        dl = g[g["day"] > 1]["conn_norm"].to_numpy(float)
         if len(d1) == 0 or len(dl) == 0:
             continue
         row0 = g.iloc[0]
@@ -451,6 +461,7 @@ def plot_presentation_connect_edges_for_window(
         "day1",
         "Day 1",
         panel_vlim(plot_df, "day1"),
+        signed=False,
     )
     draw_edge_panel(
         axes[1],
@@ -459,6 +470,7 @@ def plot_presentation_connect_edges_for_window(
         "later",
         "Days 2-5",
         panel_vlim(plot_df, "later"),
+        signed=False,
     )
     draw_edge_panel(
         axes[2],
@@ -467,9 +479,10 @@ def plot_presentation_connect_edges_for_window(
         "difference",
         "Day 1 - Days 2-5",
         panel_vlim(plot_df, "difference"),
+        signed=True,
     )
     fig.suptitle(
-        f"{window.title()}-Window Z-Scored Connectivity Edges, Top 10%"
+        f"{window.title()}-Window Normalized Connectivity Edges, Top 10%"
     )
     fig.tight_layout(rect=[0, 0, 1, 0.9])
     fig_path = figures_dir / (
@@ -480,6 +493,75 @@ def plot_presentation_connect_edges_for_window(
     return fig_path
 
 
+def get_connect_three_window_bounds(output_dir):
+    shape = require_csv_any(
+        [
+            output_dir / "connect_sensorwide_model_posterior_shape_summary_top10.csv",
+            output_dir / "connect_sensorwide_model_posterior_shape_summary.csv",
+        ],
+        "connectivity posterior-shape output",
+    )
+    g = shape[
+        np.isclose(shape["active_pct"].astype(float), 0.10)
+        & (shape["contrast"] == "two_stage_hybrid_D1_minus_gradual")
+        & (shape["shape_model"] == "three_window")
+    ]
+    if g.empty:
+        raise ValueError(
+            "Missing top-10% three-window posterior-shape row. Run "
+            "ACTIVE_PCT=0.10 "
+            "python code/connect_sensorwide_model_posterior_shape_analysis.py first."
+        )
+    row = g.iloc[0]
+    return {
+        "early": (float(row["lb_early"]), float(row["ub_early"])),
+        "middle": (float(row["lb_middle"]), float(row["ub_middle"])),
+        "late": (float(row["lb_late"]), float(row["ub_late"])),
+    }
+
+
+def make_subject_window_edges(subject_df, active, window, bounds):
+    active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
+    pair_labels = set(active["pair_label"].tolist())
+    d = subject_df[
+        (subject_df["lock_type"] == "stim")
+        & (subject_df["band"] == "broadband")
+    ].copy()
+    d["pair_label"] = d["ch_i"].astype(str) + "--" + d["ch_j"].astype(str)
+    d = d[d["pair_label"].isin(pair_labels)].copy()
+    d["window_center_sec"] = d["lock_time"].astype(float) + 0.025
+    lo, hi = bounds
+    d = d[(d["window_center_sec"] >= lo) & (d["window_center_sec"] <= hi)].copy()
+    if d.empty:
+        raise ValueError(f"No subject connectivity rows for {window} bounds")
+    rows = []
+    group_cols = ["subject", "day", "pair_label", "ch_i", "ch_j"]
+    for key, g in d.groupby(group_cols):
+        subject, day, pair_label, ch_i, ch_j = key
+        vals = g["conn_val"].to_numpy(float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
+        rows.append(
+            {
+                "subject": int(subject),
+                "day": int(day),
+                "window": window,
+                "window_start_sec": float(lo),
+                "window_end_sec": float(hi),
+                "pair_label": str(pair_label),
+                "ch_i": str(ch_i),
+                "ch_j": str(ch_j),
+                "conn_mean": float(np.mean(vals)),
+                "n_time_bins": int(len(vals)),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise ValueError(f"No subject window edge rows for {window}")
+    return out
+
+
 def plot_presentation_connect_edges(output_dir, figures_dir):
     edges = require_csv(
         output_dir / "connect_sensorwide_window_average_subject_edges.csv",
@@ -488,6 +570,10 @@ def plot_presentation_connect_edges(output_dir, figures_dir):
     active = require_csv(
         output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
         "connectivity active-pair output",
+    )
+    subject = require_csv(
+        output_dir / "sensorwide_carpet_subject_timeseries.csv",
+        "connectivity subject carpet output",
     )
     layout = require_csv(
         output_dir / "sensorwide_channel_layout.csv",
@@ -504,8 +590,25 @@ def plot_presentation_connect_edges(output_dir, figures_dir):
                 window,
             )
         )
+    bounds = get_connect_three_window_bounds(output_dir)
+    middle_edges = make_subject_window_edges(
+        subject,
+        active,
+        "middle",
+        bounds["middle"],
+    )
+    paths.insert(
+        1,
+        plot_presentation_connect_edges_for_window(
+            middle_edges,
+            active,
+            layout,
+            figures_dir,
+            "middle",
+        ),
+    )
     legacy_path = figures_dir / "presentation_connectivity_d1_later_edges_top10.png"
-    shutil.copyfile(paths[1], legacy_path)
+    shutil.copyfile(paths[2], legacy_path)
     paths.append(legacy_path)
     return paths
 
@@ -915,8 +1018,9 @@ def save_fig_presentation(
     )
     connect_edge_paths = plot_presentation_connect_edges(output_dir, figures_dir)
     paths["connect_edges_early"] = connect_edge_paths[0]
-    paths["connect_edges_late"] = connect_edge_paths[1]
-    paths["connect_edges"] = connect_edge_paths[2]
+    paths["connect_edges_middle"] = connect_edge_paths[1]
+    paths["connect_edges_late"] = connect_edge_paths[2]
+    paths["connect_edges"] = connect_edge_paths[3]
     paths["mvpa_auc"] = plot_presentation_mvpa_auc(output_dir, figures_dir)
     paths["mvpa_peak_behavior"] = plot_presentation_mvpa_peak_behavior(
         output_dir, figures_dir
