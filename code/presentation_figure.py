@@ -856,40 +856,48 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         "split_binary_D3": "D3 split binary",
         "split_binary_D4": "D4 split binary",
     }
+    colors = {
+        "gradual": "#1f1f1f",
+        "split_gradual_D1": "#6a3d9a",
+        "split_gradual_D2": "#1b9e77",
+        "split_gradual_D3": "#377eb8",
+        "split_gradual_D4": "#a6cee3",
+        "split_binary_D1": "#d73027",
+        "split_binary_D2": "#e6ab02",
+        "split_binary_D3": "#ff7f00",
+        "split_binary_D4": "#b15928",
+    }
+    y_vals = []
     for label in labels:
         g = d[d["model_label"] == label].sort_values("time_sec")
         if g.empty:
             continue
-        color = "#303030"
-        linewidth = 1.0
-        alpha = 0.55
-        zorder = 1
-        if "binary" in label:
-            color = "#f4a582"
-        if "gradual" in label and label != "gradual":
-            color = "#c2a5cf"
-        if label == "split_binary_D1":
-            color = "#d6604d"
-            linewidth = 2.4
-            alpha = 1.0
-            zorder = 3
-        if label == "split_gradual_D1":
-            color = "#7b3294"
-            linewidth = 2.4
-            alpha = 1.0
-            zorder = 3
-        if label == "gradual":
-            linewidth = 2.4
-            alpha = 1.0
-            zorder = 3
+        x = g["time_sec"].to_numpy(float)
+        if "rho_mean" in g.columns:
+            y = g["rho_mean"].to_numpy(float)
+            y_sem = g["rho_sem"].to_numpy(float)
+        else:
+            y = g["rho"].to_numpy(float)
+            y_sem = np.zeros(y.shape, dtype=float)
+        color = colors[label]
+        for val in y:
+            if np.isfinite(val):
+                y_vals.append(float(val))
         ax.plot(
-            g["time_sec"],
-            g["rho"],
+            x,
+            y,
             color=color,
-            linewidth=linewidth,
-            alpha=alpha,
+            linewidth=1.8,
+            alpha=0.92,
             label=legend_labels[label],
-            zorder=zorder,
+        )
+        ax.fill_between(
+            x,
+            y - y_sem,
+            y + y_sem,
+            color=color,
+            alpha=0.10,
+            linewidth=0,
         )
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
@@ -897,8 +905,12 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("model correlation")
     ax.set_title("MVPA Transfer Model Evidence Over Time")
-    ax.set_ylim(-0.25, 1.0)
-    ax.legend(frameon=False, fontsize=8, ncol=3, loc="upper center")
+    if len(y_vals) > 0:
+        ymin = float(np.nanmin(y_vals))
+        ymax = float(np.nanmax(y_vals))
+        pad = 0.12 * max(ymax - ymin, 0.1)
+        ax.set_ylim(max(-1.0, ymin - pad), min(1.0, ymax + pad))
+    ax.legend(frameon=False, fontsize=8, ncol=3, loc="best")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_mvpa_model_timecourse.png"
