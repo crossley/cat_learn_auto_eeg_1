@@ -106,7 +106,7 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
         fig, axes = plt.subplots(
             1,
             len(days_sorted),
-            figsize=(15, 3.5),
+            figsize=(16, 3.9),
             squeeze=False,
         )
         for i, day in enumerate(days_sorted):
@@ -119,7 +119,22 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
             )
             ax.set_title(f"Day {day}")
             ax.set_xlim(-0.1, 0.8)
+            for child_ax in fig.axes:
+                if child_ax is ax:
+                    continue
+                bbox = child_ax.get_position()
+                parent_bbox = ax.get_position()
+                if bbox.x0 > parent_bbox.x0 and bbox.x1 < parent_bbox.x1:
+                    child_ax.set_position(
+                        [
+                            parent_bbox.x1 - 0.055,
+                            parent_bbox.y1 - 0.18,
+                            0.035,
+                            0.12,
+                        ]
+                    )
         fig.suptitle("Stimulus-Locked ERPs", fontsize=11)
+        fig.subplots_adjust(left=0.055, right=0.99, bottom=0.22, wspace=0.42)
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
     return fig_path
@@ -821,16 +836,26 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
     labels = [
         "gradual",
-        "day closeness",
-        "two_stage_binary_D1",
         "two_stage_bottleneck_D1",
-        "two_stage_binary_D2",
         "two_stage_bottleneck_D2",
-        "two_stage_binary_D3",
         "two_stage_bottleneck_D3",
-        "two_stage_binary_D4",
         "two_stage_bottleneck_D4",
+        "two_stage_binary_D1",
+        "two_stage_binary_D2",
+        "two_stage_binary_D3",
+        "two_stage_binary_D4",
     ]
+    legend_labels = {
+        "gradual": "gradual",
+        "two_stage_bottleneck_D1": "D1 split gradual",
+        "two_stage_bottleneck_D2": "D2 split gradual",
+        "two_stage_bottleneck_D3": "D3 split gradual",
+        "two_stage_bottleneck_D4": "D4 split gradual",
+        "two_stage_binary_D1": "D1 split binary",
+        "two_stage_binary_D2": "D2 split binary",
+        "two_stage_binary_D3": "D3 split binary",
+        "two_stage_binary_D4": "D4 split binary",
+    }
     for label in labels:
         g = d[d["model_label"] == label].sort_values("time_sec")
         if g.empty:
@@ -839,8 +864,6 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         linewidth = 1.0
         alpha = 0.55
         zorder = 1
-        if label == "day closeness":
-            color = "#4c78a8"
         if "binary" in label:
             color = "#f4a582"
         if "bottleneck" in label:
@@ -855,7 +878,7 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
             linewidth = 2.4
             alpha = 1.0
             zorder = 3
-        if label in ["gradual", "day closeness"]:
+        if label == "gradual":
             linewidth = 2.4
             alpha = 1.0
             zorder = 3
@@ -865,7 +888,7 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
             color=color,
             linewidth=linewidth,
             alpha=alpha,
-            label=label.replace("_", " "),
+            label=legend_labels[label],
             zorder=zorder,
         )
     ax.axhline(0, color="0.25", linewidth=0.8)
@@ -874,7 +897,8 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("model correlation")
     ax.set_title("MVPA Transfer Model Evidence Over Time")
-    ax.legend(frameon=False, fontsize=8, ncol=3, loc="lower center")
+    ax.set_ylim(-0.25, 1.0)
+    ax.legend(frameon=False, fontsize=8, ncol=3, loc="upper center")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_mvpa_model_timecourse.png"
