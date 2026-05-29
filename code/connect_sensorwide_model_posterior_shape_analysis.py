@@ -20,6 +20,7 @@ from connect_sensorwide_analysis import OUTPUT_DIR
 ACTIVE_PCT = float(os.environ.get("ACTIVE_PCT", "0.20"))
 TAU_EFFECT = float(os.environ.get("TAU_EFFECT", "0.15"))
 MIN_WIDTH_SEC = float(os.environ.get("MIN_WIDTH_SEC", "0.05"))
+MIN_GAP_SEC = float(os.environ.get("MIN_GAP_SEC", "0.00"))
 SHAPE_GRID_STEP_SEC = float(os.environ.get("SHAPE_GRID_STEP_SEC", "0.025"))
 ONE_LB = (0.08, 0.58)
 ONE_UB_MAX = 0.68
@@ -265,6 +266,12 @@ def best_interval_score(rows):
     return best
 
 
+def intervals_nonoverlap(first, second, first_prefix, second_prefix):
+    first_ub = float(first[f"ub_{first_prefix}"])
+    second_lb = float(second[f"lb_{second_prefix}"])
+    return second_lb >= first_ub + MIN_GAP_SEC
+
+
 def two_window_results(Y, times):
     rows = []
     early_intervals = candidate_intervals(times, EARLY_LB, EARLY_UB_MAX)
@@ -273,6 +280,8 @@ def two_window_results(Y, times):
     late_rows = interval_score_rows(Y, times, late_intervals, "late")
     for early in early_rows:
         for late in late_rows:
+            if not intervals_nonoverlap(early, late, "early", "late"):
+                continue
             row = {
                 "shape_model": "two_window",
                 "lb_one": np.nan,
@@ -293,6 +302,8 @@ def two_window_results(Y, times):
                 "effect_late_p_gt0": late["effect_p_gt0"],
             }
             rows.append(row)
+    if len(rows) == 0:
+        raise ValueError("No non-overlapping two-window candidates")
     return rows
 
 
@@ -304,17 +315,36 @@ def three_window_result(Y, times):
     middle_rows = interval_score_rows(Y, times, middle_intervals, "middle")
     late_rows = interval_score_rows(Y, times, late_intervals, "late")
     best_early = best_interval_score(early_rows)
-    best_middle = best_interval_score(middle_rows)
-    best_late = best_interval_score(late_rows)
-    early_log_vals = []
-    middle_log_vals = []
-    late_log_vals = []
-    for row in early_rows:
-        early_log_vals.append(float(row["log_bf"]))
-    for row in middle_rows:
-        middle_log_vals.append(float(row["log_bf"]))
-    for row in late_rows:
-        late_log_vals.append(float(row["log_bf"]))
+    candidate_rows = []
+    log_vals = []
+    best_row = None
+    for early in early_rows:
+        for middle in middle_rows:
+            if not intervals_nonoverlap(early, middle, "early", "middle"):
+                continue
+            for late in late_rows:
+                if not intervals_nonoverlap(middle, late, "middle", "late"):
+                    continue
+                log_bf = (
+                    float(early["log_bf"])
+                    + float(middle["log_bf"])
+                    + float(late["log_bf"])
+                )
+                row = {
+                    "early": early,
+                    "middle": middle,
+                    "late": late,
+                    "log_bf": log_bf,
+                }
+                candidate_rows.append(row)
+                log_vals.append(log_bf)
+                if best_row is None or log_bf > float(best_row["log_bf"]):
+                    best_row = row
+    if len(candidate_rows) == 0 or best_row is None:
+        raise ValueError("No non-overlapping three-window candidates")
+    best_early = best_row["early"]
+    best_middle = best_row["middle"]
+    best_late = best_row["late"]
     return {
         "shape_model": "three_window",
         "lb_one": np.nan,
@@ -325,9 +355,7 @@ def three_window_result(Y, times):
         "ub_middle": best_middle["ub_middle"],
         "lb_late": best_late["lb_late"],
         "ub_late": best_late["ub_late"],
-        "log_bf": logmeanexp(early_log_vals)
-        + logmeanexp(middle_log_vals)
-        + logmeanexp(late_log_vals),
+        "log_bf": logmeanexp(log_vals),
         "effect_mean": np.nan,
         "effect_sd": np.nan,
         "effect_p_gt0": np.nan,
@@ -337,7 +365,29 @@ def three_window_result(Y, times):
         "effect_middle_p_gt0": best_middle["effect_p_gt0"],
         "effect_late_mean": best_late["effect_mean"],
         "effect_late_p_gt0": best_late["effect_p_gt0"],
+        "n_three_window_candidates": int(len(candidate_rows)),
     }
+
+
+def count_nonoverlap_pairs(rows_a, rows_b, prefix_a, prefix_b):
+    count = 0
+    for row_a in rows_a:
+        for row_b in rows_b:
+            if intervals_nonoverlap(row_a, row_b, prefix_a, prefix_b):
+                count += 1
+    return count
+
+
+def count_nonoverlap_triples(rows_a, rows_b, rows_c):
+    count = 0
+    for row_a in rows_a:
+        for row_b in rows_b:
+            if not intervals_nonoverlap(row_a, row_b, "early", "middle"):
+                continue
+            for row_c in rows_c:
+                if intervals_nonoverlap(row_b, row_c, "middle", "late"):
+                    count += 1
+    return count
 
 
 def add_model_posterior(rows):
@@ -436,11 +486,29 @@ def run_connect_sensorwide_model_posterior_shape(
         )
         times, Y, subjects = subject_time_matrix(d, contrast)
         one_count = len(candidate_intervals(times, ONE_LB, ONE_UB_MAX))
-        early_count = len(candidate_intervals(times, EARLY_LB, EARLY_UB_MAX))
-        middle_count = len(candidate_intervals(times, MIDDLE_LB, MIDDLE_UB_MAX))
-        late_count = len(candidate_intervals(times, LATE_LB, LATE_UB_MAX))
-        two_count = early_count * late_count
-        three_count = early_count * middle_count * late_count
+        early_rows = interval_score_rows(
+            Y,
+            times,
+            candidate_intervals(times, EARLY_LB, EARLY_UB_MAX),
+            "early",
+        )
+        middle_rows = interval_score_rows(
+            Y,
+            times,
+            candidate_intervals(times, MIDDLE_LB, MIDDLE_UB_MAX),
+            "middle",
+        )
+        late_rows = interval_score_rows(
+            Y,
+            times,
+            candidate_intervals(times, LATE_LB, LATE_UB_MAX),
+            "late",
+        )
+        early_count = len(early_rows)
+        middle_count = len(middle_rows)
+        late_count = len(late_rows)
+        two_count = count_nonoverlap_pairs(early_rows, late_rows, "early", "late")
+        three_count = count_nonoverlap_triples(early_rows, middle_rows, late_rows)
         print(
             "[connect posterior shape] "
             f"subjects={len(subjects)}, times={len(times)}, "
