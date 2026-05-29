@@ -25,6 +25,8 @@ ONE_LB = (0.08, 0.58)
 ONE_UB_MAX = 0.68
 EARLY_LB = (0.10, 0.30)
 EARLY_UB_MAX = 0.40
+MIDDLE_LB = (0.28, 0.45)
+MIDDLE_UB_MAX = 0.56
 LATE_LB = (0.35, 0.58)
 LATE_UB_MAX = 0.68
 
@@ -211,6 +213,8 @@ def global_result(Y, times):
     result["ub_early"] = np.nan
     result["lb_late"] = np.nan
     result["ub_late"] = np.nan
+    result["lb_middle"] = np.nan
+    result["ub_middle"] = np.nan
     return result
 
 
@@ -227,6 +231,8 @@ def one_window_results(Y, times):
         row["ub_early"] = np.nan
         row["lb_late"] = np.nan
         row["ub_late"] = np.nan
+        row["lb_middle"] = np.nan
+        row["ub_middle"] = np.nan
         rows.append(row)
     return rows
 
@@ -247,6 +253,18 @@ def interval_score_rows(Y, times, intervals, prefix):
     return rows
 
 
+def logmeanexp(vals):
+    return logsumexp(vals) - math.log(float(len(vals)))
+
+
+def best_interval_score(rows):
+    best = rows[0]
+    for row in rows:
+        if float(row["log_bf"]) > float(best["log_bf"]):
+            best = row
+    return best
+
+
 def two_window_results(Y, times):
     rows = []
     early_intervals = candidate_intervals(times, EARLY_LB, EARLY_UB_MAX)
@@ -261,6 +279,8 @@ def two_window_results(Y, times):
                 "ub_one": np.nan,
                 "lb_early": early["lb_early"],
                 "ub_early": early["ub_early"],
+                "lb_middle": np.nan,
+                "ub_middle": np.nan,
                 "lb_late": late["lb_late"],
                 "ub_late": late["ub_late"],
                 "log_bf": early["log_bf"] + late["log_bf"],
@@ -274,6 +294,50 @@ def two_window_results(Y, times):
             }
             rows.append(row)
     return rows
+
+
+def three_window_result(Y, times):
+    early_intervals = candidate_intervals(times, EARLY_LB, EARLY_UB_MAX)
+    middle_intervals = candidate_intervals(times, MIDDLE_LB, MIDDLE_UB_MAX)
+    late_intervals = candidate_intervals(times, LATE_LB, LATE_UB_MAX)
+    early_rows = interval_score_rows(Y, times, early_intervals, "early")
+    middle_rows = interval_score_rows(Y, times, middle_intervals, "middle")
+    late_rows = interval_score_rows(Y, times, late_intervals, "late")
+    best_early = best_interval_score(early_rows)
+    best_middle = best_interval_score(middle_rows)
+    best_late = best_interval_score(late_rows)
+    early_log_vals = []
+    middle_log_vals = []
+    late_log_vals = []
+    for row in early_rows:
+        early_log_vals.append(float(row["log_bf"]))
+    for row in middle_rows:
+        middle_log_vals.append(float(row["log_bf"]))
+    for row in late_rows:
+        late_log_vals.append(float(row["log_bf"]))
+    return {
+        "shape_model": "three_window",
+        "lb_one": np.nan,
+        "ub_one": np.nan,
+        "lb_early": best_early["lb_early"],
+        "ub_early": best_early["ub_early"],
+        "lb_middle": best_middle["lb_middle"],
+        "ub_middle": best_middle["ub_middle"],
+        "lb_late": best_late["lb_late"],
+        "ub_late": best_late["ub_late"],
+        "log_bf": logmeanexp(early_log_vals)
+        + logmeanexp(middle_log_vals)
+        + logmeanexp(late_log_vals),
+        "effect_mean": np.nan,
+        "effect_sd": np.nan,
+        "effect_p_gt0": np.nan,
+        "effect_early_mean": best_early["effect_mean"],
+        "effect_early_p_gt0": best_early["effect_p_gt0"],
+        "effect_middle_mean": best_middle["effect_mean"],
+        "effect_middle_p_gt0": best_middle["effect_p_gt0"],
+        "effect_late_mean": best_late["effect_mean"],
+        "effect_late_p_gt0": best_late["effect_p_gt0"],
+    }
 
 
 def add_model_posterior(rows):
@@ -309,6 +373,8 @@ def add_model_posterior(rows):
         "ub_early": np.nan,
         "lb_late": np.nan,
         "ub_late": np.nan,
+        "lb_middle": np.nan,
+        "ub_middle": np.nan,
     }
     rows.append(none_row)
     return rows
@@ -346,6 +412,8 @@ def summarize_models(rows, contrast, n_subjects):
                 "ub_early": best.get("ub_early", np.nan),
                 "lb_late": best.get("lb_late", np.nan),
                 "ub_late": best.get("ub_late", np.nan),
+                "lb_middle": best.get("lb_middle", np.nan),
+                "ub_middle": best.get("ub_middle", np.nan),
                 "n_subjects": int(n_subjects),
             }
         )
@@ -369,13 +437,16 @@ def run_connect_sensorwide_model_posterior_shape(
         times, Y, subjects = subject_time_matrix(d, contrast)
         one_count = len(candidate_intervals(times, ONE_LB, ONE_UB_MAX))
         early_count = len(candidate_intervals(times, EARLY_LB, EARLY_UB_MAX))
+        middle_count = len(candidate_intervals(times, MIDDLE_LB, MIDDLE_UB_MAX))
         late_count = len(candidate_intervals(times, LATE_LB, LATE_UB_MAX))
         two_count = early_count * late_count
+        three_count = early_count * middle_count * late_count
         print(
             "[connect posterior shape] "
             f"subjects={len(subjects)}, times={len(times)}, "
-            f"one={one_count}, early={early_count}, late={late_count}, "
-            f"two={two_count}",
+            f"one={one_count}, early={early_count}, "
+            f"middle={middle_count}, late={late_count}, "
+            f"two={two_count}, three={three_count}",
             flush=True,
         )
         rows = []
@@ -387,6 +458,8 @@ def run_connect_sensorwide_model_posterior_shape(
         for row in two_window_results(Y, times):
             rows.append(row)
         print("[connect posterior shape] scored two-window candidates", flush=True)
+        rows.append(three_window_result(Y, times))
+        print("[connect posterior shape] scored three-window family", flush=True)
         rows = add_model_posterior(rows)
         print("[connect posterior shape] computed model posterior", flush=True)
         for row in rows:

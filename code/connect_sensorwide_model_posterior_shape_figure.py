@@ -20,12 +20,14 @@ import pandas as pd
 
 from connect_sensorwide_analysis import FIGURES_DIR, OUTPUT_DIR
 
-MODEL_ORDER = ["none", "global", "one_window", "two_window"]
+ACTIVE_PCT = float(os.environ.get("ACTIVE_PCT", "0.20"))
+MODEL_ORDER = ["none", "global", "one_window", "two_window", "three_window"]
 MODEL_LABELS = {
     "none": "none",
     "global": "global",
     "one_window": "one window",
     "two_window": "two windows",
+    "three_window": "three windows",
 }
 DIST_CMAP = "magma"
 
@@ -41,6 +43,18 @@ def require_csv(path):
     if d.empty:
         raise ValueError(f"Empty posterior shape output: {path}")
     return d
+
+
+def active_pct_suffix():
+    if np.isclose(ACTIVE_PCT, 0.20):
+        return ""
+    pct_int = int(round(ACTIVE_PCT * 100.0))
+    return f"_top{pct_int}"
+
+
+def shape_output_path(output_dir, stem):
+    suffix = active_pct_suffix()
+    return output_dir / f"{stem}{suffix}.csv"
 
 
 def compact_contrast_label(contrast):
@@ -59,6 +73,12 @@ def interval_text(row):
     if model == "two_window":
         return (
             f"E {row['lb_early']:.3f}-{row['ub_early']:.3f}s\n"
+            f"L {row['lb_late']:.3f}-{row['ub_late']:.3f}s"
+        )
+    if model == "three_window":
+        return (
+            f"E {row['lb_early']:.3f}-{row['ub_early']:.3f}s\n"
+            f"M {row['lb_middle']:.3f}-{row['ub_middle']:.3f}s\n"
             f"L {row['lb_late']:.3f}-{row['ub_late']:.3f}s"
         )
     return ""
@@ -176,7 +196,12 @@ def plot_shape_summary(summary_df, figures_dir):
         for model in MODEL_ORDER:
             g = d[d["shape_model"] == model]
             if g.empty:
-                raise ValueError(f"Missing shape model={model}, contrast={contrast}")
+                raise ValueError(
+                    f"Missing shape model={model}, contrast={contrast}. "
+                    "The posterior-shape summary is stale. Rerun "
+                    "connect_sensorwide_model_posterior_shape_analysis.py "
+                    "with the same ACTIVE_PCT before plotting."
+                )
             row = g.iloc[0]
             vals.append(float(row["posterior_model_prob"]))
             labels.append(MODEL_LABELS[model])
@@ -325,10 +350,16 @@ def save_fig_connect_sensorwide_model_posterior_shape(
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     summary_df = require_csv(
-        output_dir / "connect_sensorwide_model_posterior_shape_summary.csv"
+        shape_output_path(
+            output_dir,
+            "connect_sensorwide_model_posterior_shape_summary",
+        )
     )
     candidate_df = require_csv(
-        output_dir / "connect_sensorwide_model_posterior_shape_candidates.csv"
+        shape_output_path(
+            output_dir,
+            "connect_sensorwide_model_posterior_shape_candidates",
+        )
     )
     fig_path = plot_shape_summary(summary_df, figures_dir)
     interval_path = plot_interval_distributions(candidate_df, figures_dir)
