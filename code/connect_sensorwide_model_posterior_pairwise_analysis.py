@@ -91,6 +91,13 @@ def require_csv(path):
     return d
 
 
+def active_pct_suffix():
+    if np.isclose(ACTIVE_PCT, 0.20):
+        return ""
+    pct_int = int(round(ACTIVE_PCT * 100.0))
+    return f"_top{pct_int}"
+
+
 def filter_active_pct(d):
     if "active_pct" not in d.columns:
         return d.copy()
@@ -266,12 +273,15 @@ def run_connect_sensorwide_model_posterior_pairwise(
             row["plot_default"] = bool(spec["plot_default"])
             interval_rows.append(row)
 
-    subject_path = (
-        output_dir / "connect_sensorwide_model_posterior_pairwise_subject.csv"
+    suffix = active_pct_suffix()
+    subject_path = output_dir / (
+        f"connect_sensorwide_model_posterior_pairwise_subject{suffix}.csv"
     )
-    time_path = output_dir / "connect_sensorwide_model_posterior_pairwise_time.csv"
-    interval_path = (
-        output_dir / "connect_sensorwide_model_posterior_pairwise_intervals.csv"
+    time_path = output_dir / (
+        f"connect_sensorwide_model_posterior_pairwise_time{suffix}.csv"
+    )
+    interval_path = output_dir / (
+        f"connect_sensorwide_model_posterior_pairwise_intervals{suffix}.csv"
     )
     pd.DataFrame(subject_rows).to_csv(subject_path, index=False)
     pd.DataFrame(time_rows).to_csv(time_path, index=False)

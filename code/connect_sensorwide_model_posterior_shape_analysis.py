@@ -42,6 +42,23 @@ def require_csv(path):
     return d
 
 
+def active_pct_suffix():
+    if np.isclose(ACTIVE_PCT, 0.20):
+        return ""
+    pct_int = int(round(ACTIVE_PCT * 100.0))
+    return f"_top{pct_int}"
+
+
+def posterior_pairwise_subject_path(output_dir):
+    suffix = active_pct_suffix()
+    active_path = output_dir / (
+        f"connect_sensorwide_model_posterior_pairwise_subject{suffix}.csv"
+    )
+    if active_path.exists():
+        return active_path
+    return output_dir / "connect_sensorwide_model_posterior_pairwise_subject.csv"
+
+
 def normal_cdf(x):
     return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
 
@@ -339,9 +356,7 @@ def run_connect_sensorwide_model_posterior_shape(
     output_dir: Path | str = OUTPUT_DIR,
 ):
     output_dir = Path(output_dir)
-    subject_df = require_csv(
-        output_dir / "connect_sensorwide_model_posterior_pairwise_subject.csv"
-    )
+    subject_df = require_csv(posterior_pairwise_subject_path(output_dir))
     d, contrasts = contrast_matrix(subject_df)
     candidate_rows = []
     summary_rows = []
@@ -382,10 +397,13 @@ def run_connect_sensorwide_model_posterior_shape(
         for row in summarize_models(rows, contrast, len(subjects)):
             summary_rows.append(row)
 
-    candidate_path = (
-        output_dir / "connect_sensorwide_model_posterior_shape_candidates.csv"
+    suffix = active_pct_suffix()
+    candidate_path = output_dir / (
+        f"connect_sensorwide_model_posterior_shape_candidates{suffix}.csv"
     )
-    summary_path = output_dir / "connect_sensorwide_model_posterior_shape_summary.csv"
+    summary_path = output_dir / (
+        f"connect_sensorwide_model_posterior_shape_summary{suffix}.csv"
+    )
     pd.DataFrame(candidate_rows).to_csv(candidate_path, index=False)
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
     print(f"[connect posterior shape] wrote {candidate_path}", flush=True)
