@@ -27,6 +27,18 @@ PLOT_MODELS = [
     ("two_stage_hybrid_best", "mixed reconfig", "#6a4c9c"),
 ]
 
+SPLIT_MODEL_COLORS = {
+    "gradual": "#303030",
+    "two_stage_binary_D1": "#f4a582",
+    "two_stage_binary_D2": "#d6604d",
+    "two_stage_binary_D3": "#b2182b",
+    "two_stage_binary_D4": "#67001f",
+    "two_stage_hybrid_D1": "#c2a5cf",
+    "two_stage_hybrid_D2": "#9970ab",
+    "two_stage_hybrid_D3": "#762a83",
+    "two_stage_hybrid_D4": "#40004b",
+}
+
 
 def require_csv(path):
     path = Path(path)
@@ -173,6 +185,78 @@ def plot_best_split_timecourse(best_df, figures_dir):
     return fig_path
 
 
+def split_model_label(model, split_day):
+    if model == "gradual":
+        return "gradual"
+    split_label = f"D{int(split_day)}"
+    if model == "two_stage_binary":
+        return f"binary {split_label}"
+    if model == "two_stage_hybrid":
+        return f"mixed {split_label}"
+    raise ValueError(f"Unknown split-specific model: {model}")
+
+
+def split_model_key(model, split_day):
+    if model == "gradual":
+        return "gradual"
+    return f"{model}_D{int(split_day)}"
+
+
+def plot_split_model_timecourse(summary_df, figures_dir):
+    fig, ax = plt.subplots(figsize=(10.5, 5.4))
+    for row in summary_df[
+        ["model", "split_day"]
+    ].drop_duplicates().itertuples(index=False):
+        model = str(row.model)
+        split_day = row.split_day
+        key = split_model_key(model, split_day)
+        if key not in SPLIT_MODEL_COLORS:
+            continue
+        label = split_model_label(model, split_day)
+        color = SPLIT_MODEL_COLORS[key]
+        g = summary_df[
+            (summary_df["model"] == model)
+            & (
+                summary_df["split_day"].fillna(-1.0)
+                == float(split_day if np.isfinite(split_day) else -1.0)
+            )
+        ].sort_values("time_center_sec")
+        if g.empty:
+            raise ValueError(f"Missing split-specific model rows for {key}")
+        x = g["time_center_sec"].to_numpy(dtype=float)
+        y = g["rho_mean"].to_numpy(dtype=float)
+        lw = 2.4
+        alpha = 1.0
+        if model != "gradual":
+            lw = 1.5
+            alpha = 0.9
+        ax.plot(x, y, lw=lw, alpha=alpha, color=color, label=label)
+
+    for window_name, bounds in MVPA_CAT_TG_WINDOWS.items():
+        if window_name == "early":
+            color = "#bdbdbd"
+        else:
+            color = "#969696"
+        ax.axvspan(bounds[0], bounds[1], color=color, alpha=0.14, linewidth=0)
+
+    ax.axhline(0, color="#404040", lw=0.8)
+    ax.set_xlabel("stim-locked time (s)")
+    ax.set_ylabel("model correlation (Spearman rho)")
+    ax.set_title("Connectivity Day-Geometry Model Correlations by Template")
+    ax.legend(frameon=False, loc="center left", bbox_to_anchor=(1.01, 0.5))
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    fig_path = (
+        figures_dir
+        / "connect_sensorwide_model_timecourse_all_models_z_euclidean_top20_"
+        "stim_broadband.png"
+    )
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_connect_sensorwide_model_timecourse(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -187,10 +271,16 @@ def save_fig_connect_sensorwide_model_timecourse(
         output_dir / "connect_sensorwide_model_timecourse_best_summary.csv"
     )
     model_fig = plot_group_model_timecourse(summary_df, best_df, figures_dir)
+    all_models_fig = plot_split_model_timecourse(summary_df, figures_dir)
     split_fig = plot_best_split_timecourse(best_df, figures_dir)
     print(f"[connect model-timecourse] wrote {model_fig}", flush=True)
+    print(f"[connect model-timecourse] wrote {all_models_fig}", flush=True)
     print(f"[connect model-timecourse] wrote {split_fig}", flush=True)
-    return {"model_timecourse": model_fig, "best_split_timecourse": split_fig}
+    return {
+        "model_timecourse": model_fig,
+        "all_models_timecourse": all_models_fig,
+        "best_split_timecourse": split_fig,
+    }
 
 
 if __name__ == "__main__":
