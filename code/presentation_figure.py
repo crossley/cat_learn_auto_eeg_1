@@ -922,7 +922,9 @@ def template_matrix(kind, split_day=None):
     for train_day in DAYS:
         for test_day in DAYS:
             if kind == "gradual":
-                val = (min(train_day, test_day) - 1.0) / 4.0
+                val = 0.65 * min(train_day, test_day) / float(max(DAYS))
+                if train_day == test_day:
+                    val = train_day / float(max(DAYS))
             elif kind == "split_gradual":
                 if split_day is None:
                     raise ValueError("split_gradual requires split_day")
@@ -931,23 +933,9 @@ def template_matrix(kind, split_day=None):
                 if train_late != test_late:
                     val = 0.0
                 else:
-                    if train_late:
-                        cluster_days = []
-                        for day in DAYS:
-                            if day > split_day:
-                                cluster_days.append(day)
-                    else:
-                        cluster_days = []
-                        for day in DAYS:
-                            if day <= split_day:
-                                cluster_days.append(day)
-                    if len(cluster_days) == 1:
-                        val = 1.0
-                    else:
-                        min_day = min(cluster_days)
-                        max_day = max(cluster_days)
-                        denom = max(float(max_day - min_day), 1.0)
-                        val = (min(train_day, test_day) - min_day) / denom
+                    val = 0.65 * min(train_day, test_day) / float(max(DAYS))
+                    if train_day == test_day:
+                        val = train_day / float(max(DAYS))
             elif kind == "split_binary":
                 if split_day is None:
                     raise ValueError("split_binary requires split_day")
