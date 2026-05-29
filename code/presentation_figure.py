@@ -368,11 +368,34 @@ def plot_presentation_connect_edges_for_window(
     d = edges[(edges["window"] == window) & edges["pair_label"].isin(pair_labels)]
     if d.empty:
         raise ValueError(f"No {window}-window top-10% edge rows available")
+    z_rows = []
+    group_cols = ["subject", "day"]
+    for key, g in d.groupby(group_cols):
+        subject, day = key
+        vals = g["conn_mean"].to_numpy(float)
+        mean_val = float(np.nanmean(vals))
+        std_val = float(np.nanstd(vals))
+        if std_val <= np.finfo(float).eps:
+            continue
+        for row in g.itertuples(index=False):
+            z_rows.append(
+                {
+                    "subject": int(subject),
+                    "day": int(day),
+                    "pair_label": row.pair_label,
+                    "ch_i": row.ch_i,
+                    "ch_j": row.ch_j,
+                    "conn_z": (float(row.conn_mean) - mean_val) / std_val,
+                }
+            )
+    d_z = pd.DataFrame(z_rows)
+    if d_z.empty:
+        raise ValueError(f"No z-scored {window}-window edge rows available")
     rows = []
     for pair_label in sorted(pair_labels):
-        g = d[d["pair_label"] == pair_label]
-        d1 = g[g["day"] == 1]["conn_mean"].to_numpy(float)
-        dl = g[g["day"] > 1]["conn_mean"].to_numpy(float)
+        g = d_z[d_z["pair_label"] == pair_label]
+        d1 = g[g["day"] == 1]["conn_z"].to_numpy(float)
+        dl = g[g["day"] > 1]["conn_z"].to_numpy(float)
         if len(d1) == 0 or len(dl) == 0:
             continue
         row0 = g.iloc[0]
@@ -412,7 +435,9 @@ def plot_presentation_connect_edges_for_window(
         "Day 1 - Days 2-5",
         panel_vlim(plot_df, "difference"),
     )
-    fig.suptitle(f"{window.title()}-Window Connectivity Edges, Top 10%")
+    fig.suptitle(
+        f"{window.title()}-Window Z-Scored Connectivity Edges, Top 10%"
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.9])
     fig_path = figures_dir / (
         f"presentation_connectivity_d1_later_edges_{window}_top10.png"
