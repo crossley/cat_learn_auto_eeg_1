@@ -493,6 +493,69 @@ def plot_presentation_connect_edges_for_window(
     return fig_path
 
 
+def connect_edge_difference_rows(edges, active, window):
+    active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
+    pair_labels = set(active["pair_label"].tolist())
+    d = edges[(edges["window"] == window) & edges["pair_label"].isin(pair_labels)]
+    if d.empty:
+        raise ValueError(f"No {window}-window top-10% edge rows available")
+    d_norm = minmax_normalized_edges(d)
+    rows = []
+    for pair_label in sorted(pair_labels):
+        g = d_norm[d_norm["pair_label"] == pair_label]
+        d1 = g[g["day"] == 1]["conn_norm"].to_numpy(float)
+        dl = g[g["day"] > 1]["conn_norm"].to_numpy(float)
+        if len(d1) == 0 or len(dl) == 0:
+            continue
+        row0 = g.iloc[0]
+        rows.append(
+            {
+                "pair_label": pair_label,
+                "ch_i": row0["ch_i"],
+                "ch_j": row0["ch_j"],
+                "difference": float(np.nanmean(d1) - np.nanmean(dl)),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise ValueError(f"No {window}-window difference rows available")
+    return out
+
+
+def plot_presentation_connect_difference_row(
+    early_edges,
+    middle_edges,
+    late_edges,
+    active,
+    layout,
+    figures_dir,
+):
+    fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.2))
+    panels = [
+        ("early", early_edges, "Early"),
+        ("middle", middle_edges, "Middle"),
+        ("late", late_edges, "Late"),
+    ]
+    for idx, panel in enumerate(panels):
+        window, edges, title = panel
+        rows = connect_edge_difference_rows(edges, active, window)
+        draw_edge_panel(
+            axes[idx],
+            rows,
+            layout,
+            "difference",
+            title,
+            panel_vlim(rows, "difference"),
+            signed=True,
+        )
+    fig.suptitle("Day 1 - Days 2-5 Connectivity Edge Differences")
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    fig_path = figures_dir / "presentation_connectivity_difference_edges_3windows.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def get_connect_three_window_bounds(output_dir):
     shape = require_csv_any(
         [
@@ -606,6 +669,16 @@ def plot_presentation_connect_edges(output_dir, figures_dir):
             figures_dir,
             "middle",
         ),
+    )
+    paths.append(
+        plot_presentation_connect_difference_row(
+            edges,
+            middle_edges,
+            edges,
+            active,
+            layout,
+            figures_dir,
+        )
     )
     legacy_path = figures_dir / "presentation_connectivity_d1_later_edges_top10.png"
     shutil.copyfile(paths[2], legacy_path)
@@ -1020,7 +1093,8 @@ def save_fig_presentation(
     paths["connect_edges_early"] = connect_edge_paths[0]
     paths["connect_edges_middle"] = connect_edge_paths[1]
     paths["connect_edges_late"] = connect_edge_paths[2]
-    paths["connect_edges"] = connect_edge_paths[3]
+    paths["connect_difference_row"] = connect_edge_paths[3]
+    paths["connect_edges"] = connect_edge_paths[4]
     paths["mvpa_auc"] = plot_presentation_mvpa_auc(output_dir, figures_dir)
     paths["mvpa_peak_behavior"] = plot_presentation_mvpa_peak_behavior(
         output_dir, figures_dir
