@@ -195,6 +195,7 @@ def one_interval_results(y, times, sigma, intervals, model_name):
         log_ev, mean, cov = log_marginal_likelihood(y, x, sigma, TAU_EFFECT)
         sd = float(math.sqrt(cov[0, 0]))
         p_pos = normal_cdf(float(mean[0]) / sd)
+        positive_log_ev = log_ev + math.log(max(p_pos, 1e-300)) - math.log(0.5)
         rows.append(
             {
                 "model": model_name,
@@ -202,7 +203,8 @@ def one_interval_results(y, times, sigma, intervals, model_name):
                 "ub_early": interval["ub"] if model_name == "early" else np.nan,
                 "lb_late": interval["lb"] if model_name == "late" else np.nan,
                 "ub_late": interval["ub"] if model_name == "late" else np.nan,
-                "log_evidence": log_ev,
+                "log_evidence": positive_log_ev,
+                "unconstrained_log_evidence": log_ev,
                 "effect_early_mean": float(mean[0])
                 if model_name == "early"
                 else np.nan,
@@ -228,6 +230,12 @@ def two_interval_results(y, times, sigma, early_intervals, late_intervals):
             log_ev, mean, cov = log_marginal_likelihood(y, X, sigma, TAU_EFFECT)
             sd_early = float(math.sqrt(cov[0, 0]))
             sd_late = float(math.sqrt(cov[1, 1]))
+            p_early = normal_cdf(float(mean[0]) / sd_early)
+            p_late = normal_cdf(float(mean[1]) / sd_late)
+            positive_log_ev = log_ev
+            positive_log_ev += math.log(max(p_early, 1e-300))
+            positive_log_ev += math.log(max(p_late, 1e-300))
+            positive_log_ev -= 2.0 * math.log(0.5)
             rows.append(
                 {
                     "model": "early_late",
@@ -235,13 +243,14 @@ def two_interval_results(y, times, sigma, early_intervals, late_intervals):
                     "ub_early": early["ub"],
                     "lb_late": late["lb"],
                     "ub_late": late["ub"],
-                    "log_evidence": log_ev,
+                    "log_evidence": positive_log_ev,
+                    "unconstrained_log_evidence": log_ev,
                     "effect_early_mean": float(mean[0]),
                     "effect_early_sd": sd_early,
-                    "effect_early_p_gt0": normal_cdf(float(mean[0]) / sd_early),
+                    "effect_early_p_gt0": p_early,
                     "effect_late_mean": float(mean[1]),
                     "effect_late_sd": sd_late,
-                    "effect_late_p_gt0": normal_cdf(float(mean[1]) / sd_late),
+                    "effect_late_p_gt0": p_late,
                 }
             )
     return rows
