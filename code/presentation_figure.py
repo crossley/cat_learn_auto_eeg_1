@@ -19,6 +19,8 @@ from matplotlib.patches import Circle, Polygon
 import numpy as np
 import pandas as pd
 
+from erp_grand_average_figure import require_evoked_map
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
@@ -83,14 +85,43 @@ def setup_axis(ax):
 
 
 def plot_presentation_erp_stim(output_dir, figures_dir):
-    source_path = figures_dir / "erp_grand_average_stim_all.png"
-    if not source_path.exists():
-        raise FileNotFoundError(
-            f"Missing MNE-style ERP figure: {source_path}. "
-            "Run code/erp_grand_average_figure.py first."
-        )
+    d = require_csv(
+        output_dir / "erp_grand_average_by_day_lock_condition.csv",
+        "ERP grand-average output",
+    )
+    evoked_map = require_evoked_map(d, "stim", "all")
+    days_sorted = sorted(evoked_map.keys())
+    if len(days_sorted) == 0:
+        raise ValueError("No stim/all ERP evoked data available")
+    font_context = {
+        "font.size": 9,
+        "axes.titlesize": 10,
+        "axes.labelsize": 9,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+    }
     fig_path = figures_dir / "presentation_erp_stim_all.png"
-    shutil.copyfile(source_path, fig_path)
+    with plt.rc_context(font_context):
+        fig, axes = plt.subplots(
+            1,
+            len(days_sorted),
+            figsize=(15, 3.5),
+            squeeze=False,
+        )
+        for i, day in enumerate(days_sorted):
+            ax = axes[0, i]
+            evoked_map[day].plot(
+                axes=ax,
+                show=False,
+                spatial_colors=True,
+                titles=f"Day {day}",
+            )
+            ax.set_title(f"Day {day}")
+            ax.set_xlim(-0.1, 0.8)
+        fig.suptitle("Stimulus-Locked ERPs", fontsize=11)
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
     return fig_path
 
 
@@ -315,6 +346,16 @@ def draw_edge_panel(ax, rows, layout, value_col, title, vlim):
         spine.set_visible(False)
 
 
+def panel_vlim(rows, value_col):
+    vals = []
+    for val in rows[value_col].to_numpy(float):
+        if np.isfinite(val):
+            vals.append(abs(float(val)))
+    if len(vals) == 0:
+        raise ValueError(f"No finite edge values for {value_col}")
+    return float(np.nanpercentile(vals, 95))
+
+
 def plot_presentation_connect_edges_for_window(
     edges,
     active,
@@ -346,14 +387,31 @@ def plot_presentation_connect_edges_for_window(
             }
         )
     plot_df = pd.DataFrame(rows)
-    vals = []
-    for col in ["day1", "later", "difference"]:
-        vals.extend(plot_df[col].to_numpy(float).tolist())
-    vlim = float(np.nanpercentile(np.abs(vals), 95))
     fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.5))
-    draw_edge_panel(axes[0], plot_df, layout, "day1", "Day 1", vlim)
-    draw_edge_panel(axes[1], plot_df, layout, "later", "Days 2-5", vlim)
-    draw_edge_panel(axes[2], plot_df, layout, "difference", "Day 1 - Days 2-5", vlim)
+    draw_edge_panel(
+        axes[0],
+        plot_df,
+        layout,
+        "day1",
+        "Day 1",
+        panel_vlim(plot_df, "day1"),
+    )
+    draw_edge_panel(
+        axes[1],
+        plot_df,
+        layout,
+        "later",
+        "Days 2-5",
+        panel_vlim(plot_df, "later"),
+    )
+    draw_edge_panel(
+        axes[2],
+        plot_df,
+        layout,
+        "difference",
+        "Day 1 - Days 2-5",
+        panel_vlim(plot_df, "difference"),
+    )
     fig.suptitle(f"{window.title()}-Window Connectivity Edges, Top 10%")
     fig.tight_layout(rect=[0, 0, 1, 0.9])
     fig_path = figures_dir / (
@@ -526,33 +584,63 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         output_dir / "presentation_mvpa_model_timecourse.csv",
         "presentation MVPA model-timecourse output",
     )
-    fig, ax = plt.subplots(figsize=(7.5, 3.8))
+    fig, ax = plt.subplots(figsize=(8.2, 4.1))
     labels = [
-        "one_stage_bottleneck",
-        "one_stage_closeness",
+        "gradual",
+        "day closeness",
         "two_stage_binary_D1",
         "two_stage_bottleneck_D1",
+        "two_stage_binary_D2",
+        "two_stage_bottleneck_D2",
+        "two_stage_binary_D3",
+        "two_stage_bottleneck_D3",
+        "two_stage_binary_D4",
+        "two_stage_bottleneck_D4",
     ]
     for label in labels:
         g = d[d["model_label"] == label].sort_values("time_sec")
         if g.empty:
             continue
         color = "#303030"
-        if "closeness" in label:
+        linewidth = 1.0
+        alpha = 0.55
+        zorder = 1
+        if label == "day closeness":
             color = "#4c78a8"
         if "binary" in label:
+            color = "#f4a582"
+        if "bottleneck" in label:
+            color = "#c2a5cf"
+        if label == "two_stage_binary_D1":
             color = "#d6604d"
-        if "bottleneck_D1" in label:
+            linewidth = 2.4
+            alpha = 1.0
+            zorder = 3
+        if label == "two_stage_bottleneck_D1":
             color = "#7b3294"
-        ax.plot(g["time_sec"], g["rho"], color=color, linewidth=2.0,
-                label=label.replace("_", " "))
+            linewidth = 2.4
+            alpha = 1.0
+            zorder = 3
+        if label in ["gradual", "day closeness"]:
+            linewidth = 2.4
+            alpha = 1.0
+            zorder = 3
+        ax.plot(
+            g["time_sec"],
+            g["rho"],
+            color=color,
+            linewidth=linewidth,
+            alpha=alpha,
+            label=label.replace("_", " "),
+            zorder=zorder,
+        )
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
     ax.axvspan(0.40, 0.60, color="0.55", alpha=0.14, linewidth=0)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("model correlation")
     ax.set_title("MVPA Transfer Model Evidence Over Time")
-    ax.legend(frameon=False, fontsize=8)
+    ax.legend(frameon=False, fontsize=8, ncol=3, loc="lower center")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_mvpa_model_timecourse.png"
@@ -602,15 +690,25 @@ def template_matrix(kind, split_day=None):
 
 def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None):
     image = ax.imshow(mat, origin="upper", cmap=cmap, vmin=vmin, vmax=vmax)
-    ax.set_title(title)
+    ax.set_title(title, fontsize=9)
     ax.set_xticks(range(5))
     ax.set_yticks(range(5))
-    ax.set_xticklabels(["D1", "D2", "D3", "D4", "D5"])
-    ax.set_yticklabels(["D1", "D2", "D3", "D4", "D5"])
+    ax.set_xticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
+    ax.set_yticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
     for i in range(5):
         for j in range(5):
-            ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center",
-                    fontsize=8, color="white")
+            color = "white"
+            if np.isfinite(mat[i, j]) and float(mat[i, j]) > 0.68:
+                color = "black"
+            ax.text(
+                j,
+                i,
+                f"{mat[i, j]:.2f}",
+                ha="center",
+                va="center",
+                fontsize=7,
+                color=color,
+            )
     return image
 
 
@@ -636,14 +734,14 @@ def plot_presentation_mvpa_window_model(output_dir, figures_dir):
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    fig, axes = plt.subplots(2, 5, figsize=(13.2, 5.6))
-    plot_matrix(axes[0, 0], template_matrix("gradual"), "gradual", "Greys", 0, 1)
+    fig, axes = plt.subplots(2, 5, figsize=(14.8, 6.6))
+    plot_matrix(axes[0, 0], template_matrix("gradual"), "gradual", "viridis", 0, 1)
     for idx, split_day in enumerate([1, 2, 3, 4], start=1):
         plot_matrix(
             axes[0, idx],
             template_matrix("split_gradual", split_day=split_day),
             f"D{split_day} split gradual",
-            "Greys",
+            "viridis",
             0,
             1,
         )
@@ -653,12 +751,13 @@ def plot_presentation_mvpa_window_model(output_dir, figures_dir):
             axes[1, idx],
             template_matrix("split_binary", split_day=split_day),
             f"D{split_day} split binary",
-            "Greys",
+            "viridis",
             0,
             1,
         )
     fig.suptitle("MVPA Transfer Model Predictions")
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.88)
+    fig.subplots_adjust(wspace=0.34, hspace=0.42)
     model_path = figures_dir / "presentation_mvpa_window_transfer_model_predictions.png"
     fig.savefig(model_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
