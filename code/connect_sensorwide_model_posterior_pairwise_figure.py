@@ -19,13 +19,16 @@ import numpy as np
 import pandas as pd
 
 from connect_sensorwide_analysis import FIGURES_DIR, OUTPUT_DIR
-from mvpa_stim_locked_cat_tg_window_structure_analysis import MVPA_CAT_TG_WINDOWS
 
 CONTRAST_LABELS = {
-    "mixed_D1_minus_gradual": "mixed D1 - gradual",
-    "mixed_D1_minus_mixed_D2": "mixed D1 - mixed D2",
-    "binary_D1_minus_binary_D2": "binary D1 - binary D2",
-    "mixed_D1_minus_binary_D1": "mixed D1 - binary D1",
+    "two_stage_hybrid_D1_minus_gradual": "mixed D1 - gradual",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D2": "mixed D1 - mixed D2",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D3": "mixed D1 - mixed D3",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D4": "mixed D1 - mixed D4",
+    "two_stage_binary_D1_minus_two_stage_binary_D2": "binary D1 - binary D2",
+    "two_stage_binary_D1_minus_two_stage_binary_D3": "binary D1 - binary D3",
+    "two_stage_binary_D1_minus_two_stage_binary_D4": "binary D1 - binary D4",
+    "two_stage_hybrid_D1_minus_two_stage_binary_D1": "mixed D1 - binary D1",
 }
 
 
@@ -40,14 +43,6 @@ def require_csv(path):
     if d.empty:
         raise ValueError(f"Empty posterior pairwise output: {path}")
     return d
-
-
-def add_window_spans(ax):
-    for window, bounds in MVPA_CAT_TG_WINDOWS.items():
-        color = "#c7c7c7"
-        if window == "late":
-            color = "#9e9e9e"
-        ax.axvspan(bounds[0], bounds[1], color=color, alpha=0.16, linewidth=0)
 
 
 def plot_pairwise_timecourse(time_df, interval_df, figures_dir):
@@ -77,7 +72,6 @@ def plot_pairwise_timecourse(time_df, interval_df, figures_dir):
         p = d["p_gt0"].to_numpy(dtype=float)
 
         ax = axes[row_i, 0]
-        add_window_spans(ax)
         ax.plot(x, y, color="#303030", lw=1.8)
         ax.fill_between(x, lo, hi, color="#303030", alpha=0.18, linewidth=0)
         ax.axhline(0, color="#777777", lw=0.8)
@@ -87,7 +81,6 @@ def plot_pairwise_timecourse(time_df, interval_df, figures_dir):
         ax.spines["right"].set_visible(False)
 
         ax = axes[row_i, 1]
-        add_window_spans(ax)
         ax.plot(x, p, color="#3b6fb6", lw=1.8)
         ax.axhline(0.95, color="#777777", lw=0.8, ls="--")
         ax.axhline(0.50, color="#bdbdbd", lw=0.8)

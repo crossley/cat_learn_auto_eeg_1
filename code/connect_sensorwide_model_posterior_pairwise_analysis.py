@@ -15,34 +15,54 @@ import numpy as np
 import pandas as pd
 
 from connect_sensorwide_analysis import OUTPUT_DIR
-from mvpa_stim_locked_cat_tg_window_structure_analysis import MVPA_CAT_TG_WINDOWS
-
 ACTIVE_PCT = float(os.environ.get("ACTIVE_PCT", "0.20"))
 N_SAMPLES = int(os.environ.get("N_POSTERIOR_SAMPLES", "20000"))
 RANDOM_STATE = int(os.environ.get("RANDOM_STATE", "42"))
+INTERVALS = {
+    "early": (0.060, 0.180),
+    "late": (0.400, 0.600),
+}
 
-CONTRASTS = [
-    {
-        "contrast": "mixed_D1_minus_gradual",
-        "model_a": "two_stage_hybrid_D1",
-        "model_b": "gradual",
-    },
-    {
-        "contrast": "mixed_D1_minus_mixed_D2",
-        "model_a": "two_stage_hybrid_D1",
-        "model_b": "two_stage_hybrid_D2",
-    },
-    {
-        "contrast": "binary_D1_minus_binary_D2",
-        "model_a": "two_stage_binary_D1",
-        "model_b": "two_stage_binary_D2",
-    },
-    {
-        "contrast": "mixed_D1_minus_binary_D1",
-        "model_a": "two_stage_hybrid_D1",
-        "model_b": "two_stage_binary_D1",
-    },
+MODEL_LABELS = [
+    "gradual",
+    "two_stage_binary_D1",
+    "two_stage_binary_D2",
+    "two_stage_binary_D3",
+    "two_stage_binary_D4",
+    "two_stage_hybrid_D1",
+    "two_stage_hybrid_D2",
+    "two_stage_hybrid_D3",
+    "two_stage_hybrid_D4",
 ]
+
+PLOT_CONTRASTS = [
+    "two_stage_hybrid_D1_minus_gradual",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D2",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D3",
+    "two_stage_hybrid_D1_minus_two_stage_hybrid_D4",
+    "two_stage_binary_D1_minus_two_stage_binary_D2",
+    "two_stage_binary_D1_minus_two_stage_binary_D3",
+    "two_stage_binary_D1_minus_two_stage_binary_D4",
+    "two_stage_hybrid_D1_minus_two_stage_binary_D1",
+]
+
+
+def all_contrasts():
+    rows = []
+    for idx, model_a in enumerate(MODEL_LABELS):
+        for model_b in MODEL_LABELS[(idx + 1) :]:
+            rows.append(
+                {
+                    "contrast": f"{model_a}_minus_{model_b}",
+                    "model_a": model_a,
+                    "model_b": model_b,
+                    "plot_default": False,
+                }
+            )
+    for row in rows:
+        if row["contrast"] in PLOT_CONTRASTS:
+            row["plot_default"] = True
+    return rows
 
 
 def require_csv(path):
@@ -155,7 +175,7 @@ def summarize_differences(diff_df, contrast, model_a, model_b, rng):
 
 def interval_summary(diff_df, contrast, model_a, model_b, rng):
     rows = []
-    for window, bounds in MVPA_CAT_TG_WINDOWS.items():
+    for window, bounds in INTERVALS.items():
         lo = float(bounds[0])
         hi = float(bounds[1])
         d_win = diff_df[
@@ -206,7 +226,7 @@ def run_connect_sensorwide_model_posterior_pairwise(
     subject_rows = []
     time_rows = []
     interval_rows = []
-    for spec in CONTRASTS:
+    for spec in all_contrasts():
         contrast = spec["contrast"]
         model_a = spec["model_a"]
         model_b = spec["model_b"]
@@ -214,6 +234,7 @@ def run_connect_sensorwide_model_posterior_pairwise(
         diff_df["contrast"] = contrast
         diff_df["model_a"] = model_a
         diff_df["model_b"] = model_b
+        diff_df["plot_default"] = bool(spec["plot_default"])
         diff_df["active_pct"] = ACTIVE_PCT
         for row in diff_df.itertuples(index=False):
             subject_rows.append(row._asdict())
@@ -224,9 +245,12 @@ def run_connect_sensorwide_model_posterior_pairwise(
             model_b,
             rng,
         )
+        summary_df["plot_default"] = bool(spec["plot_default"])
         for row in summary_df.itertuples(index=False):
             time_rows.append(row._asdict())
-        for row in interval_summary(diff_df, contrast, model_a, model_b, rng):
+        interval_df = interval_summary(diff_df, contrast, model_a, model_b, rng)
+        for row in interval_df:
+            row["plot_default"] = bool(spec["plot_default"])
             interval_rows.append(row)
 
     subject_path = (
