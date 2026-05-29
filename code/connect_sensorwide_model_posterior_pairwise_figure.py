@@ -22,6 +22,7 @@ from connect_sensorwide_analysis import FIGURES_DIR, OUTPUT_DIR
 
 CONTRAST_LABELS = {
     "two_stage_hybrid_D1_minus_gradual": "mixed D1 - gradual",
+    "two_stage_binary_D1_minus_gradual": "binary D1 - gradual",
     "two_stage_hybrid_D1_minus_two_stage_hybrid_D2": "mixed D1 - mixed D2",
     "two_stage_hybrid_D1_minus_two_stage_hybrid_D3": "mixed D1 - mixed D3",
     "two_stage_hybrid_D1_minus_two_stage_hybrid_D4": "mixed D1 - mixed D4",

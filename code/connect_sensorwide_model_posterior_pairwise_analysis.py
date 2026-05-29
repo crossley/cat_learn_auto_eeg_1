@@ -35,33 +35,46 @@ MODEL_LABELS = [
     "two_stage_hybrid_D4",
 ]
 
-PLOT_CONTRASTS = [
-    "two_stage_hybrid_D1_minus_gradual",
-    "two_stage_hybrid_D1_minus_two_stage_hybrid_D2",
-    "two_stage_hybrid_D1_minus_two_stage_hybrid_D3",
-    "two_stage_hybrid_D1_minus_two_stage_hybrid_D4",
-    "two_stage_binary_D1_minus_two_stage_binary_D2",
-    "two_stage_binary_D1_minus_two_stage_binary_D3",
-    "two_stage_binary_D1_minus_two_stage_binary_D4",
-    "two_stage_hybrid_D1_minus_two_stage_binary_D1",
+PLOT_CONTRAST_SPECS = [
+    {"model_a": "two_stage_hybrid_D1", "model_b": "gradual"},
+    {"model_a": "two_stage_binary_D1", "model_b": "gradual"},
+    {"model_a": "two_stage_hybrid_D1", "model_b": "two_stage_hybrid_D2"},
+    {"model_a": "two_stage_hybrid_D1", "model_b": "two_stage_hybrid_D3"},
+    {"model_a": "two_stage_hybrid_D1", "model_b": "two_stage_hybrid_D4"},
+    {"model_a": "two_stage_binary_D1", "model_b": "two_stage_binary_D2"},
+    {"model_a": "two_stage_binary_D1", "model_b": "two_stage_binary_D3"},
+    {"model_a": "two_stage_binary_D1", "model_b": "two_stage_binary_D4"},
+    {"model_a": "two_stage_hybrid_D1", "model_b": "two_stage_binary_D1"},
 ]
 
 
 def all_contrasts():
     rows = []
+    seen = set()
+    for spec in PLOT_CONTRAST_SPECS:
+        contrast = f"{spec['model_a']}_minus_{spec['model_b']}"
+        rows.append(
+            {
+                "contrast": contrast,
+                "model_a": spec["model_a"],
+                "model_b": spec["model_b"],
+                "plot_default": True,
+            }
+        )
+        seen.add(contrast)
     for idx, model_a in enumerate(MODEL_LABELS):
         for model_b in MODEL_LABELS[(idx + 1) :]:
+            contrast = f"{model_a}_minus_{model_b}"
+            if contrast in seen:
+                continue
             rows.append(
                 {
-                    "contrast": f"{model_a}_minus_{model_b}",
+                    "contrast": contrast,
                     "model_a": model_a,
                     "model_b": model_b,
                     "plot_default": False,
                 }
             )
-    for row in rows:
-        if row["contrast"] in PLOT_CONTRASTS:
-            row["plot_default"] = True
     return rows
 
 
