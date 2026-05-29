@@ -836,25 +836,25 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
     labels = [
         "gradual",
-        "two_stage_bottleneck_D1",
-        "two_stage_bottleneck_D2",
-        "two_stage_bottleneck_D3",
-        "two_stage_bottleneck_D4",
-        "two_stage_binary_D1",
-        "two_stage_binary_D2",
-        "two_stage_binary_D3",
-        "two_stage_binary_D4",
+        "split_gradual_D1",
+        "split_gradual_D2",
+        "split_gradual_D3",
+        "split_gradual_D4",
+        "split_binary_D1",
+        "split_binary_D2",
+        "split_binary_D3",
+        "split_binary_D4",
     ]
     legend_labels = {
         "gradual": "gradual",
-        "two_stage_bottleneck_D1": "D1 split gradual",
-        "two_stage_bottleneck_D2": "D2 split gradual",
-        "two_stage_bottleneck_D3": "D3 split gradual",
-        "two_stage_bottleneck_D4": "D4 split gradual",
-        "two_stage_binary_D1": "D1 split binary",
-        "two_stage_binary_D2": "D2 split binary",
-        "two_stage_binary_D3": "D3 split binary",
-        "two_stage_binary_D4": "D4 split binary",
+        "split_gradual_D1": "D1 split gradual",
+        "split_gradual_D2": "D2 split gradual",
+        "split_gradual_D3": "D3 split gradual",
+        "split_gradual_D4": "D4 split gradual",
+        "split_binary_D1": "D1 split binary",
+        "split_binary_D2": "D2 split binary",
+        "split_binary_D3": "D3 split binary",
+        "split_binary_D4": "D4 split binary",
     }
     for label in labels:
         g = d[d["model_label"] == label].sort_values("time_sec")
@@ -866,14 +866,14 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         zorder = 1
         if "binary" in label:
             color = "#f4a582"
-        if "bottleneck" in label:
+        if "gradual" in label and label != "gradual":
             color = "#c2a5cf"
-        if label == "two_stage_binary_D1":
+        if label == "split_binary_D1":
             color = "#d6604d"
             linewidth = 2.4
             alpha = 1.0
             zorder = 3
-        if label == "two_stage_bottleneck_D1":
+        if label == "split_gradual_D1":
             color = "#7b3294"
             linewidth = 2.4
             alpha = 1.0
