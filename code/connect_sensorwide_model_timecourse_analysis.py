@@ -20,6 +20,7 @@ DAYS = [1, 2, 3, 4, 5]
 LOCK_TYPE = "stim"
 BAND = "broadband"
 ACTIVE_PAIR_PCT = 0.20
+ACTIVE_PAIR_PCTS = [0.10, 0.20, 0.30, 0.50, 0.70, 0.90, 1.00]
 WINDOW_SEC = 0.05
 METRIC = "z_euclidean"
 MIN_DAY_PAIRS = 6
@@ -51,7 +52,7 @@ def add_pair_labels(d):
     return d
 
 
-def select_active_pairs(carpet_df):
+def rank_active_pairs(carpet_df):
     d = carpet_df[
         (carpet_df["lock_type"] == LOCK_TYPE) & (carpet_df["band"] == BAND)
     ].copy()
@@ -75,12 +76,18 @@ def select_active_pairs(carpet_df):
     pair_df = pd.DataFrame(rows)
     if pair_df.empty:
         raise ValueError("No finite stim broadband sensor pairs found")
-    n_pairs = int(len(pair_df))
-    top_k = max(1, int(np.ceil(ACTIVE_PAIR_PCT * n_pairs)))
     pair_df = pair_df.sort_values("modulation", ascending=False).reset_index(drop=True)
     pair_df["active_rank"] = np.arange(1, len(pair_df) + 1)
-    pair_df["active_pct"] = ACTIVE_PAIR_PCT
-    return pair_df.iloc[:top_k].copy()
+    return pair_df
+
+
+def select_active_pairs(ranked_pair_df, active_pct):
+    n_pairs = int(len(ranked_pair_df))
+    top_k = max(1, int(np.ceil(float(active_pct) * n_pairs)))
+    active_df = ranked_pair_df.iloc[:top_k].copy()
+    active_df["active_pct"] = float(active_pct)
+    active_df["n_edges"] = int(top_k)
+    return active_df
 
 
 def rank_vector(vals):
@@ -276,7 +283,7 @@ def score_subject_time(day_rows, emp_vals):
     return rows
 
 
-def subject_scores(vectors):
+def subject_scores(vectors, active_pct, n_edges):
     subject_times = []
     for key in vectors.keys():
         subject, _day, lock_time, time_center = key
@@ -303,6 +310,8 @@ def subject_scores(vectors):
                     "lock_time": float(lock_time),
                     "time_center_sec": float(time_center),
                     "metric": METRIC,
+                    "active_pct": float(active_pct),
+                    "n_edges": int(n_edges),
                     "n_day_pairs": int(len(emp_vals)),
                     "model": row["model"],
                     "split_day": row["split_day"],
@@ -326,9 +335,16 @@ def sem(vals):
 
 def group_summary(score_df):
     rows = []
-    group_cols = ["lock_time", "time_center_sec", "metric", "model", "split_day"]
+    group_cols = [
+        "active_pct",
+        "lock_time",
+        "time_center_sec",
+        "metric",
+        "model",
+        "split_day",
+    ]
     for key, g in score_df.groupby(group_cols, dropna=False):
-        lock_time, time_center, metric, model, split_day = key
+        active_pct, lock_time, time_center, metric, model, split_day = key
         vals = g["rho"].to_numpy(dtype=float)
         vals = vals[np.isfinite(vals)]
         if len(vals) == 0:
@@ -336,6 +352,7 @@ def group_summary(score_df):
         model_label = str(g["model_label"].iloc[0])
         rows.append(
             {
+                "active_pct": float(active_pct),
                 "lock_time": float(lock_time),
                 "time_center_sec": float(time_center),
                 "metric": metric,
@@ -345,6 +362,7 @@ def group_summary(score_df):
                 "rho_mean": float(np.mean(vals)),
                 "rho_sem": sem(vals),
                 "n_subjects": int(len(vals)),
+                "n_edges": int(g["n_edges"].iloc[0]),
             }
         )
     out = pd.DataFrame(rows)
@@ -355,8 +373,10 @@ def group_summary(score_df):
 
 def best_family_summary(score_df):
     rows = []
-    for key, g_time in score_df.groupby(["lock_time", "time_center_sec"]):
-        lock_time, time_center = key
+    for key, g_time in score_df.groupby(
+        ["active_pct", "lock_time", "time_center_sec"]
+    ):
+        active_pct, lock_time, time_center = key
         for family in ["two_stage_binary", "two_stage_hybrid"]:
             best_split = np.nan
             best_mean = np.nan
@@ -380,6 +400,7 @@ def best_family_summary(score_df):
             if np.isfinite(best_mean):
                 rows.append(
                     {
+                        "active_pct": float(active_pct),
                         "lock_time": float(lock_time),
                         "time_center_sec": float(time_center),
                         "metric": METRIC,
@@ -388,6 +409,7 @@ def best_family_summary(score_df):
                         "rho_mean": best_mean,
                         "rho_sem": best_sem,
                         "n_subjects": best_n,
+                        "n_edges": int(g_time["n_edges"].iloc[0]),
                     }
                 )
     out = pd.DataFrame(rows)
@@ -400,10 +422,23 @@ def run_connect_sensorwide_model_timecourse(output_dir: Path | str = OUTPUT_DIR)
     output_dir = Path(output_dir)
     carpet_df = require_csv(output_dir / "sensorwide_carpet_timeseries.csv")
     subject_df = require_csv(output_dir / "sensorwide_carpet_subject_timeseries.csv")
-    active_df = select_active_pairs(carpet_df)
-    active_rows = active_subject_rows(subject_df, active_df)
-    vectors = build_vectors(active_rows, active_df)
-    score_df = subject_scores(vectors)
+    ranked_pair_df = rank_active_pairs(carpet_df)
+    active_frames = []
+    score_frames = []
+    for active_pct in ACTIVE_PAIR_PCTS:
+        active_df = select_active_pairs(ranked_pair_df, active_pct)
+        print(
+            "[connect model-timecourse] "
+            f"active_pct={active_pct:.2f}, n_edges={len(active_df)}",
+            flush=True,
+        )
+        active_frames.append(active_df)
+        active_rows = active_subject_rows(subject_df, active_df)
+        vectors = build_vectors(active_rows, active_df)
+        score_df_this = subject_scores(vectors, active_pct, len(active_df))
+        score_frames.append(score_df_this)
+    active_df = pd.concat(active_frames, ignore_index=True)
+    score_df = pd.concat(score_frames, ignore_index=True)
     summary_df = group_summary(score_df)
     best_df = best_family_summary(score_df)
 

@@ -15,6 +15,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import numpy as np
 import pandas as pd
 
@@ -39,6 +40,9 @@ SPLIT_MODEL_COLORS = {
     "two_stage_hybrid_D4": "#40004b",
 }
 
+ALL_MODEL_ROW_PCTS = [0.10, 0.30, 0.50, 0.70, 0.90, 1.00]
+LEGACY_ACTIVE_PCT = 0.20
+
 
 def require_csv(path):
     path = Path(path)
@@ -53,7 +57,18 @@ def require_csv(path):
     return d
 
 
+def filter_active_pct(d, active_pct):
+    if "active_pct" not in d.columns:
+        return d.copy()
+    g = d[np.isclose(d["active_pct"].astype(float), float(active_pct))].copy()
+    if g.empty:
+        raise ValueError(f"Missing model-timecourse rows for active_pct={active_pct}")
+    return g
+
+
 def plot_group_model_timecourse(summary_df, best_df, figures_dir):
+    summary_df = filter_active_pct(summary_df, LEGACY_ACTIVE_PCT)
+    best_df = filter_active_pct(best_df, LEGACY_ACTIVE_PCT)
     rows = []
     d_gradual = summary_df[summary_df["model"] == "gradual"].copy()
     for row in d_gradual.itertuples(index=False):
@@ -145,6 +160,7 @@ def plot_group_model_timecourse(summary_df, best_df, figures_dir):
 
 
 def plot_best_split_timecourse(best_df, figures_dir):
+    best_df = filter_active_pct(best_df, LEGACY_ACTIVE_PCT)
     fig, ax = plt.subplots(figsize=(9.2, 3.6))
     colors = {
         "two_stage_binary_best": "#b33c2e",
@@ -202,54 +218,166 @@ def split_model_key(model, split_day):
     return f"{model}_D{int(split_day)}"
 
 
-def plot_split_model_timecourse(summary_df, figures_dir):
-    fig, ax = plt.subplots(figsize=(10.5, 5.4))
-    for row in summary_df[
-        ["model", "split_day"]
-    ].drop_duplicates().itertuples(index=False):
-        model = str(row.model)
-        split_day = row.split_day
-        key = split_model_key(model, split_day)
-        if key not in SPLIT_MODEL_COLORS:
-            continue
-        label = split_model_label(model, split_day)
-        color = SPLIT_MODEL_COLORS[key]
-        g = summary_df[
-            (summary_df["model"] == model)
-            & (
-                summary_df["split_day"].fillna(-1.0)
-                == float(split_day if np.isfinite(split_day) else -1.0)
+def model_distance(model, day_i, day_j, split_day=None):
+    if model == "gradual":
+        return float(abs(day_i - day_j) / 4.0)
+    if model == "two_stage_binary":
+        if split_day is None:
+            raise ValueError("two_stage_binary requires split_day")
+        i_late = day_i > split_day
+        j_late = day_j > split_day
+        if i_late == j_late:
+            return 0.0
+        return 1.0
+    if model == "two_stage_hybrid":
+        if split_day is None:
+            raise ValueError("two_stage_hybrid requires split_day")
+        gradual = float(abs(day_i - day_j) / 4.0)
+        i_late = day_i > split_day
+        j_late = day_j > split_day
+        if i_late == j_late:
+            return 0.5 * gradual
+        return 0.5 + 0.5 * gradual
+    raise ValueError(f"Unknown model: {model}")
+
+
+def split_model_specs():
+    rows = [{"model": "gradual", "split_day": np.nan}]
+    for model in ["two_stage_binary", "two_stage_hybrid"]:
+        for split_day in [1, 2, 3, 4]:
+            rows.append({"model": model, "split_day": float(split_day)})
+    return rows
+
+
+def model_matrix(model, split_day):
+    mat = np.full((5, 5), np.nan, dtype=float)
+    split_arg = None
+    if np.isfinite(split_day):
+        split_arg = int(split_day)
+    days = [1, 2, 3, 4, 5]
+    for r, day_i in enumerate(days):
+        for c, day_j in enumerate(days):
+            mat[r, c] = model_distance(
+                model,
+                day_i,
+                day_j,
+                split_day=split_arg,
             )
-        ].sort_values("time_center_sec")
-        if g.empty:
-            raise ValueError(f"Missing split-specific model rows for {key}")
-        x = g["time_center_sec"].to_numpy(dtype=float)
-        y = g["rho_mean"].to_numpy(dtype=float)
-        lw = 2.4
-        alpha = 1.0
-        if model != "gradual":
-            lw = 1.5
-            alpha = 0.9
-        ax.plot(x, y, lw=lw, alpha=alpha, color=color, label=label)
+    return mat
 
-    for window_name, bounds in MVPA_CAT_TG_WINDOWS.items():
-        if window_name == "early":
-            color = "#bdbdbd"
+
+def draw_model_matrices(fig, grid):
+    specs = split_model_specs()
+    for col, spec in enumerate(specs):
+        ax = fig.add_subplot(grid[0, col])
+        mat = model_matrix(spec["model"], spec["split_day"])
+        ax.imshow(mat, cmap="Greys", vmin=0, vmax=1)
+        label = split_model_label(spec["model"], spec["split_day"])
+        ax.set_title(label, fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for r in range(mat.shape[0]):
+            for c in range(mat.shape[1]):
+                val = mat[r, c]
+                text_color = "white"
+                if val < 0.55:
+                    text_color = "#303030"
+                ax.text(
+                    c,
+                    r,
+                    f"{val:.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=5,
+                    color=text_color,
+                )
+
+
+def plot_split_model_timecourse(summary_df, figures_dir):
+    fig = plt.figure(figsize=(13.5, 13.0))
+    grid = GridSpec(
+        len(ALL_MODEL_ROW_PCTS) + 1,
+        9,
+        figure=fig,
+        height_ratios=[1.0, 1.35, 1.35, 1.35, 1.35, 1.35, 1.35],
+        hspace=0.55,
+        wspace=0.35,
+    )
+    draw_model_matrices(fig, grid)
+    legend_handles = []
+    legend_labels = []
+    for row_i, active_pct in enumerate(ALL_MODEL_ROW_PCTS, start=1):
+        ax = fig.add_subplot(grid[row_i, :])
+        d_pct = filter_active_pct(summary_df, active_pct)
+        for spec in split_model_specs():
+            model = spec["model"]
+            split_day = spec["split_day"]
+            key = split_model_key(model, split_day)
+            if key not in SPLIT_MODEL_COLORS:
+                continue
+            label = split_model_label(model, split_day)
+            color = SPLIT_MODEL_COLORS[key]
+            split_val = -1.0
+            if np.isfinite(split_day):
+                split_val = float(split_day)
+            g = d_pct[
+                (d_pct["model"] == model)
+                & (d_pct["split_day"].fillna(-1.0) == split_val)
+            ].sort_values("time_center_sec")
+            if g.empty:
+                raise ValueError(
+                    "Missing split-specific model rows: "
+                    f"active_pct={active_pct}, model={key}"
+                )
+            x = g["time_center_sec"].to_numpy(dtype=float)
+            y = g["rho_mean"].to_numpy(dtype=float)
+            lw = 2.4
+            alpha = 1.0
+            if model != "gradual":
+                lw = 1.45
+                alpha = 0.88
+            handle = ax.plot(
+                x,
+                y,
+                lw=lw,
+                alpha=alpha,
+                color=color,
+                label=label,
+            )[0]
+            if row_i == 1:
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+        for window_name, bounds in MVPA_CAT_TG_WINDOWS.items():
+            if window_name == "early":
+                color = "#bdbdbd"
+            else:
+                color = "#969696"
+            ax.axvspan(bounds[0], bounds[1], color=color, alpha=0.12, linewidth=0)
+        ax.axhline(0, color="#404040", lw=0.8)
+        ax.set_ylabel(f"{active_pct * 100:.0f}%\nrho")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        if row_i < len(ALL_MODEL_ROW_PCTS):
+            ax.set_xticklabels([])
         else:
-            color = "#969696"
-        ax.axvspan(bounds[0], bounds[1], color=color, alpha=0.14, linewidth=0)
-
-    ax.axhline(0, color="#404040", lw=0.8)
-    ax.set_xlabel("stim-locked time (s)")
-    ax.set_ylabel("model correlation (Spearman rho)")
-    ax.set_title("Connectivity Day-Geometry Model Correlations by Template")
-    ax.legend(frameon=False, loc="center left", bbox_to_anchor=(1.01, 0.5))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+            ax.set_xlabel("stim-locked time (s)")
+    fig.legend(
+        legend_handles,
+        legend_labels,
+        frameon=False,
+        loc="lower center",
+        ncol=5,
+        bbox_to_anchor=(0.5, 0.005),
+    )
+    fig.suptitle(
+        "Connectivity Day-Geometry Model Correlations by Template and Edge Set",
+        y=0.99,
+    )
+    fig.tight_layout(rect=[0.02, 0.04, 0.98, 0.97])
     fig_path = (
         figures_dir
-        / "connect_sensorwide_model_timecourse_all_models_z_euclidean_top20_"
+        / "connect_sensorwide_model_timecourse_all_models_z_euclidean_edge_pcts_"
         "stim_broadband.png"
     )
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
