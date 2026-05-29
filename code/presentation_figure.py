@@ -931,7 +931,23 @@ def template_matrix(kind, split_day=None):
                 if train_late != test_late:
                     val = 0.0
                 else:
-                    val = (min(train_day, test_day) - 1.0) / 4.0
+                    if train_late:
+                        cluster_days = []
+                        for day in DAYS:
+                            if day > split_day:
+                                cluster_days.append(day)
+                    else:
+                        cluster_days = []
+                        for day in DAYS:
+                            if day <= split_day:
+                                cluster_days.append(day)
+                    if len(cluster_days) == 1:
+                        val = 1.0
+                    else:
+                        min_day = min(cluster_days)
+                        max_day = max(cluster_days)
+                        denom = max(float(max_day - min_day), 1.0)
+                        val = (min(train_day, test_day) - min_day) / denom
             elif kind == "split_binary":
                 if split_day is None:
                     raise ValueError("split_binary requires split_day")
