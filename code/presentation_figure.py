@@ -1244,6 +1244,53 @@ def plot_presentation_connectivity_peak_day(output_dir, figures_dir):
     return fig_path
 
 
+def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
+    peak_df = subject_day_connectivity_peaks(output_dir)
+    behavior = load_behavior()
+    merged = peak_df.merge(behavior, on=["subject", "day"], how="inner")
+    peak_color = dict(zip(PEAK_LABELS, PEAK_COLORS))
+
+    measures = [
+        ("accuracy", "Accuracy"),
+        ("rt", "Response Time (s)"),
+    ]
+    fig, axes = plt.subplots(
+        len(measures), len(DAYS),
+        figsize=(4.0 * len(DAYS), 3.8 * len(measures)),
+        squeeze=False,
+    )
+
+    for row_i, (measure_col, measure_label) in enumerate(measures):
+        for col_i, day in enumerate(DAYS):
+            ax = axes[row_i, col_i]
+            d_day = merged[merged["day"] == day]
+            for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
+                g = d_day[d_day["peak"] == peak]
+                x = g["amplitude"].to_numpy(float)
+                y = g[measure_col].to_numpy(float)
+                ax.scatter(x, y, color=color, s=30, alpha=0.85,
+                           label=peak if col_i == 0 else None, zorder=3)
+                reg = _regression_line(x, y)
+                if reg is not None:
+                    x_line, y_line, r, p = reg
+                    ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.8)
+            if col_i == 0:
+                ax.set_ylabel(measure_label)
+                ax.legend(frameon=False, fontsize=8)
+            if row_i == 0:
+                ax.set_title(f"Day {day}")
+            if row_i == len(measures) - 1:
+                ax.set_xlabel("Peak amplitude")
+            setup_axis(ax)
+
+    fig.suptitle("Connectivity Peak Amplitude vs Behavior by Day", fontsize=12)
+    fig.tight_layout()
+    fig_path = figures_dir / "presentation_connectivity_peak_behavior.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_presentation(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -1281,6 +1328,9 @@ def save_fig_presentation(
     paths["rsa_model_fit"] = rsa_paths[0]
     paths["rsa_model_predictions"] = rsa_paths[1]
     paths["connectivity_peak_day"] = plot_presentation_connectivity_peak_day(
+        output_dir, figures_dir
+    )
+    paths["connectivity_peak_behavior"] = plot_presentation_connectivity_peak_behavior(
         output_dir, figures_dir
     )
     for key, path in paths.items():
