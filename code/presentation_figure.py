@@ -1245,14 +1245,15 @@ def plot_presentation_connectivity_peak_day(output_dir, figures_dir):
 
 
 def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
+    from matplotlib.lines import Line2D
+
     peak_df = subject_day_connectivity_peaks(output_dir)
     behavior = load_behavior()
     merged = peak_df.merge(behavior, on=["subject", "day"], how="inner")
-    peak_color = dict(zip(PEAK_LABELS, PEAK_COLORS))
 
     measures = [
-        ("accuracy", "Accuracy"),
-        ("rt", "Response Time (s)"),
+        ("accuracy", "Accuracy",      "lower right"),
+        ("rt",       "Response Time (s)", "upper right"),
     ]
     fig, axes = plt.subplots(
         len(measures), len(DAYS),
@@ -1260,7 +1261,11 @@ def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
         squeeze=False,
     )
 
-    for row_i, (measure_col, measure_label) in enumerate(measures):
+    annot_spacing = 0.11
+    annot_fontsize = 8.0
+
+    for row_i, (measure_col, measure_label, annot_corner) in enumerate(measures):
+        annot_top = annot_corner == "upper right"
         for col_i, day in enumerate(DAYS):
             ax = axes[row_i, col_i]
             d_day = merged[merged["day"] == day]
@@ -1269,32 +1274,48 @@ def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
                 g = d_day[d_day["peak"] == peak]
                 x = g["amplitude"].to_numpy(float)
                 y = g[measure_col].to_numpy(float)
-                ax.scatter(x, y, color=color, s=30, alpha=0.30, zorder=3)
+                ax.scatter(x, y, color=color, s=30, alpha=0.45, zorder=3)
                 reg = _regression_line(x, y)
                 if reg is not None:
                     x_line, y_line, r, p = reg
-                    ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.85,
-                            label=peak if col_i == 0 else None)
+                    ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.85)
                     annot_lines.append((peak, color, r, p))
             for k, (peak, color, r, p) in enumerate(annot_lines):
+                if annot_top:
+                    y_pos = 0.97 - k * annot_spacing
+                    va = "top"
+                else:
+                    y_pos = 0.03 + k * annot_spacing
+                    va = "bottom"
                 ax.text(
-                    0.97, 0.97 - k * 0.16,
+                    0.97, y_pos,
                     f"{peak}: r={r:.2f}, p={p:.2f}",
                     transform=ax.transAxes,
-                    fontsize=6.5, color=color,
-                    ha="right", va="top",
+                    fontsize=annot_fontsize, color=color,
+                    ha="right", va=va,
                 )
             if col_i == 0:
                 ax.set_ylabel(measure_label)
-                ax.legend(frameon=False, fontsize=8)
             if row_i == 0:
                 ax.set_title(f"Day {day}")
             if row_i == len(measures) - 1:
                 ax.set_xlabel("Peak amplitude")
             setup_axis(ax)
 
+    legend_handles = [
+        Line2D([0], [0], color=color, linewidth=2.2, label=peak)
+        for peak, color in zip(PEAK_LABELS, PEAK_COLORS)
+    ]
     fig.suptitle("Connectivity Peak Amplitude vs Behavior by Day", fontsize=12)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0.07, 1, 1])
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        fontsize=10,
+        bbox_to_anchor=(0.5, 0.0),
+    )
     fig_path = figures_dir / "presentation_connectivity_peak_behavior.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
