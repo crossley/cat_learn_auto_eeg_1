@@ -19,6 +19,7 @@ from matplotlib.patches import Circle, Polygon
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.signal import find_peaks
 
 from erp_grand_average_figure import require_evoked_map
 
@@ -1119,8 +1120,31 @@ PEAK_LABELS = ["Peak 1", "Peak 2", "Peak 3"]
 PEAK_COLORS = ["#4c78a8", "#f58518", "#54a24b"]
 
 
+def _grand_avg_connectivity_peak_windows(d, n_peaks=3, half_win=0.05):
+    """Detect n_peaks from the grand-average timecourse and return search windows."""
+    tc = (
+        d.groupby("lock_time", as_index=False)["conn_val"]
+        .mean()
+        .sort_values("lock_time")
+    )
+    times = tc["lock_time"].to_numpy(float)
+    vals = tc["conn_val"].to_numpy(float)
+    peaks, props = find_peaks(vals, distance=5, prominence=0.005)
+    if len(peaks) < n_peaks:
+        raise ValueError(
+            f"Only {len(peaks)} peaks found in grand-average connectivity timecourse; "
+            f"expected at least {n_peaks}."
+        )
+    top_idx = peaks[np.argsort(props["prominences"])[::-1][:n_peaks]]
+    top_idx = sorted(top_idx)
+    windows = []
+    for p in top_idx:
+        windows.append((float(times[p]) - half_win, float(times[p]) + half_win))
+    return windows
+
+
 def subject_day_connectivity_peaks(output_dir):
-    """Per-subject per-day peak latency and amplitude for the three connectivity windows."""
+    """Per-subject per-day peak latency and amplitude for the three connectivity peaks."""
     active = require_csv(
         output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
         "connectivity active-pair output",
@@ -1129,7 +1153,6 @@ def subject_day_connectivity_peaks(output_dir):
         output_dir / "sensorwide_carpet_subject_timeseries.csv",
         "connectivity subject carpet output",
     )
-    bounds = get_connect_three_window_bounds(output_dir)
 
     active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
     pair_labels = set(active["pair_label"].tolist())
@@ -1143,7 +1166,8 @@ def subject_day_connectivity_peaks(output_dir):
     if d.empty:
         raise ValueError("No stim broadband top-10% subject connectivity data found")
 
-    peak_windows = list(zip(PEAK_LABELS, [bounds["early"], bounds["middle"], bounds["late"]]))
+    windows = _grand_avg_connectivity_peak_windows(d)
+    peak_windows = list(zip(PEAK_LABELS, windows))
 
     rows = []
     for (subject, day), d_sd in d.groupby(["subject", "day"]):
