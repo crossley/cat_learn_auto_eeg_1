@@ -1264,16 +1264,26 @@ def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
         for col_i, day in enumerate(DAYS):
             ax = axes[row_i, col_i]
             d_day = merged[merged["day"] == day]
+            annot_lines = []
             for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
                 g = d_day[d_day["peak"] == peak]
                 x = g["amplitude"].to_numpy(float)
                 y = g[measure_col].to_numpy(float)
-                ax.scatter(x, y, color=color, s=30, alpha=0.85,
+                ax.scatter(x, y, color=color, s=30, alpha=0.30,
                            label=peak if col_i == 0 else None, zorder=3)
                 reg = _regression_line(x, y)
                 if reg is not None:
                     x_line, y_line, r, p = reg
-                    ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.8)
+                    ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.85)
+                    annot_lines.append((peak, color, r, p))
+            for k, (peak, color, r, p) in enumerate(annot_lines):
+                ax.text(
+                    0.97, 0.97 - k * 0.16,
+                    f"{peak}: r={r:.2f}, p={p:.2f}",
+                    transform=ax.transAxes,
+                    fontsize=6.5, color=color,
+                    ha="right", va="top",
+                )
             if col_i == 0:
                 ax.set_ylabel(measure_label)
                 ax.legend(frameon=False, fontsize=8)
