@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Polygon
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from erp_grand_average_figure import require_evoked_map
 
@@ -1114,6 +1115,162 @@ def plot_presentation_rsa(output_dir, figures_dir):
     return [fig_path, pred_path]
 
 
+PEAK_LABELS = ["Peak 1", "Peak 2", "Peak 3"]
+PEAK_COLORS = ["#4c78a8", "#f58518", "#54a24b"]
+
+
+def subject_connectivity_peaks(output_dir):
+    """Per-subject peak latency and amplitude for the three connectivity windows."""
+    active = require_csv(
+        output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
+        "connectivity active-pair output",
+    )
+    subject_df = require_csv(
+        output_dir / "sensorwide_carpet_subject_timeseries.csv",
+        "connectivity subject carpet output",
+    )
+    bounds = get_connect_three_window_bounds(output_dir)
+
+    active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
+    pair_labels = set(active["pair_label"].tolist())
+
+    d = subject_df[
+        (subject_df["lock_type"] == "stim")
+        & (subject_df["band"] == "broadband")
+    ].copy()
+    d["pair_label"] = d["ch_i"].astype(str) + "--" + d["ch_j"].astype(str)
+    d = d[d["pair_label"].isin(pair_labels)].copy()
+    if d.empty:
+        raise ValueError("No stim broadband top-10% subject connectivity data found")
+
+    peak_windows = list(zip(PEAK_LABELS, [bounds["early"], bounds["middle"], bounds["late"]]))
+
+    rows = []
+    for subject in sorted(d["subject"].unique()):
+        d_sub = d[d["subject"] == subject]
+        tc = (
+            d_sub.groupby("lock_time", as_index=False)["conn_val"]
+            .mean()
+            .sort_values("lock_time")
+        )
+        times = tc["lock_time"].to_numpy(float)
+        vals = tc["conn_val"].to_numpy(float)
+        for peak_label, (lo, hi) in peak_windows:
+            mask = (times >= lo) & (times <= hi)
+            if not np.any(mask):
+                continue
+            t_win = times[mask]
+            v_win = vals[mask]
+            peak_idx = int(np.argmax(v_win))
+            rows.append(
+                {
+                    "subject": int(subject),
+                    "peak": peak_label,
+                    "latency": float(t_win[peak_idx]),
+                    "amplitude": float(v_win[peak_idx]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _regression_line(x, y):
+    good = np.isfinite(x) & np.isfinite(y)
+    if int(np.sum(good)) < 3:
+        return None
+    slope, intercept, r, p, _ = stats.linregress(x[good], y[good])
+    x_line = np.linspace(x[good].min(), x[good].max(), 200)
+    return x_line, intercept + slope * x_line, r, p
+
+
+def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
+    peak_df = subject_connectivity_peaks(output_dir)
+    behavior = load_behavior()
+    behav_mean = behavior.groupby("subject", as_index=False).agg(
+        accuracy=("accuracy", "mean"),
+        rt=("rt", "mean"),
+    )
+    merged = peak_df.merge(behav_mean, on="subject", how="inner")
+    peak_color = dict(zip(PEAK_LABELS, PEAK_COLORS))
+
+    fig, axes = plt.subplots(2, 2, figsize=(10.0, 8.0))
+
+    # [0,0] latency point plot
+    ax = axes[0, 0]
+    x_pos = np.arange(len(PEAK_LABELS))
+    for xi, peak in enumerate(PEAK_LABELS):
+        vals = peak_df[peak_df["peak"] == peak]["latency"].to_numpy(float)
+        m = float(np.nanmean(vals))
+        e = sem(vals)
+        ax.errorbar(
+            xi, m, yerr=e, fmt="o", color=peak_color[peak],
+            markersize=9, capsize=5, linewidth=2,
+        )
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(PEAK_LABELS)
+    ax.set_ylabel("Latency (s)")
+    ax.set_title("Peak Latency")
+    setup_axis(ax)
+
+    # [0,1] amplitude point plot
+    ax = axes[0, 1]
+    for xi, peak in enumerate(PEAK_LABELS):
+        vals = peak_df[peak_df["peak"] == peak]["amplitude"].to_numpy(float)
+        m = float(np.nanmean(vals))
+        e = sem(vals)
+        ax.errorbar(
+            xi, m, yerr=e, fmt="o", color=peak_color[peak],
+            markersize=9, capsize=5, linewidth=2,
+        )
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(PEAK_LABELS)
+    ax.set_ylabel("Connectivity amplitude")
+    ax.set_title("Peak Amplitude")
+    setup_axis(ax)
+
+    # [1,0] latency vs accuracy scatter + regression
+    ax = axes[1, 0]
+    for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
+        g = merged[merged["peak"] == peak]
+        x = g["latency"].to_numpy(float)
+        y = g["accuracy"].to_numpy(float)
+        ax.scatter(x, y, color=color, s=30, alpha=0.85, label=peak, zorder=3)
+        reg = _regression_line(x, y)
+        if reg is not None:
+            x_line, y_line, r, p = reg
+            ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.75,
+                    label=f"  r={r:.2f}, p={p:.2f}")
+    ax.set_xlabel("Latency (s)")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Peak Latency vs Accuracy")
+    ax.legend(frameon=False, fontsize=7.5, loc="best")
+    setup_axis(ax)
+
+    # [1,1] amplitude vs accuracy scatter + regression
+    ax = axes[1, 1]
+    for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
+        g = merged[merged["peak"] == peak]
+        x = g["amplitude"].to_numpy(float)
+        y = g["accuracy"].to_numpy(float)
+        ax.scatter(x, y, color=color, s=30, alpha=0.85, label=peak, zorder=3)
+        reg = _regression_line(x, y)
+        if reg is not None:
+            x_line, y_line, r, p = reg
+            ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.75,
+                    label=f"  r={r:.2f}, p={p:.2f}")
+    ax.set_xlabel("Connectivity amplitude")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Peak Amplitude vs Accuracy")
+    ax.legend(frameon=False, fontsize=7.5, loc="best")
+    setup_axis(ax)
+
+    fig.suptitle("Connectivity Peak Features vs Behavior", fontsize=12)
+    fig.tight_layout()
+    fig_path = figures_dir / "presentation_connectivity_peak_behavior.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def save_fig_presentation(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
@@ -1150,6 +1307,9 @@ def save_fig_presentation(
     rsa_paths = plot_presentation_rsa(output_dir, figures_dir)
     paths["rsa_model_fit"] = rsa_paths[0]
     paths["rsa_model_predictions"] = rsa_paths[1]
+    paths["connectivity_peak_behavior"] = plot_presentation_connectivity_peak_behavior(
+        output_dir, figures_dir
+    )
     for key, path in paths.items():
         print(f"[presentation] {key}: {path}", flush=True)
     return paths
