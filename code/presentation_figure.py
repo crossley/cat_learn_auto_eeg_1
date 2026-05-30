@@ -285,57 +285,27 @@ def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
             linewidth=0,
             zorder=0,
         )
-    labels = [
-        "gradual",
-        "two_stage_binary_D1",
-        "two_stage_hybrid_D1",
-        "two_stage_binary_D2",
-        "two_stage_hybrid_D2",
-        "two_stage_binary_D3",
-        "two_stage_hybrid_D3",
-        "two_stage_binary_D4",
-        "two_stage_hybrid_D4",
+    conn_models = [
+        ("gradual",            "Continuous Restructuring", "#1f1f1f"),
+        ("two_stage_hybrid_D1", "Discrete Restructuring (D1)", "#6a3d9a"),
+        ("two_stage_hybrid_D2", "Discrete Restructuring (D2)", "#1b9e77"),
+        ("two_stage_hybrid_D3", "Discrete Restructuring (D3)", "#377eb8"),
+        ("two_stage_hybrid_D4", "Discrete Restructuring (D4)", "#a6cee3"),
     ]
-    for label in labels:
-        g = d[d["model_label"] == label].sort_values("time_center_sec")
+    for model_key, plot_label, color in conn_models:
+        g = d[d["model_label"] == model_key].sort_values("time_center_sec")
         if g.empty:
             continue
-        lw = 1.0
-        alpha = 0.55
-        zorder = 1
-        if label in ["gradual", "two_stage_binary_D1", "two_stage_hybrid_D1"]:
-            lw = 2.4
-            alpha = 1.0
-            zorder = 3
-        plot_label = label.replace("two_stage_", "")
-        plot_label = plot_label.replace("_", " ")
-        ax.plot(
-            g["time_center_sec"],
-            g["rho_mean"],
-            color=model_color(label),
-            linewidth=lw,
-            alpha=alpha,
-            label=plot_label,
-            zorder=zorder,
-        )
-        if label in ["gradual", "two_stage_binary_D1", "two_stage_hybrid_D1"]:
-            x = g["time_center_sec"].to_numpy(float)
-            y = g["rho_mean"].to_numpy(float)
-            y_sem = g["rho_sem"].to_numpy(float)
-            ax.fill_between(
-                x,
-                y - y_sem,
-                y + y_sem,
-                color=model_color(label),
-                alpha=0.13,
-                linewidth=0,
-                zorder=zorder - 1,
-            )
+        x = g["time_center_sec"].to_numpy(float)
+        y = g["rho_mean"].to_numpy(float)
+        y_sem = g["rho_sem"].to_numpy(float)
+        ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
+        ax.fill_between(x, y - y_sem, y + y_sem, color=color, alpha=0.12, linewidth=0)
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("model correlation")
     ax.set_title("Connectivity Model Evidence Over Time")
-    ax.legend(frameon=False, fontsize=8, ncol=3, loc="lower center")
+    ax.legend(frameon=False, fontsize=8, ncol=2, loc="lower center")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_connectivity_model_timecourse_top10.png"
@@ -836,41 +806,15 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         "presentation MVPA model-timecourse output",
     )
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
-    labels = [
-        "gradual",
-        "split_gradual_D1",
-        "split_gradual_D2",
-        "split_gradual_D3",
-        "split_gradual_D4",
-        "split_binary_D1",
-        "split_binary_D2",
-        "split_binary_D3",
-        "split_binary_D4",
+    mvpa_models = [
+        ("gradual",         "Continuous Restructuring",    "#1f1f1f"),
+        ("split_gradual_D1", "Discrete Restructuring (D1)", "#6a3d9a"),
+        ("split_gradual_D2", "Discrete Restructuring (D2)", "#1b9e77"),
+        ("split_gradual_D3", "Discrete Restructuring (D3)", "#377eb8"),
+        ("split_gradual_D4", "Discrete Restructuring (D4)", "#a6cee3"),
     ]
-    legend_labels = {
-        "gradual": "gradual",
-        "split_gradual_D1": "D1 split gradual",
-        "split_gradual_D2": "D2 split gradual",
-        "split_gradual_D3": "D3 split gradual",
-        "split_gradual_D4": "D4 split gradual",
-        "split_binary_D1": "D1 split binary",
-        "split_binary_D2": "D2 split binary",
-        "split_binary_D3": "D3 split binary",
-        "split_binary_D4": "D4 split binary",
-    }
-    colors = {
-        "gradual": "#1f1f1f",
-        "split_gradual_D1": "#6a3d9a",
-        "split_gradual_D2": "#1b9e77",
-        "split_gradual_D3": "#377eb8",
-        "split_gradual_D4": "#a6cee3",
-        "split_binary_D1": "#d73027",
-        "split_binary_D2": "#e6ab02",
-        "split_binary_D3": "#ff7f00",
-        "split_binary_D4": "#b15928",
-    }
     y_vals = []
-    for label in labels:
+    for label, plot_label, color in mvpa_models:
         g = d[d["model_label"] == label].sort_values("time_sec")
         if g.empty:
             continue
@@ -881,26 +825,11 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         else:
             y = g["rho"].to_numpy(float)
             y_sem = np.zeros(y.shape, dtype=float)
-        color = colors[label]
         for val in y:
             if np.isfinite(val):
                 y_vals.append(float(val))
-        ax.plot(
-            x,
-            y,
-            color=color,
-            linewidth=1.8,
-            alpha=0.92,
-            label=legend_labels[label],
-        )
-        ax.fill_between(
-            x,
-            y - y_sem,
-            y + y_sem,
-            color=color,
-            alpha=0.10,
-            linewidth=0,
-        )
+        ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
+        ax.fill_between(x, y - y_sem, y + y_sem, color=color, alpha=0.10, linewidth=0)
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
     ax.axvspan(0.40, 0.60, color="0.55", alpha=0.14, linewidth=0)
@@ -1010,30 +939,20 @@ def plot_presentation_mvpa_window_model(output_dir, figures_dir):
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    fig, axes = plt.subplots(2, 5, figsize=(14.8, 6.6))
-    plot_matrix(axes[0, 0], template_matrix("gradual"), "gradual", "viridis", 0, 1)
+    fig, axes = plt.subplots(1, 5, figsize=(14.8, 3.4))
+    plot_matrix(axes[0], template_matrix("gradual"),
+                "Continuous Restructuring", "viridis", 0, 1)
     for idx, split_day in enumerate([1, 2, 3, 4], start=1):
         plot_matrix(
-            axes[0, idx],
+            axes[idx],
             template_matrix("split_gradual", split_day=split_day),
-            f"D{split_day} split gradual",
-            "viridis",
-            0,
-            1,
-        )
-    axes[1, 0].axis("off")
-    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
-        plot_matrix(
-            axes[1, idx],
-            template_matrix("split_binary", split_day=split_day),
-            f"D{split_day} split binary",
+            f"Discrete Restructuring (D{split_day})",
             "viridis",
             0,
             1,
         )
     fig.suptitle("MVPA Transfer Model Predictions")
-    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.88)
-    fig.subplots_adjust(wspace=0.34, hspace=0.42)
+    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.82, wspace=0.34)
     model_path = figures_dir / "presentation_mvpa_window_transfer_model_predictions.png"
     fig.savefig(model_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
