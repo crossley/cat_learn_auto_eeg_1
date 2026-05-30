@@ -1119,8 +1119,8 @@ PEAK_LABELS = ["Peak 1", "Peak 2", "Peak 3"]
 PEAK_COLORS = ["#4c78a8", "#f58518", "#54a24b"]
 
 
-def subject_connectivity_peaks(output_dir):
-    """Per-subject peak latency and amplitude for the three connectivity windows."""
+def subject_day_connectivity_peaks(output_dir):
+    """Per-subject per-day peak latency and amplitude for the three connectivity windows."""
     active = require_csv(
         output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
         "connectivity active-pair output",
@@ -1146,10 +1146,9 @@ def subject_connectivity_peaks(output_dir):
     peak_windows = list(zip(PEAK_LABELS, [bounds["early"], bounds["middle"], bounds["late"]]))
 
     rows = []
-    for subject in sorted(d["subject"].unique()):
-        d_sub = d[d["subject"] == subject]
+    for (subject, day), d_sd in d.groupby(["subject", "day"]):
         tc = (
-            d_sub.groupby("lock_time", as_index=False)["conn_val"]
+            d_sd.groupby("lock_time", as_index=False)["conn_val"]
             .mean()
             .sort_values("lock_time")
         )
@@ -1165,6 +1164,7 @@ def subject_connectivity_peaks(output_dir):
             rows.append(
                 {
                     "subject": int(subject),
+                    "day": int(day),
                     "peak": peak_label,
                     "latency": float(t_win[peak_idx]),
                     "amplitude": float(v_win[peak_idx]),
@@ -1182,90 +1182,39 @@ def _regression_line(x, y):
     return x_line, intercept + slope * x_line, r, p
 
 
-def plot_presentation_connectivity_peak_behavior(output_dir, figures_dir):
-    peak_df = subject_connectivity_peaks(output_dir)
-    behavior = load_behavior()
-    behav_mean = behavior.groupby("subject", as_index=False).agg(
-        accuracy=("accuracy", "mean"),
-        rt=("rt", "mean"),
-    )
-    merged = peak_df.merge(behav_mean, on="subject", how="inner")
+def plot_presentation_connectivity_peak_day(output_dir, figures_dir):
+    peak_df = subject_day_connectivity_peaks(output_dir)
     peak_color = dict(zip(PEAK_LABELS, PEAK_COLORS))
 
-    fig, axes = plt.subplots(2, 2, figsize=(10.0, 8.0))
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 4.2))
 
-    # [0,0] latency point plot
-    ax = axes[0, 0]
-    x_pos = np.arange(len(PEAK_LABELS))
-    for xi, peak in enumerate(PEAK_LABELS):
-        vals = peak_df[peak_df["peak"] == peak]["latency"].to_numpy(float)
-        m = float(np.nanmean(vals))
-        e = sem(vals)
-        ax.errorbar(
-            xi, m, yerr=e, fmt="o", color=peak_color[peak],
-            markersize=9, capsize=5, linewidth=2,
-        )
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(PEAK_LABELS)
-    ax.set_ylabel("Latency (s)")
-    ax.set_title("Peak Latency")
-    setup_axis(ax)
+    for feature, ylabel, title, ax in [
+        ("latency", "Latency (s)", "Peak Latency by Day", axes[0]),
+        ("amplitude", "Connectivity amplitude", "Peak Amplitude by Day", axes[1]),
+    ]:
+        for peak in PEAK_LABELS:
+            g = peak_df[peak_df["peak"] == peak]
+            means, errs = [], []
+            for day in DAYS:
+                vals = g[g["day"] == day][feature].to_numpy(float)
+                vals = vals[np.isfinite(vals)]
+                means.append(float(np.nanmean(vals)) if len(vals) > 0 else np.nan)
+                errs.append(sem(vals) if len(vals) > 1 else np.nan)
+            ax.errorbar(
+                DAYS, means, yerr=errs,
+                color=peak_color[peak], marker="o", linewidth=2,
+                markersize=7, capsize=4, label=peak,
+            )
+        ax.set_xlabel("Day")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.set_xticks(DAYS)
+        ax.legend(frameon=False, fontsize=9)
+        setup_axis(ax)
 
-    # [0,1] amplitude point plot
-    ax = axes[0, 1]
-    for xi, peak in enumerate(PEAK_LABELS):
-        vals = peak_df[peak_df["peak"] == peak]["amplitude"].to_numpy(float)
-        m = float(np.nanmean(vals))
-        e = sem(vals)
-        ax.errorbar(
-            xi, m, yerr=e, fmt="o", color=peak_color[peak],
-            markersize=9, capsize=5, linewidth=2,
-        )
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(PEAK_LABELS)
-    ax.set_ylabel("Connectivity amplitude")
-    ax.set_title("Peak Amplitude")
-    setup_axis(ax)
-
-    # [1,0] latency vs accuracy scatter + regression
-    ax = axes[1, 0]
-    for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
-        g = merged[merged["peak"] == peak]
-        x = g["latency"].to_numpy(float)
-        y = g["accuracy"].to_numpy(float)
-        ax.scatter(x, y, color=color, s=30, alpha=0.85, label=peak, zorder=3)
-        reg = _regression_line(x, y)
-        if reg is not None:
-            x_line, y_line, r, p = reg
-            ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.75,
-                    label=f"  r={r:.2f}, p={p:.2f}")
-    ax.set_xlabel("Latency (s)")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Peak Latency vs Accuracy")
-    ax.legend(frameon=False, fontsize=7.5, loc="best")
-    setup_axis(ax)
-
-    # [1,1] amplitude vs accuracy scatter + regression
-    ax = axes[1, 1]
-    for peak, color in zip(PEAK_LABELS, PEAK_COLORS):
-        g = merged[merged["peak"] == peak]
-        x = g["amplitude"].to_numpy(float)
-        y = g["accuracy"].to_numpy(float)
-        ax.scatter(x, y, color=color, s=30, alpha=0.85, label=peak, zorder=3)
-        reg = _regression_line(x, y)
-        if reg is not None:
-            x_line, y_line, r, p = reg
-            ax.plot(x_line, y_line, color=color, linewidth=1.6, alpha=0.75,
-                    label=f"  r={r:.2f}, p={p:.2f}")
-    ax.set_xlabel("Connectivity amplitude")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Peak Amplitude vs Accuracy")
-    ax.legend(frameon=False, fontsize=7.5, loc="best")
-    setup_axis(ax)
-
-    fig.suptitle("Connectivity Peak Features vs Behavior", fontsize=12)
+    fig.suptitle("Connectivity Peak Features Across Days", fontsize=12)
     fig.tight_layout()
-    fig_path = figures_dir / "presentation_connectivity_peak_behavior.png"
+    fig_path = figures_dir / "presentation_connectivity_peak_day.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
@@ -1307,7 +1256,7 @@ def save_fig_presentation(
     rsa_paths = plot_presentation_rsa(output_dir, figures_dir)
     paths["rsa_model_fit"] = rsa_paths[0]
     paths["rsa_model_predictions"] = rsa_paths[1]
-    paths["connectivity_peak_behavior"] = plot_presentation_connectivity_peak_behavior(
+    paths["connectivity_peak_day"] = plot_presentation_connectivity_peak_day(
         output_dir, figures_dir
     )
     for key, path in paths.items():
