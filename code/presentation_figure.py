@@ -516,6 +516,7 @@ def plot_presentation_connect_difference_row(
     active,
     layout,
     figures_dir,
+    top_n=10,
 ):
     fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.2))
     panels = [
@@ -526,6 +527,13 @@ def plot_presentation_connect_difference_row(
     for idx, panel in enumerate(panels):
         window, edges, title = panel
         rows = connect_edge_difference_rows(edges, active, window)
+        rows = (
+            rows.assign(abs_diff=rows["difference"].abs())
+            .sort_values("abs_diff", ascending=False)
+            .head(top_n)
+            .drop(columns="abs_diff")
+            .reset_index(drop=True)
+        )
         draw_edge_panel(
             axes[idx],
             rows,
@@ -535,7 +543,7 @@ def plot_presentation_connect_difference_row(
             panel_vlim(rows, "difference"),
             signed=True,
         )
-    fig.suptitle("Day 1 - Days 2-5 Connectivity Edge Differences")
+    fig.suptitle("Day 1 - Days 2-5 Connectivity Edge Differences (Top 10)")
     fig.tight_layout(rect=[0, 0, 1, 0.9])
     fig_path = figures_dir / "presentation_connectivity_difference_edges_3windows.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
