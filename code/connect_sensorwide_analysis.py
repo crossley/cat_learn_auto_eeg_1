@@ -97,15 +97,44 @@ BANDS = {
 }
 
 
-def compute_abs_imcoh(x, y):
+CONNECTIVITY_VALUE_COLUMNS = [
+    "conn_val",
+    "imcoh_abs",
+    "coh_abs",
+    "coh_phase_rad",
+    "phase_lag_factor",
+]
+
+
+def compute_coherence_components(x, y):
     sxy = np.mean(x * np.conjugate(y))
     sxx = np.mean(np.abs(x) ** 2)
     syy = np.mean(np.abs(y) ** 2)
     denom = np.sqrt(sxx * syy)
     if (not np.isfinite(denom)) or (denom <= np.finfo(float).eps):
-        return np.nan
+        return {
+            "conn_val": np.nan,
+            "imcoh_abs": np.nan,
+            "coh_abs": np.nan,
+            "coh_phase_rad": np.nan,
+            "phase_lag_factor": np.nan,
+        }
     coh = sxy / denom
-    return float(np.abs(np.imag(coh)))
+    coh_abs = float(np.abs(coh))
+    coh_phase = float(np.angle(coh))
+    phase_lag_factor = float(np.abs(np.sin(coh_phase)))
+    imcoh_abs = float(np.abs(np.imag(coh)))
+    return {
+        "conn_val": imcoh_abs,
+        "imcoh_abs": imcoh_abs,
+        "coh_abs": coh_abs,
+        "coh_phase_rad": coh_phase,
+        "phase_lag_factor": phase_lag_factor,
+    }
+
+
+def compute_abs_imcoh(x, y):
+    return compute_coherence_components(x, y)["imcoh_abs"]
 
 
 def process_sensorwide_session(task):
@@ -191,28 +220,41 @@ def process_sensorwide_session(task):
                     win = data[:, :, i0:i1]
                     lock_time = float(t_start)
                     for i, j in pair_idx:
-                        val = compute_abs_imcoh(
+                        components = compute_coherence_components(
                             win[:, i, :].reshape(-1), win[:, j, :].reshape(-1)
                         )
+                        val = components["conn_val"]
                         if not np.isfinite(val):
                             continue
                         key = (lock_name, int(day), band_name, lock_time, i, j)
                         if key not in agg:
-                            agg[key] = [0.0, 0]
-                        agg[key][0] += val
-                        agg[key][1] += 1
-                        subject_rows.append(
-                            {
-                                "subject": subject,
-                                "day": int(day),
-                                "lock_type": lock_name,
-                                "band": band_name,
-                                "lock_time": lock_time,
-                                "ch_i": channel_subset[i],
-                                "ch_j": channel_subset[j],
-                                "conn_val": val,
+                            agg[key] = {
+                                "count": 0,
+                                "phase_unit_sin": 0.0,
+                                "phase_unit_cos": 0.0,
                             }
-                        )
+                            for col in CONNECTIVITY_VALUE_COLUMNS:
+                                if col != "coh_phase_rad":
+                                    agg[key][col] = 0.0
+                        agg[key]["count"] += 1
+                        for col in CONNECTIVITY_VALUE_COLUMNS:
+                            if col == "coh_phase_rad":
+                                phase = components[col]
+                                agg[key]["phase_unit_sin"] += float(np.sin(phase))
+                                agg[key]["phase_unit_cos"] += float(np.cos(phase))
+                            else:
+                                agg[key][col] += float(components[col])
+                        subject_row = {
+                            "subject": subject,
+                            "day": int(day),
+                            "lock_type": lock_name,
+                            "band": band_name,
+                            "lock_time": lock_time,
+                            "ch_i": channel_subset[i],
+                            "ch_j": channel_subset[j],
+                        }
+                        subject_row.update(components)
+                        subject_rows.append(subject_row)
 
         return {
             "ok": True,
@@ -235,19 +277,32 @@ def process_sensorwide_session(task):
 def agg_to_edges_df(agg, channel_subset):
     agg_rows = []
     for lock_name, day, band_name, t, i, j in sorted(agg.keys()):
-        s, c = agg[(lock_name, day, band_name, t, i, j)]
-        agg_rows.append(
-            {
-                "lock_type": lock_name,
-                "day": int(day),
-                "band": band_name,
-                "lock_time": float(t),
-                "ch_i": channel_subset[i],
-                "ch_j": channel_subset[j],
-                "conn_val": float(s / c) if c > 0 else np.nan,
-                "n_session_contrib": int(c),
-            }
-        )
+        entry = agg[(lock_name, day, band_name, t, i, j)]
+        c = int(entry["count"])
+        row = {
+            "lock_type": lock_name,
+            "day": int(day),
+            "band": band_name,
+            "lock_time": float(t),
+            "ch_i": channel_subset[i],
+            "ch_j": channel_subset[j],
+            "n_session_contrib": c,
+        }
+        for col in CONNECTIVITY_VALUE_COLUMNS:
+            if col == "coh_phase_rad":
+                row[col] = (
+                    float(
+                        np.arctan2(
+                            entry["phase_unit_sin"],
+                            entry["phase_unit_cos"],
+                        )
+                    )
+                    if c > 0
+                    else np.nan
+                )
+            else:
+                row[col] = float(entry[col] / c) if c > 0 else np.nan
+        agg_rows.append(row)
     if not agg_rows:
         return pd.DataFrame(
             columns=[
@@ -257,9 +312,9 @@ def agg_to_edges_df(agg, channel_subset):
                 "lock_time",
                 "ch_i",
                 "ch_j",
-                "conn_val",
                 "n_session_contrib",
             ]
+            + CONNECTIVITY_VALUE_COLUMNS
         )
     return pd.DataFrame(agg_rows).sort_values(
         ["lock_type", "band", "day", "lock_time", "ch_i", "ch_j"]
@@ -356,11 +411,22 @@ def run_sensorwide_connectivity_analysis(
         used += 1
         if info_subset is None:
             info_subset = r["info"]
-        for key, (val_sum, count) in r["agg"].items():
+        for key, entry in r["agg"].items():
             if key not in agg:
-                agg[key] = [0.0, 0]
-            agg[key][0] += val_sum
-            agg[key][1] += count
+                agg[key] = {
+                    "count": 0,
+                    "phase_unit_sin": 0.0,
+                    "phase_unit_cos": 0.0,
+                }
+                for col in CONNECTIVITY_VALUE_COLUMNS:
+                    if col != "coh_phase_rad":
+                        agg[key][col] = 0.0
+            agg[key]["count"] += int(entry["count"])
+            agg[key]["phase_unit_sin"] += float(entry["phase_unit_sin"])
+            agg[key]["phase_unit_cos"] += float(entry["phase_unit_cos"])
+            for col in CONNECTIVITY_VALUE_COLUMNS:
+                if col != "coh_phase_rad":
+                    agg[key][col] += float(entry[col])
         for row in r["subject_rows"]:
             subject_rows.append(row)
 

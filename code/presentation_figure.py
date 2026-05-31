@@ -315,6 +315,117 @@ def plot_presentation_connect_overlay(output_dir, figures_dir):
     return fig_path
 
 
+def plot_presentation_connect_decomposition_overlay(output_dir, figures_dir):
+    active = require_csv(
+        output_dir / "connect_sensorwide_model_timecourse_active_pairs.csv",
+        "connectivity active-pair output",
+    )
+    carpet = require_csv(
+        output_dir / "sensorwide_carpet_timeseries.csv",
+        "connectivity carpet output",
+    )
+    subject = require_csv(
+        output_dir / "sensorwide_carpet_subject_timeseries.csv",
+        "connectivity subject carpet output",
+    )
+    metric_specs = [
+        ("imcoh_abs", "Abs ImCoh", "non-zero-lag coupling pattern"),
+        ("coh_abs", "Coherence magnitude", "strength-like component"),
+        ("phase_lag_factor", "Abs sin(phase lag)", "phase-lag contribution"),
+    ]
+    missing = []
+    for metric, _ylabel, _title in metric_specs:
+        if metric not in carpet.columns:
+            missing.append(f"sensorwide_carpet_timeseries.csv:{metric}")
+        if metric not in subject.columns:
+            missing.append(f"sensorwide_carpet_subject_timeseries.csv:{metric}")
+    if missing:
+        raise ValueError(
+            "Missing connectivity decomposition columns. Re-run "
+            "code/connect_sensorwide_analysis.py before making this figure. "
+            "Missing: " + ", ".join(missing)
+        )
+
+    active = active[np.isclose(active["active_pct"].astype(float), 0.10)].copy()
+    if active.empty:
+        raise ValueError("Missing active-pair rows for active_pct=0.10")
+    pair_labels = set(active["pair_label"].tolist())
+
+    d = carpet[
+        (carpet["lock_type"] == "stim")
+        & (carpet["band"] == "broadband")
+        & (carpet["ch_i"] + "--" + carpet["ch_j"]).isin(pair_labels)
+    ].copy()
+    if d.empty:
+        raise ValueError("No top-10% stim/broadband connectivity rows found")
+    d_subject = subject[
+        (subject["lock_type"] == "stim")
+        & (subject["band"] == "broadband")
+        & (subject["ch_i"] + "--" + subject["ch_j"]).isin(pair_labels)
+    ].copy()
+    if d_subject.empty:
+        raise ValueError("No top-10% subject connectivity rows found")
+
+    fig, axes = plt.subplots(
+        len(metric_specs),
+        1,
+        figsize=(7.8, 7.2),
+        sharex=True,
+        constrained_layout=True,
+    )
+    for ax, (metric, ylabel, title) in zip(axes, metric_specs):
+        for day in DAYS:
+            d_day = d[d["day"] == day]
+            rows = []
+            for time_s in sorted(d_day["lock_time"].drop_duplicates().tolist()):
+                vals = d_day[d_day["lock_time"] == time_s][metric].to_numpy(float)
+                g_time = d_subject[
+                    (d_subject["day"] == day)
+                    & np.isclose(d_subject["lock_time"].astype(float), float(time_s))
+                ]
+                subject_vals = []
+                for _subject_id, g_subject in g_time.groupby("subject"):
+                    vals_sub = g_subject[metric].to_numpy(float)
+                    subject_vals.append(float(np.nanmean(vals_sub)))
+                rows.append(
+                    {
+                        "time": time_s,
+                        "mean": float(np.nanmean(vals)),
+                        "sem": sem(subject_vals),
+                    }
+                )
+            plot_df = pd.DataFrame(rows)
+            x = plot_df["time"].to_numpy(float)
+            y = plot_df["mean"].to_numpy(float)
+            y_sem = plot_df["sem"].to_numpy(float)
+            ax.plot(
+                x,
+                y,
+                color=DAY_COLORS[day],
+                linewidth=1.9,
+                label=f"D{day}",
+            )
+            ax.fill_between(
+                x,
+                y - y_sem,
+                y + y_sem,
+                color=DAY_COLORS[day],
+                alpha=0.12,
+                linewidth=0,
+            )
+        ax.axvline(0, color="0.25", linewidth=0.8)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=10)
+        setup_axis(ax)
+    axes[-1].set_xlabel("time from stimulus (s)")
+    axes[0].legend(frameon=False, ncol=5, loc="upper right", fontsize=8)
+    fig.suptitle("Connectivity Decomposition: Strength vs Phase-Lag Geometry")
+    fig_path = figures_dir / "presentation_connectivity_top10_decomposition_overlay.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def model_color(model_label):
     if model_label == "gradual":
         return "#303030"
@@ -1395,6 +1506,9 @@ def save_fig_presentation(
     paths["erp_gfp"] = plot_presentation_erp_gfp(output_dir, figures_dir)
     paths["connect_overlay"] = plot_presentation_connect_overlay(
         output_dir, figures_dir
+    )
+    paths["connect_decomposition_overlay"] = (
+        plot_presentation_connect_decomposition_overlay(output_dir, figures_dir)
     )
     paths["connect_model"] = plot_presentation_connect_model_timecourse(
         output_dir, figures_dir
