@@ -15,6 +15,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from matplotlib.patches import Circle, Polygon
 import numpy as np
 import pandas as pd
@@ -113,6 +114,7 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
         )
         for i, day in enumerate(days_sorted):
             ax = axes[0, i]
+            axes_before = set(id(a) for a in fig.axes)
             evoked_map[day].plot(
                 axes=ax,
                 show=False,
@@ -121,20 +123,17 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
             )
             ax.set_title(f"Day {day}")
             ax.set_xlim(-0.1, 0.8)
-            for child_ax in fig.axes:
-                if child_ax is ax:
-                    continue
-                bbox = child_ax.get_position()
-                parent_bbox = ax.get_position()
-                if bbox.x0 > parent_bbox.x0 and bbox.x1 < parent_bbox.x1:
-                    child_ax.set_position(
-                        [
-                            parent_bbox.x1 - 0.055,
-                            parent_bbox.y1 - 0.18,
-                            0.035,
-                            0.12,
-                        ]
-                    )
+            new_axes = [a for a in fig.axes if id(a) not in axes_before]
+            parent_bbox = ax.get_position()
+            for child_ax in new_axes:
+                child_ax.set_position(
+                    [
+                        parent_bbox.x1 - 0.055,
+                        parent_bbox.y1 - 0.18,
+                        0.035,
+                        0.12,
+                    ]
+                )
         fig.suptitle("Stimulus-Locked ERPs", fontsize=11)
         fig.subplots_adjust(left=0.055, right=0.99, bottom=0.22, wspace=0.42)
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
@@ -901,27 +900,28 @@ def template_matrix(kind, split_day=None):
     return mat
 
 
-def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None):
+def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None, annotate=True):
     image = ax.imshow(mat, origin="upper", cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_title(title, fontsize=9)
     ax.set_xticks(range(5))
     ax.set_yticks(range(5))
     ax.set_xticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
     ax.set_yticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
-    for i in range(5):
-        for j in range(5):
-            color = "white"
-            if np.isfinite(mat[i, j]) and float(mat[i, j]) > 0.68:
-                color = "black"
-            ax.text(
-                j,
-                i,
-                f"{mat[i, j]:.2f}",
-                ha="center",
-                va="center",
-                fontsize=7,
-                color=color,
-            )
+    if annotate:
+        for i in range(5):
+            for j in range(5):
+                color = "white"
+                if np.isfinite(mat[i, j]) and float(mat[i, j]) > 0.68:
+                    color = "black"
+                ax.text(
+                    j,
+                    i,
+                    f"{mat[i, j]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color=color,
+                )
     return image
 
 
@@ -949,22 +949,20 @@ def conn_template_matrix(kind, split_day=None):
 
 
 def plot_presentation_connectivity_model_predictions(figures_dir):
-    fig, axes = plt.subplots(1, 5, figsize=(14.8, 3.4))
-    plot_matrix(
-        axes[0], conn_template_matrix("gradual"),
-        "Continuous Restructuring", "viridis", 0, 1,
+    fig = plt.figure(figsize=(11.0, 5.5))
+    gs = gridspec.GridSpec(
+        2, 8, figure=fig,
+        hspace=0.45, wspace=0.35,
+        left=0.05, right=0.99, top=0.88, bottom=0.07,
     )
-    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
-        plot_matrix(
-            axes[idx],
-            conn_template_matrix("split_gradual", split_day=split_day),
-            f"Discrete Restructuring (D{split_day})",
-            "viridis",
-            0,
-            1,
-        )
-    fig.suptitle("Connectivity Day-Similarity Model Predictions")
-    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.82, wspace=0.34)
+    ax_top = fig.add_subplot(gs[0, 3:5])
+    plot_matrix(ax_top, conn_template_matrix("gradual"),
+                "Continuous Restructuring", "viridis", 0, 1, annotate=False)
+    for idx, split_day in enumerate([1, 2, 3, 4]):
+        ax = fig.add_subplot(gs[1, idx * 2: idx * 2 + 2])
+        plot_matrix(ax, conn_template_matrix("split_gradual", split_day=split_day),
+                    f"Discrete Restructuring (D{split_day})", "viridis", 0, 1, annotate=False)
+    fig.suptitle("Connectivity Day-Similarity Model Predictions", y=0.97)
     fig_path = figures_dir / "presentation_connectivity_model_predictions.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -993,20 +991,20 @@ def plot_presentation_mvpa_window_model(output_dir, figures_dir):
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    fig, axes = plt.subplots(1, 5, figsize=(14.8, 3.4))
-    plot_matrix(axes[0], template_matrix("gradual"),
-                "Continuous Restructuring", "viridis", 0, 1)
-    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
-        plot_matrix(
-            axes[idx],
-            template_matrix("split_gradual", split_day=split_day),
-            f"Discrete Restructuring (D{split_day})",
-            "viridis",
-            0,
-            1,
-        )
-    fig.suptitle("MVPA Transfer Model Predictions")
-    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.82, wspace=0.34)
+    fig = plt.figure(figsize=(11.0, 5.5))
+    gs_m = gridspec.GridSpec(
+        2, 8, figure=fig,
+        hspace=0.45, wspace=0.35,
+        left=0.05, right=0.99, top=0.88, bottom=0.07,
+    )
+    ax_top = fig.add_subplot(gs_m[0, 3:5])
+    plot_matrix(ax_top, template_matrix("gradual"),
+                "Continuous Restructuring", "viridis", 0, 1, annotate=False)
+    for idx, split_day in enumerate([1, 2, 3, 4]):
+        ax = fig.add_subplot(gs_m[1, idx * 2: idx * 2 + 2])
+        plot_matrix(ax, template_matrix("split_gradual", split_day=split_day),
+                    f"Discrete Restructuring (D{split_day})", "viridis", 0, 1, annotate=False)
+    fig.suptitle("MVPA Transfer Model Predictions", y=0.97)
     model_path = figures_dir / "presentation_mvpa_window_transfer_model_predictions.png"
     fig.savefig(model_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
