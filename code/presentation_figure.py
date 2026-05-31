@@ -925,6 +925,48 @@ def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None):
     return image
 
 
+def conn_template_matrix(kind, split_day=None):
+    mat = np.full((5, 5), np.nan)
+    for d1 in DAYS:
+        for d2 in DAYS:
+            if kind == "gradual":
+                val = 1.0 - 0.20 * abs(d1 - d2)
+            elif kind == "split_gradual":
+                if split_day is None:
+                    raise ValueError("split_gradual requires split_day")
+                if (d1 > split_day) != (d2 > split_day):
+                    val = 0.0
+                else:
+                    val = 1.0 - 0.20 * abs(d1 - d2)
+            else:
+                raise ValueError(f"Unknown connectivity template: {kind}")
+            mat[d1 - 1, d2 - 1] = val
+    return mat
+
+
+def plot_presentation_connectivity_model_predictions(figures_dir):
+    fig, axes = plt.subplots(1, 5, figsize=(14.8, 3.4))
+    plot_matrix(
+        axes[0], conn_template_matrix("gradual"),
+        "Continuous Restructuring", "viridis", 0, 1,
+    )
+    for idx, split_day in enumerate([1, 2, 3, 4], start=1):
+        plot_matrix(
+            axes[idx],
+            conn_template_matrix("split_gradual", split_day=split_day),
+            f"Discrete Restructuring (D{split_day})",
+            "viridis",
+            0,
+            1,
+        )
+    fig.suptitle("Connectivity Day-Similarity Model Predictions")
+    fig.subplots_adjust(left=0.04, right=0.99, bottom=0.06, top=0.82, wspace=0.34)
+    fig_path = figures_dir / "presentation_connectivity_model_predictions.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def plot_presentation_mvpa_window_model(output_dir, figures_dir):
     early = require_csv(
         output_dir / "mvpa_stim_locked_cat_early_window_transfer_group_pairs.csv",
@@ -1285,6 +1327,9 @@ def save_fig_presentation(
     rsa_paths = plot_presentation_rsa(output_dir, figures_dir)
     paths["rsa_model_fit"] = rsa_paths[0]
     paths["rsa_model_predictions"] = rsa_paths[1]
+    paths["connectivity_model_predictions"] = plot_presentation_connectivity_model_predictions(
+        figures_dir
+    )
     paths["connectivity_peak_day"] = plot_presentation_connectivity_peak_day(
         output_dir, figures_dir
     )
