@@ -426,6 +426,116 @@ def plot_presentation_connect_decomposition_overlay(output_dir, figures_dir):
     return fig_path
 
 
+def _example_coherence_components(strength, phase_lag_rad):
+    phase_factor = float(abs(np.sin(phase_lag_rad)))
+    return {
+        "delayed": float(strength * phase_factor),
+        "strength": float(strength),
+        "timing": phase_factor,
+    }
+
+
+def plot_presentation_connectivity_decomposition_examples(figures_dir):
+    rng = np.random.default_rng(42)
+    t = np.linspace(0.0, 1.0, 500)
+    base = np.sin(2.0 * np.pi * 6.0 * t)
+    examples = [
+        {
+            "title": "Strong but simultaneous",
+            "phase": 0.0,
+            "strength": 0.90,
+            "noise": 0.04,
+            "note": "high strength, low delayed coordination",
+        },
+        {
+            "title": "Strong with lead-lag timing",
+            "phase": np.pi / 2.0,
+            "strength": 0.90,
+            "noise": 0.04,
+            "note": "high strength and high delayed coordination",
+        },
+        {
+            "title": "Weak with lead-lag timing",
+            "phase": np.pi / 2.0,
+            "strength": 0.30,
+            "noise": 0.28,
+            "note": "right timing, but weak overall coupling",
+        },
+        {
+            "title": "Strong but opposite",
+            "phase": np.pi,
+            "strength": 0.90,
+            "noise": 0.04,
+            "note": "high strength, low delayed coordination",
+        },
+    ]
+    metric_specs = [
+        ("delayed", "Delayed\ncoordination", "#7b3294"),
+        ("strength", "Overall\nstrength", "#1b9e77"),
+        ("timing", "Lead-lag\ntiming", "#d6604d"),
+    ]
+
+    fig, axes = plt.subplots(
+        len(examples),
+        2,
+        figsize=(10.5, 7.6),
+        gridspec_kw={"width_ratios": [2.8, 1.1]},
+        constrained_layout=True,
+    )
+    for row_i, spec in enumerate(examples):
+        phase = float(spec["phase"])
+        strength = float(spec["strength"])
+        noise = float(spec["noise"])
+        signal_a = base
+        signal_b = strength * np.sin(2.0 * np.pi * 6.0 * t - phase)
+        signal_b = signal_b + noise * rng.standard_normal(len(t))
+        signal_b = signal_b / max(np.nanmax(np.abs(signal_b)), 1e-12)
+
+        ax_sig = axes[row_i, 0]
+        ax_sig.plot(t, signal_a, color="#303030", linewidth=1.8, label="Signal A")
+        ax_sig.plot(t, signal_b, color="#377eb8", linewidth=1.8, label="Signal B")
+        ax_sig.axhline(0, color="0.78", linewidth=0.7)
+        ax_sig.set_ylim(-1.25, 1.25)
+        ax_sig.set_yticks([])
+        ax_sig.set_title(spec["title"], loc="left", fontsize=10)
+        ax_sig.text(
+            0.99,
+            0.08,
+            spec["note"],
+            transform=ax_sig.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=8,
+            color="0.30",
+        )
+        setup_axis(ax_sig)
+        if row_i == len(examples) - 1:
+            ax_sig.set_xlabel("time")
+        else:
+            ax_sig.set_xticklabels([])
+        if row_i == 0:
+            ax_sig.legend(frameon=False, ncol=2, loc="upper right", fontsize=8)
+
+        metrics = _example_coherence_components(strength, phase)
+        ax_bar = axes[row_i, 1]
+        labels = [label for _key, label, _color in metric_specs]
+        vals = [metrics[key] for key, _label, _color in metric_specs]
+        colors = [color for _key, _label, color in metric_specs]
+        ax_bar.bar(labels, vals, color=colors, width=0.72)
+        ax_bar.set_ylim(0.0, 1.0)
+        ax_bar.set_yticks([0.0, 0.5, 1.0])
+        ax_bar.tick_params(axis="x", labelsize=8)
+        ax_bar.tick_params(axis="y", labelsize=8)
+        setup_axis(ax_bar)
+        if row_i == 0:
+            ax_bar.set_title("What the metrics see", fontsize=10)
+    fig.suptitle("Why Connectivity Can Reflect Strength, Timing, or Both")
+    fig_path = figures_dir / "presentation_connectivity_decomposition_examples.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def model_color(model_label):
     if model_label == "gradual":
         return "#303030"
@@ -1509,6 +1619,9 @@ def save_fig_presentation(
     )
     paths["connect_decomposition_overlay"] = (
         plot_presentation_connect_decomposition_overlay(output_dir, figures_dir)
+    )
+    paths["connect_decomposition_examples"] = (
+        plot_presentation_connectivity_decomposition_examples(figures_dir)
     )
     paths["connect_model"] = plot_presentation_connect_model_timecourse(
         output_dir, figures_dir
