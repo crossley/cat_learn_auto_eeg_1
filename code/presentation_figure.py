@@ -110,8 +110,8 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
         fig, axes = plt.subplots(2, 3, figsize=(13, 7), squeeze=False)
         # Adjust first so parent_bbox is accurate when we position the sensor inset
         fig.subplots_adjust(
-            left=0.06, right=0.99, bottom=0.10, top=0.91,
-            wspace=0.42, hspace=0.55,
+            left=0.06, right=0.99, bottom=0.10, top=0.87,
+            wspace=0.42, hspace=0.35,
         )
 
         # Panel [0,0]: sensor colormap only — plot Day 1 to capture inset, then clear ERP
@@ -156,11 +156,14 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
             )
             ax.set_title(f"Day {day}")
             ax.set_xlim(-0.1, 0.8)
+            for txt in list(ax.texts):
+                if "ave" in txt.get_text():
+                    txt.remove()
             new_axes = [a for a in fig.axes if id(a) not in axes_before]
             for child_ax in new_axes:
                 child_ax.remove()
 
-        fig.suptitle("Stimulus-Locked ERPs", fontsize=11)
+        fig.suptitle("Stimulus-Locked ERPs", fontsize=14)
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
     return fig_path
