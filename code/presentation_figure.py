@@ -106,14 +106,47 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
     }
     fig_path = figures_dir / "presentation_erp_stim_all.png"
     with plt.rc_context(font_context):
-        fig, axes = plt.subplots(
-            1,
-            len(days_sorted),
-            figsize=(16, 3.9),
-            squeeze=False,
+        # 2×3: [0,0] = sensor colormap; [0,1],[0,2],[1,0],[1,1],[1,2] = days 1-5
+        fig, axes = plt.subplots(2, 3, figsize=(13, 7), squeeze=False)
+        # Adjust first so parent_bbox is accurate when we position the sensor inset
+        fig.subplots_adjust(
+            left=0.06, right=0.99, bottom=0.10, top=0.91,
+            wspace=0.42, hspace=0.55,
         )
-        for i, day in enumerate(days_sorted):
-            ax = axes[0, i]
+
+        # Panel [0,0]: sensor colormap only — plot Day 1 to capture inset, then clear ERP
+        ax_cmap = axes[0, 0]
+        parent_bbox = ax_cmap.get_position()
+        axes_before = set(id(a) for a in fig.axes)
+        evoked_map[days_sorted[0]].plot(
+            axes=ax_cmap,
+            show=False,
+            spatial_colors=True,
+            titles="",
+        )
+        sensor_axes = [a for a in fig.axes if id(a) not in axes_before]
+        ax_cmap.cla()
+        ax_cmap.axis("off")
+        ax_cmap.set_title("Channel Locations", fontsize=10)
+        for s_ax in sensor_axes:
+            # Remove AnchoredSizeLocator so set_position is honoured
+            s_ax.set_axes_locator(None)
+            title_room = 0.04
+            margin = 0.005
+            s_ax.set_position([
+                parent_bbox.x0 + margin,
+                parent_bbox.y0 + margin,
+                parent_bbox.width - 2 * margin,
+                parent_bbox.height - title_room - 2 * margin,
+            ])
+            # Scale up channel dots (designed for tiny inset, now in a full panel)
+            for col in s_ax.collections:
+                col.set_sizes([120.0])
+
+        # Panels [0,1],[0,2],[1,0],[1,1],[1,2]: one ERP panel per day, no colormap inset
+        erp_positions = [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+        for (row, col), day in zip(erp_positions, days_sorted):
+            ax = axes[row, col]
             axes_before = set(id(a) for a in fig.axes)
             evoked_map[day].plot(
                 axes=ax,
@@ -124,18 +157,10 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
             ax.set_title(f"Day {day}")
             ax.set_xlim(-0.1, 0.8)
             new_axes = [a for a in fig.axes if id(a) not in axes_before]
-            parent_bbox = ax.get_position()
             for child_ax in new_axes:
-                child_ax.set_position(
-                    [
-                        parent_bbox.x1 - 0.055,
-                        parent_bbox.y1 - 0.18,
-                        0.035,
-                        0.12,
-                    ]
-                )
+                child_ax.remove()
+
         fig.suptitle("Stimulus-Locked ERPs", fontsize=11)
-        fig.subplots_adjust(left=0.055, right=0.99, bottom=0.22, wspace=0.42)
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
     return fig_path
