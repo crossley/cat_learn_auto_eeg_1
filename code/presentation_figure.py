@@ -305,7 +305,7 @@ def plot_presentation_connect_overlay(output_dir, figures_dir):
     ax.axvline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("mean connectivity")
-    ax.set_title("Broadband Connectivity, Top 10% Active Edges")
+    ax.set_title("Functional Connectivity Time Series")
     ax.legend(frameon=False, ncol=1, loc="upper right")
     setup_axis(ax)
     fig.tight_layout()
