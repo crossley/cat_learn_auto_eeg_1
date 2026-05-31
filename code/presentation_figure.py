@@ -127,7 +127,6 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
         sensor_axes = [a for a in fig.axes if id(a) not in axes_before]
         ax_cmap.cla()
         ax_cmap.axis("off")
-        ax_cmap.set_title("Channel Locations", fontsize=10)
         for s_ax in sensor_axes:
             # Remove AnchoredSizeLocator so set_position is honoured
             s_ax.set_axes_locator(None)
@@ -166,6 +165,69 @@ def plot_presentation_erp_stim(output_dir, figures_dir):
         fig.suptitle("Stimulus-Locked ERPs", fontsize=14)
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
+    return fig_path
+
+
+def plot_presentation_erp_gfp(output_dir, figures_dir):
+    d = require_csv(
+        output_dir / "erp_grand_average_subject_day_all.csv",
+        "ERP subject-level output",
+    )
+    d = d[(d["lock_type"] == "stim") & (d["condition"] == "all")].copy()
+    if d.empty:
+        raise ValueError("No stim/all rows in subject-level ERP data")
+
+    # GFP = std across channels per subject/day/time
+    gfp_rows = []
+    for (subject, day, time_s), g in d.groupby(["subject", "day", "time_s"]):
+        vals = g["amplitude_v"].to_numpy(float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) < 2:
+            continue
+        gfp_rows.append({
+            "subject": int(subject),
+            "day": int(day),
+            "time_s": float(time_s),
+            "gfp": float(np.std(vals, ddof=1)),
+        })
+    gfp_df = pd.DataFrame(gfp_rows)
+    if gfp_df.empty:
+        raise ValueError("Could not compute GFP from subject-level data")
+
+    fig, ax = plt.subplots(figsize=(7.2, 3.8))
+    for day in DAYS:
+        d_day = gfp_df[gfp_df["day"] == day]
+        summary = (
+            d_day.groupby("time_s")["gfp"]
+            .agg(mean="mean", sem=lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))))
+            .reset_index()
+            .sort_values("time_s")
+        )
+        t = summary["time_s"].to_numpy(float)
+        y = summary["mean"].to_numpy(float)
+        y_sem = summary["sem"].to_numpy(float)
+        color = DAY_COLORS[day]
+        ax.plot(t, y * 1e6, color=color, linewidth=2.0, label=f"Day {day}")
+        ax.fill_between(
+            t,
+            (y - y_sem) * 1e6,
+            (y + y_sem) * 1e6,
+            color=color,
+            alpha=0.18,
+            linewidth=0,
+        )
+
+    ax.axvline(0, color="0.3", linewidth=0.8, linestyle="--")
+    ax.set_xlim(-0.1, 0.8)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("GFP (µV)")
+    ax.set_title("Stimulus-Locked Global Field Power")
+    ax.legend(frameon=False, ncol=1, loc="upper right")
+    setup_axis(ax)
+    fig.tight_layout()
+    fig_path = figures_dir / "presentation_erp_gfp.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
     return fig_path
 
 
@@ -1330,6 +1392,7 @@ def save_fig_presentation(
     figures_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     paths["erp"] = plot_presentation_erp_stim(output_dir, figures_dir)
+    paths["erp_gfp"] = plot_presentation_erp_gfp(output_dir, figures_dir)
     paths["connect_overlay"] = plot_presentation_connect_overlay(
         output_dir, figures_dir
     )
