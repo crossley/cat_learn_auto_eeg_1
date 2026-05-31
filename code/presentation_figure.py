@@ -926,21 +926,25 @@ def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None):
 
 
 def conn_template_matrix(kind, split_day=None):
+    """5×5 day-similarity matrix matching the model_distance() formula in
+    connect_sensorwide_model_timecourse_analysis.py, converted to similarity
+    via 1 − distance so higher values mean more similar (consistent with MVPA matrices)."""
     mat = np.full((5, 5), np.nan)
     for d1 in DAYS:
         for d2 in DAYS:
+            gradual_dist = abs(d1 - d2) / 4.0
             if kind == "gradual":
-                val = 1.0 - 0.20 * abs(d1 - d2)
+                dist = gradual_dist
             elif kind == "split_gradual":
                 if split_day is None:
                     raise ValueError("split_gradual requires split_day")
-                if (d1 > split_day) != (d2 > split_day):
-                    val = 0.0
+                if (d1 > split_day) == (d2 > split_day):
+                    dist = 0.5 * gradual_dist
                 else:
-                    val = 1.0 - 0.20 * abs(d1 - d2)
+                    dist = 0.5 + 0.5 * gradual_dist
             else:
                 raise ValueError(f"Unknown connectivity template: {kind}")
-            mat[d1 - 1, d2 - 1] = val
+            mat[d1 - 1, d2 - 1] = 1.0 - dist
     return mat
 
 
