@@ -441,38 +441,38 @@ def plot_presentation_connectivity_decomposition_examples(figures_dir):
     base = np.sin(2.0 * np.pi * 6.0 * t)
     examples = [
         {
-            "title": "Strong but simultaneous",
+            "title": "High strength only",
             "phase": 0.0,
             "strength": 0.90,
             "noise": 0.04,
-            "note": "high strength, low delayed coordination",
+            "note": "signals match, but with no delay",
         },
         {
-            "title": "Strong with lead-lag timing",
+            "title": "High phase alignment only",
+            "phase": np.pi / 2.0,
+            "strength": 0.25,
+            "noise": 0.34,
+            "note": "right delay shape, weak shared signal",
+        },
+        {
+            "title": "High delayed coordination",
             "phase": np.pi / 2.0,
             "strength": 0.90,
             "noise": 0.04,
-            "note": "high strength and high delayed coordination",
+            "note": "strong signal with quarter-cycle delay",
         },
         {
-            "title": "Weak with lead-lag timing",
-            "phase": np.pi / 2.0,
-            "strength": 0.30,
-            "noise": 0.28,
-            "note": "right timing, but weak overall coupling",
-        },
-        {
-            "title": "Strong but opposite",
+            "title": "High strength, opposite phase",
             "phase": np.pi,
             "strength": 0.90,
             "noise": 0.04,
-            "note": "high strength, low delayed coordination",
+            "note": "signals match, but not as a delay",
         },
     ]
     metric_specs = [
         ("delayed", "Delayed\ncoordination", "#7b3294"),
         ("strength", "Overall\nstrength", "#1b9e77"),
-        ("timing", "Lead-lag\ntiming", "#d6604d"),
+        ("timing", "Phase\nalignment", "#d6604d"),
     ]
 
     fig, axes = plt.subplots(
@@ -529,7 +529,7 @@ def plot_presentation_connectivity_decomposition_examples(figures_dir):
         setup_axis(ax_bar)
         if row_i == 0:
             ax_bar.set_title("What the metrics see", fontsize=10)
-    fig.suptitle("Why Connectivity Can Reflect Strength, Timing, or Both")
+    fig.suptitle("Delayed Coordination Requires Both Strength and Phase Alignment")
     fig_path = figures_dir / "presentation_connectivity_decomposition_examples.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
