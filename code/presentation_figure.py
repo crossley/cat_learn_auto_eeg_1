@@ -1132,6 +1132,65 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     return fig_path
 
 
+def plot_presentation_mvpa_tg_diagonal_day_matrices(output_dir, figures_dir):
+    d = require_csv(
+        output_dir / "mvpa_stim_locked_cat_tg_timegen_day_mean.csv",
+        "stim MVPA TG day-mean matrix output",
+    )
+    d = d[
+        np.isclose(d["train_time_sec"].astype(float), d["test_time_sec"].astype(float))
+    ].copy()
+    if d.empty:
+        raise ValueError("Missing same-time TG diagonal day-matrix rows")
+    requested_times = np.round(np.arange(-0.2, 0.81, 0.1), 1)
+    available_times = np.sort(d["train_time_sec"].dropna().unique().astype(float))
+    snapshot_times = []
+    for time_s in requested_times:
+        nearest = float(available_times[np.argmin(np.abs(available_times - time_s))])
+        if nearest not in snapshot_times:
+            snapshot_times.append(nearest)
+
+    matrices = []
+    for time_s in snapshot_times:
+        g = d[np.isclose(d["train_time_sec"].astype(float), time_s)]
+        mat = np.full((5, 5), np.nan)
+        for row in g.itertuples(index=False):
+            mat[int(row.train_day) - 1, int(row.test_day) - 1] = float(row.auc_mean)
+        matrices.append((time_s, mat))
+
+    fig, axes = plt.subplots(3, 4, figsize=(11.0, 7.7))
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.86,
+        bottom=0.08,
+        top=0.88,
+        wspace=0.45,
+        hspace=0.35,
+    )
+    axes_flat = axes.ravel()
+    image = None
+    for ax, (time_s, mat) in zip(axes_flat, matrices):
+        image = plot_matrix(
+            ax,
+            mat,
+            f"{time_s * 1000:.0f} ms",
+            "viridis",
+            0.50,
+            0.72,
+            annotate=False,
+        )
+    for ax in axes_flat[len(matrices):]:
+        ax.axis("off")
+    if image is not None:
+        cax = fig.add_axes([0.89, 0.18, 0.018, 0.62])
+        fig.colorbar(image, cax=cax)
+    fig.suptitle("MVPA Same-Time Day Transfer Matrices")
+    fig_path = figures_dir / "presentation_mvpa_tg_diagonal_day_matrices_100ms.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
 def transfer_matrix(group, classifier, window):
     mat = np.full((5, 5), np.nan)
     g = group[(group["classifier"] == classifier) & (group["window"] == window)]
@@ -1606,6 +1665,9 @@ def save_fig_presentation(
     )
     paths["mvpa_model_timecourse"] = plot_presentation_mvpa_model_timecourse(
         output_dir, figures_dir
+    )
+    paths["mvpa_tg_diagonal_day_matrices"] = (
+        plot_presentation_mvpa_tg_diagonal_day_matrices(output_dir, figures_dir)
     )
     mvpa_window_paths = plot_presentation_mvpa_window_model(
         output_dir, figures_dir
