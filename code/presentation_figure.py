@@ -1084,45 +1084,42 @@ def plot_presentation_mvpa_peak_behavior(output_dir, figures_dir):
 
 def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
     d = require_csv(
-        output_dir / "presentation_mvpa_model_timecourse.csv",
-        "presentation MVPA model-timecourse output",
+        output_dir / "mvpa_tg_diagonal_presentation_model_bic_summary.csv",
+        "presentation MVPA BIC model-timecourse output",
     )
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
     mvpa_models = [
-        ("gradual",         "Continuous Restructuring",    "#1f1f1f"),
-        ("split_gradual_D1", "Discrete Restructuring (D1)", "#6a3d9a"),
-        ("split_gradual_D2", "Discrete Restructuring (D2)", "#1b9e77"),
-        ("split_gradual_D3", "Discrete Restructuring (D3)", "#377eb8"),
-        ("split_gradual_D4", "Discrete Restructuring (D4)", "#a6cee3"),
+        ("Continuous Restructuring",    "Continuous Restructuring",    "#1f1f1f"),
+        ("Discrete Restructuring D1",   "Discrete Restructuring (D1)", "#6a3d9a"),
+        ("Discrete Restructuring D2",   "Discrete Restructuring (D2)", "#1b9e77"),
+        ("Discrete Restructuring D3",   "Discrete Restructuring (D3)", "#377eb8"),
+        ("Discrete Restructuring D4",   "Discrete Restructuring (D4)", "#a6cee3"),
     ]
     y_vals = []
     for label, plot_label, color in mvpa_models:
-        g = d[d["model_label"] == label].sort_values("time_sec")
+        g = d[
+            (d["classifier"] == "logreg")
+            & (d["model_label"] == label)
+        ].sort_values("time_sec")
         if g.empty:
             continue
         x = g["time_sec"].to_numpy(float)
-        if "rho_mean" in g.columns:
-            y = g["rho_mean"].to_numpy(float)
-            y_sem = g["rho_sem"].to_numpy(float)
-        else:
-            y = g["rho"].to_numpy(float)
-            y_sem = np.zeros(y.shape, dtype=float)
+        y = -g["delta_bic_null_mean"].to_numpy(float)
         for val in y:
             if np.isfinite(val):
                 y_vals.append(float(val))
         ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
-        ax.fill_between(x, y - y_sem, y + y_sem, color=color, alpha=0.10, linewidth=0)
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
     ax.axvspan(0.40, 0.60, color="0.55", alpha=0.14, linewidth=0)
     ax.set_xlabel("time from stimulus (s)")
-    ax.set_ylabel("model correlation")
+    ax.set_ylabel("BIC improvement over same-day baseline")
     ax.set_title("MVPA Transfer Model Evidence Over Time")
     if len(y_vals) > 0:
         ymin = float(np.nanmin(y_vals))
         ymax = float(np.nanmax(y_vals))
-        pad = 0.12 * max(ymax - ymin, 0.1)
-        ax.set_ylim(max(-1.0, ymin - pad), min(1.0, ymax + pad))
+        pad = 0.12 * max(ymax - ymin, 1.0)
+        ax.set_ylim(ymin - pad, ymax + pad)
     ax.legend(frameon=False, fontsize=8, ncol=3, loc="best")
     setup_axis(ax)
     fig.tight_layout()
