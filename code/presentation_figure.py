@@ -1003,10 +1003,7 @@ def plot_presentation_mvpa_auc(output_dir, figures_dir):
             raise ValueError(f"Missing MVPA AUC rows for day={day}")
         x = g["time_sec"].to_numpy(float)
         y = g["auc_mean"].to_numpy(float)
-        sem_vals = g["auc_sem"].to_numpy(float)
         ax.plot(x, y, color=DAY_COLORS[day], linewidth=2.0, label=f"D{day}")
-        ax.fill_between(x, y - sem_vals, y + sem_vals, color=DAY_COLORS[day],
-                        alpha=0.12, linewidth=0)
     ax.axhline(0.5, color="0.25", linewidth=0.8)
     ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
     ax.axvspan(0.40, 0.60, color="0.55", alpha=0.14, linewidth=0)
