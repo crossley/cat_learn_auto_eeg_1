@@ -552,15 +552,23 @@ def model_color(model_label):
 
 def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
     d = require_csv(
-        output_dir / "connect_sensorwide_model_timecourse_summary.csv",
-        "connectivity model-timecourse output",
+        output_dir / "connect_sensorwide_model_bic_timecourse_summary_top10.csv",
+        "connectivity BIC model-timecourse output",
+    )
+    subj = require_csv(
+        output_dir / "connect_sensorwide_model_bic_timecourse_subject_top10.csv",
+        "connectivity BIC model-timecourse subject output",
     )
     d = d[
         np.isclose(d["active_pct"].astype(float), 0.10)
         & (d["metric"] == "z_euclidean")
     ].copy()
+    subj = subj[
+        np.isclose(subj["active_pct"].astype(float), 0.10)
+        & (subj["metric"] == "z_euclidean")
+    ].copy()
     if d.empty:
-        raise ValueError("Missing top-10% z-euclidean model-timecourse rows")
+        raise ValueError("Missing top-10% z-euclidean BIC model-timecourse rows")
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
     conn_models = [
         ("gradual",            "Continuous Restructuring", "#1f1f1f"),
@@ -574,15 +582,32 @@ def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
         if g.empty:
             continue
         x = g["time_center_sec"].to_numpy(float)
-        y = g["rho_mean"].to_numpy(float)
-        y_sem = g["rho_sem"].to_numpy(float)
+        y = -g["delta_bic_baseline_mean"].to_numpy(float)
+        y_sem = np.full_like(y, np.nan, dtype=float)
+        gs = subj[subj["model_label"] == model_key]
+        if not gs.empty:
+            sem_by_time = (
+                gs.assign(evidence=-gs["delta_bic_baseline"].astype(float))
+                .groupby("time_center_sec")["evidence"]
+                .sem()
+            )
+            y_sem = np.asarray([sem_by_time.get(t, np.nan) for t in x], dtype=float)
         ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
-        ax.fill_between(x, y - y_sem, y + y_sem, color=color, alpha=0.12, linewidth=0)
+        good = np.isfinite(y_sem)
+        if np.any(good):
+            ax.fill_between(
+                x[good],
+                y[good] - y_sem[good],
+                y[good] + y_sem[good],
+                color=color,
+                alpha=0.12,
+                linewidth=0,
+            )
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
-    ax.set_ylabel("model correlation")
+    ax.set_ylabel("Evidence above baseline model")
     ax.set_title("Connectivity Model Evidence Over Time")
-    ax.legend(frameon=False, fontsize=8, ncol=2, loc="lower center")
+    ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper left")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_connectivity_model_timecourse_top10.png"
