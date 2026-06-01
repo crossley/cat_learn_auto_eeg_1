@@ -1087,6 +1087,10 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         output_dir / "mvpa_tg_diagonal_presentation_model_bic_summary.csv",
         "presentation MVPA BIC model-timecourse output",
     )
+    subject_d = require_csv(
+        output_dir / "mvpa_tg_diagonal_presentation_model_bic_subject.csv",
+        "presentation MVPA subject-level BIC model-timecourse output",
+    )
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
     mvpa_models = [
         ("Continuous Restructuring",    "Continuous Restructuring",    "#1f1f1f"),
@@ -1105,10 +1109,31 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
             continue
         x = g["time_sec"].to_numpy(float)
         y = -g["delta_bic_null_mean"].to_numpy(float)
+        g_subject = subject_d[
+            (subject_d["classifier"] == "logreg")
+            & (subject_d["model_label"] == label)
+        ].copy()
+        sem_rows = []
+        for time_sec, g_time in g_subject.groupby("time_sec"):
+            vals = -g_time["delta_bic_null"].to_numpy(float)
+            sem_rows.append({"time_sec": float(time_sec), "sem": sem(vals)})
+        sem_df = pd.DataFrame(sem_rows)
+        g_sem = pd.DataFrame({"time_sec": x}).merge(
+            sem_df, on="time_sec", how="left"
+        )
+        y_sem = g_sem["sem"].to_numpy(float)
         for val in y:
             if np.isfinite(val):
                 y_vals.append(float(val))
         ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
+        ax.fill_between(
+            x,
+            y - y_sem,
+            y + y_sem,
+            color=color,
+            alpha=0.10,
+            linewidth=0,
+        )
     ax.axhline(0, color="0.25", linewidth=0.8)
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("Evidence above baseline model")
@@ -1118,7 +1143,7 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
         ymax = float(np.nanmax(y_vals))
         pad = 0.12 * max(ymax - ymin, 1.0)
         ax.set_ylim(ymin - pad, ymax + pad)
-    ax.legend(frameon=False, fontsize=8, ncol=3, loc="best")
+    ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper left")
     setup_axis(ax)
     fig.tight_layout()
     fig_path = figures_dir / "presentation_mvpa_model_timecourse.png"
