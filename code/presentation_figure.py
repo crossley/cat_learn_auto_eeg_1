@@ -562,39 +562,6 @@ def plot_presentation_connect_model_timecourse(output_dir, figures_dir):
     if d.empty:
         raise ValueError("Missing top-10% z-euclidean model-timecourse rows")
     fig, ax = plt.subplots(figsize=(8.2, 4.1))
-    shape = require_csv_any(
-        [
-            output_dir / "connect_sensorwide_model_posterior_shape_summary_top10.csv",
-            output_dir / "connect_sensorwide_model_posterior_shape_summary.csv",
-        ],
-        "connectivity posterior-shape output",
-    )
-    g_shape = shape[
-        np.isclose(shape["active_pct"].astype(float), 0.10)
-        & (shape["contrast"] == "two_stage_hybrid_D1_minus_gradual")
-        & (shape["shape_model"] == "three_window")
-    ]
-    if g_shape.empty:
-        raise ValueError(
-            "Missing top-10% three-window posterior-shape row. Run "
-            "ACTIVE_PCT=0.10 "
-            "python code/connect_sensorwide_model_posterior_shape_analysis.py first."
-        )
-    shape_row = g_shape.iloc[0]
-    window_cols = [
-        ("lb_early", "ub_early"),
-        ("lb_middle", "ub_middle"),
-        ("lb_late", "ub_late"),
-    ]
-    for lo_col, hi_col in window_cols:
-        ax.axvspan(
-            float(shape_row[lo_col]),
-            float(shape_row[hi_col]),
-            color="0.75",
-            alpha=0.22,
-            linewidth=0,
-            zorder=0,
-        )
     conn_models = [
         ("gradual",            "Continuous Restructuring", "#1f1f1f"),
         ("two_stage_hybrid_D1", "Discrete Restructuring (D1)", "#6a3d9a"),
