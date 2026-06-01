@@ -1218,6 +1218,10 @@ def plot_matrix(ax, mat, title, cmap, vmin=None, vmax=None, annotate=True):
     ax.set_yticks(range(5))
     ax.set_xticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
     ax.set_yticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
+    ax.set_xticks(np.arange(-0.5, 5, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, 5, 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.8)
+    ax.tick_params(which="minor", bottom=False, left=False)
     if annotate:
         for i in range(5):
             for j in range(5):
