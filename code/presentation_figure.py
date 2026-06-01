@@ -1110,10 +1110,8 @@ def plot_presentation_mvpa_model_timecourse(output_dir, figures_dir):
                 y_vals.append(float(val))
         ax.plot(x, y, color=color, linewidth=1.8, alpha=0.92, label=plot_label)
     ax.axhline(0, color="0.25", linewidth=0.8)
-    ax.axvspan(0.06, 0.18, color="0.75", alpha=0.18, linewidth=0)
-    ax.axvspan(0.40, 0.60, color="0.55", alpha=0.14, linewidth=0)
     ax.set_xlabel("time from stimulus (s)")
-    ax.set_ylabel("BIC improvement over same-day baseline")
+    ax.set_ylabel("Evidence above baseline model")
     ax.set_title("MVPA Transfer Model Evidence Over Time")
     if len(y_vals) > 0:
         ymin = float(np.nanmin(y_vals))
