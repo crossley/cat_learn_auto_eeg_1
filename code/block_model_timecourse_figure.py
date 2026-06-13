@@ -123,13 +123,13 @@ def save_block_model_figure(modality, output_dir=OUTPUT_DIR, figures_dir=FIGURES
         frameon=False,
         fontsize=7,
         title_fontsize=8,
-        ncol=5,
-        loc="center left",
-        bbox_to_anchor=(1.01, 0.5),
+        ncol=9,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
         borderaxespad=0.0,
     )
     setup_axis(ax)
-    fig.tight_layout(rect=[0.0, 0.0, 0.80, 1.0])
+    fig.tight_layout(rect=[0.0, 0.18, 1.0, 1.0])
     path = figures_dir / spec["figure"]
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
