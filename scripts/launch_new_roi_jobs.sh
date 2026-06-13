@@ -59,13 +59,13 @@ echo "Force: ${FORCE}"
 date
 
 run_step_if_needed \
-  "ERP day-similarity analysis" \
-  "${ROOT}/output/erp_day_similarity_group_matrices.csv" \
-  "${PYTHON_BIN}" code/erp_day_similarity_analysis.py
+  "ERP model-timecourse analysis" \
+  "${ROOT}/output/erp_model_timecourse_summary.csv" \
+  "${PYTHON_BIN}" code/erp_model_timecourse_analysis.py
 run_step_if_needed \
-  "ERP day-similarity figures" \
-  "${ROOT}/figures/erp_day_similarity_matrices.png" \
-  "${PYTHON_BIN}" code/erp_day_similarity_figure.py
+  "ERP model-timecourse figure" \
+  "${ROOT}/figures/erp_model_timecourse.png" \
+  "${PYTHON_BIN}" code/erp_model_timecourse_figure.py
 
 run_step_if_needed \
   "Connectivity ROI time-course analysis" \
