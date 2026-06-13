@@ -54,13 +54,35 @@ def line_label(row):
     return label
 
 
+def split_block_day(split_block):
+    split_block = int(split_block)
+    return ((split_block - 1) // 5) + 1
+
+
+def split_block_color(split_block):
+    split_block = int(split_block)
+    day = split_block_day(split_block)
+    day_cmaps = {
+        1: plt.cm.Blues,
+        2: plt.cm.Greens,
+        3: plt.cm.Oranges,
+        4: plt.cm.Purples,
+        5: plt.cm.Reds,
+    }
+    day_start = (day - 1) * 5 + 1
+    day_end = min(day * 5, 24)
+    n_in_day = max(1, day_end - day_start + 1)
+    pos = (split_block - day_start) / max(1, n_in_day - 1)
+    return day_cmaps[day](0.42 + 0.48 * pos)
+
+
 def save_block_model_figure(modality, output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     spec = MODALITIES[modality]
     d = require_csv(output_dir / spec["summary"])
-    fig, ax = plt.subplots(figsize=(8.8, 4.4))
+    fig, ax = plt.subplots(figsize=(11.2, 5.0))
     continuous = d[d["model_label"] == "Continuous Restructuring"].sort_values("time_sec")
     if not continuous.empty:
         x = continuous["time_sec"].to_numpy(float)
@@ -74,27 +96,40 @@ def save_block_model_figure(modality, output_dir=OUTPUT_DIR, figures_dir=FIGURES
     split_rows = d[d["model"] == "discrete"].copy()
     split_rows = split_rows[np.isfinite(split_rows["split_block"].astype(float))]
     if not split_rows.empty:
-        best = (
-            split_rows.groupby("split_block", as_index=False)
-            .agg(best_evidence=("delta_bic_baseline_mean", lambda x: float(np.nanmax(-np.asarray(x, dtype=float)))))
-            .sort_values("best_evidence", ascending=False)
-            .head(6)
-        )
-        colors = plt.cm.viridis(np.linspace(0.10, 0.90, len(best)))
-        for color, split_block in zip(colors, best["split_block"].tolist()):
+        split_blocks = sorted(split_rows["split_block"].astype(float).dropna().unique())
+        for split_block in split_blocks:
             g = split_rows[np.isclose(split_rows["split_block"].astype(float), float(split_block))].sort_values("time_sec")
             x = g["time_sec"].to_numpy(float)
             y = -g["delta_bic_baseline_mean"].to_numpy(float)
-            ax.plot(x, y, color=color, linewidth=1.5, alpha=0.9, label=f"Transition B{int(split_block)}")
+            ax.plot(
+                x,
+                y,
+                color=split_block_color(split_block),
+                linewidth=1.1,
+                alpha=0.82,
+                label=f"B{int(split_block)}",
+            )
 
     ax.axhline(0.0, color="0.25", linewidth=0.8)
     ax.axvline(0.0, color="0.25", linewidth=0.8, linestyle="--")
     ax.set_xlabel("time from stimulus (s)")
     ax.set_ylabel("Evidence above baseline model")
     ax.set_title(spec["title"])
-    ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper left")
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles,
+        labels,
+        title="Continuous and transition after block",
+        frameon=False,
+        fontsize=7,
+        title_fontsize=8,
+        ncol=5,
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.5),
+        borderaxespad=0.0,
+    )
     setup_axis(ax)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0.0, 0.0, 0.80, 1.0])
     path = figures_dir / spec["figure"]
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
