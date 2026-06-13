@@ -36,6 +36,8 @@ MODALITIES = {
     },
 }
 
+N_TIME_BINS = 7
+
 
 def require_csv(path):
     path = Path(path)
@@ -137,6 +139,99 @@ def save_block_model_figure(modality, output_dir=OUTPUT_DIR, figures_dir=FIGURES
     return path
 
 
+def model_sort_key(row):
+    label = str(row["model_label"])
+    if label == "Continuous Restructuring":
+        return 0
+    if label.startswith("Discrete Restructuring B"):
+        return int(float(row["split_block"]))
+    return -1
+
+
+def model_display_label(row):
+    label = str(row["model_label"])
+    if label == "Continuous Restructuring":
+        return "Continuous"
+    if label.startswith("Discrete Restructuring B"):
+        return f"B{int(float(row['split_block']))}"
+    return label
+
+
+def save_block_model_heatmap(modality, output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    spec = MODALITIES[modality]
+    d = require_csv(output_dir / spec["summary"])
+    d = d[d["model_label"] != "Baseline"].copy()
+    if d.empty:
+        raise ValueError(f"No non-baseline model rows for {modality}")
+    tmin = float(d["time_sec"].min())
+    tmax = float(d["time_sec"].max())
+    edges = np.linspace(tmin, tmax, N_TIME_BINS + 1)
+    d["time_bin"] = pd.cut(
+        d["time_sec"],
+        bins=edges,
+        labels=False,
+        include_lowest=True,
+    )
+    d = d[d["time_bin"].notna()].copy()
+    d["time_bin"] = d["time_bin"].astype(int)
+    d["evidence"] = -d["delta_bic_baseline_mean"].astype(float)
+    model_rows = (
+        d[["model_label", "model", "split_block"]]
+        .drop_duplicates()
+        .copy()
+    )
+    model_rows["sort_key"] = model_rows.apply(model_sort_key, axis=1)
+    model_rows = model_rows[model_rows["sort_key"] >= 0].sort_values("sort_key")
+    row_labels = [model_display_label(row) for _, row in model_rows.iterrows()]
+    mat = np.full((len(model_rows), N_TIME_BINS), np.nan, dtype=float)
+    for row_i, (_, model_row) in enumerate(model_rows.iterrows()):
+        g = d[d["model_label"] == model_row["model_label"]]
+        summary = g.groupby("time_bin")["evidence"].mean()
+        for bin_i, val in summary.items():
+            mat[row_i, int(bin_i)] = float(val)
+
+    finite = mat[np.isfinite(mat)]
+    if len(finite) == 0:
+        raise ValueError(f"No finite heatmap values for {modality}")
+    vmax = float(np.nanmax(np.abs(finite)))
+    vmax = max(vmax, 1e-6)
+    fig_height = max(6.5, 0.28 * len(row_labels) + 1.7)
+    fig, ax = plt.subplots(figsize=(9.8, fig_height))
+    im = ax.imshow(
+        np.ma.masked_invalid(mat),
+        aspect="auto",
+        cmap="RdBu_r",
+        vmin=-vmax,
+        vmax=vmax,
+        origin="upper",
+    )
+    x_labels = []
+    for i in range(N_TIME_BINS):
+        lo = edges[i]
+        hi = edges[i + 1]
+        x_labels.append(f"{lo:.2f}-{hi:.2f}")
+    ax.set_xticks(np.arange(N_TIME_BINS))
+    ax.set_xticklabels(x_labels, rotation=35, ha="right")
+    ax.set_yticks(np.arange(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    ax.set_xlabel("time window from stimulus (s)")
+    ax.set_ylabel("model")
+    ax.set_title(spec["title"].replace("Over Time", "by Time Window"))
+    for boundary in [5, 10, 15, 20]:
+        ax.axhline(boundary + 0.5, color="0.85", linewidth=0.8)
+    cbar = fig.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label("Evidence above baseline model")
+    fig.tight_layout()
+    path = figures_dir / spec["figure"].replace(".png", "_heatmap_7bins.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[block model figure] wrote {path}", flush=True)
+    return path
+
+
 def save_all_block_model_figures(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
     return {
         modality: save_block_model_figure(modality, output_dir, figures_dir)
@@ -146,6 +241,10 @@ def save_all_block_model_figures(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR)
 
 if __name__ == "__main__":
     requested = sys.argv[1:]
+    heatmap_only = False
+    if "--heatmap" in requested:
+        heatmap_only = True
+        requested = [arg for arg in requested if arg != "--heatmap"]
     if requested:
         for modality in requested:
             if modality not in MODALITIES:
@@ -153,6 +252,16 @@ if __name__ == "__main__":
                     f"Unknown modality: {modality}. "
                     f"Choose from {sorted(MODALITIES)}"
                 )
-            save_block_model_figure(modality)
+            if heatmap_only:
+                save_block_model_heatmap(modality)
+            else:
+                save_block_model_figure(modality)
+                save_block_model_heatmap(modality)
     else:
-        save_all_block_model_figures()
+        if heatmap_only:
+            for modality in MODALITIES:
+                save_block_model_heatmap(modality)
+        else:
+            save_all_block_model_figures()
+            for modality in MODALITIES:
+                save_block_model_heatmap(modality)
