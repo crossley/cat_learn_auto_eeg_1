@@ -123,6 +123,86 @@ def save_fig_connect_roi_timecourse_by_day(output_dir=OUTPUT_DIR, figures_dir=FI
     return path
 
 
+def save_fig_connect_roi_contrast(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
+    output_dir = Path(output_dir)
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    d = require_csv(output_dir / "connect_roi_timecourse_subject.csv")
+    wide = (
+        d.pivot_table(
+            index=["subject", "day", "lock_time"],
+            columns="roi_pair",
+            values="conn_val",
+            aggfunc="mean",
+        )
+        .reset_index()
+        .dropna(subset=["visual_central", "visual_frontal"])
+    )
+    if wide.empty:
+        raise ValueError("No paired visual-central and visual-frontal rows for contrast")
+    wide["contrast"] = wide["visual_central"] - wide["visual_frontal"]
+    rows = []
+    for key, g in wide.groupby(["day", "lock_time"]):
+        day, lock_time = key
+        vals = g["contrast"].to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
+        err = np.nan
+        if len(vals) > 1:
+            err = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+        rows.append(
+            {
+                "day": int(day),
+                "lock_time": float(lock_time),
+                "contrast_mean": float(np.mean(vals)),
+                "contrast_sem": err,
+                "n_subjects": int(len(vals)),
+            }
+        )
+    summary = pd.DataFrame(rows).sort_values(["day", "lock_time"])
+    summary_path = output_dir / "connect_roi_timecourse_contrast_day_mean.csv"
+    subject_path = output_dir / "connect_roi_timecourse_contrast_subject.csv"
+    wide[["subject", "day", "lock_time", "contrast"]].to_csv(subject_path, index=False)
+    summary.to_csv(summary_path, index=False)
+
+    fig, ax = plt.subplots(figsize=(7.6, 3.8))
+    for day in DAYS:
+        g = summary[summary["day"] == day].sort_values("lock_time")
+        if g.empty:
+            continue
+        x = g["lock_time"].to_numpy(dtype=float)
+        y = g["contrast_mean"].to_numpy(dtype=float)
+        err = g["contrast_sem"].to_numpy(dtype=float)
+        ax.plot(x, y, color=DAY_COLORS[day], linewidth=2.0, label=f"D{day}")
+        good = np.isfinite(err)
+        if np.any(good):
+            ax.fill_between(
+                x[good],
+                y[good] - err[good],
+                y[good] + err[good],
+                color=DAY_COLORS[day],
+                alpha=0.12,
+                linewidth=0,
+            )
+    ax.axhline(0.0, color="0.25", linewidth=0.8)
+    ax.axvline(0.0, color="0.25", linewidth=0.8)
+    ax.set_xlabel("time from stimulus (s)")
+    ax.set_ylabel("connectivity contrast")
+    ax.set_title("Visual-Central Minus Visual-Frontal Connectivity")
+    ax.legend(frameon=False, ncol=1, loc="upper right")
+    setup_axis(ax)
+    fig.tight_layout()
+    path = figures_dir / "connect_roi_timecourse_visual_central_minus_frontal.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[connect ROI] wrote {subject_path}", flush=True)
+    print(f"[connect ROI] wrote {summary_path}", flush=True)
+    print(f"[connect ROI] wrote {path}", flush=True)
+    return path
+
+
 if __name__ == "__main__":
     save_fig_connect_roi_timecourse()
     save_fig_connect_roi_timecourse_by_day()
+    save_fig_connect_roi_contrast()
