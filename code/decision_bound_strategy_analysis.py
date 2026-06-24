@@ -12,6 +12,12 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
 os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("BLIS_NUM_THREADS", "1")
 
 import numpy as np
 import pandas as pd
@@ -323,7 +329,7 @@ def infer_strategy_switch(weights_df, min_bic_advantage=0.0):
     return pd.DataFrame(rows).sort_values("subject")
 
 
-def extract_mvpa_split_blocks(output_dir, tmin=0.0, tmax=0.8):
+def extract_mvpa_split_blocks(output_dir, tmin=0.3, tmax=0.6):
     path = Path(output_dir) / "mvpa_block_model_timecourse_subject.csv"
     if not path.exists():
         raise FileNotFoundError(f"Missing MVPA block output: {path}")
@@ -355,6 +361,10 @@ def extract_mvpa_split_blocks(output_dir, tmin=0.0, tmax=0.8):
             "mean_evidence_above_baseline": "mvpa_split_mean_evidence_above_baseline",
         }
     )
+    split_summary["mvpa_tmin"] = float(tmin)
+    split_summary["mvpa_tmax"] = float(tmax)
+    best["mvpa_tmin"] = float(tmin)
+    best["mvpa_tmax"] = float(tmax)
     best["mvpa_best_split_day"] = ((best["mvpa_best_split_block"].astype(int) - 1) // 5) + 1
     best["mvpa_best_split_day_block"] = ((best["mvpa_best_split_block"].astype(int) - 1) % 5) + 1
     return split_summary, best.sort_values("subject")
@@ -399,6 +409,8 @@ def run_decision_bound_strategy_analysis(
     n_workers=None,
     max_subjects=None,
     min_bic_advantage=0.0,
+    mvpa_tmin=0.3,
+    mvpa_tmax=0.6,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -441,7 +453,11 @@ def run_decision_bound_strategy_analysis(
         raise RuntimeError("Decision-bound fitting produced no valid rows")
     weights_df = add_model_weights(fits_df)
     switch_df = infer_strategy_switch(weights_df, min_bic_advantage=min_bic_advantage)
-    mvpa_split_summary, mvpa_best = extract_mvpa_split_blocks(output_dir)
+    mvpa_split_summary, mvpa_best = extract_mvpa_split_blocks(
+        output_dir,
+        tmin=mvpa_tmin,
+        tmax=mvpa_tmax,
+    )
     link_df = make_mvpa_link(switch_df, mvpa_best)
     block_summary = summarize_block_weights(weights_df)
 
@@ -472,6 +488,8 @@ def build_arg_parser():
     parser.add_argument("--n-workers", type=int, default=N_JOBS)
     parser.add_argument("--max-subjects", type=int, default=None)
     parser.add_argument("--min-bic-advantage", type=float, default=0.0)
+    parser.add_argument("--mvpa-tmin", type=float, default=0.3)
+    parser.add_argument("--mvpa-tmax", type=float, default=0.6)
     return parser
 
 
@@ -482,4 +500,6 @@ if __name__ == "__main__":
         n_workers=args.n_workers,
         max_subjects=args.max_subjects,
         min_bic_advantage=args.min_bic_advantage,
+        mvpa_tmin=args.mvpa_tmin,
+        mvpa_tmax=args.mvpa_tmax,
     )

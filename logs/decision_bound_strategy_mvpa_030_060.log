@@ -1,0 +1,33 @@
+[decision bound] Running 19 subjects (n_workers=8)
+[decision bound] using threading backend for parallel subject fits
+[decision bound] subject 2: 75 fit rows
+[decision bound] subject 5: 75 fit rows
+[decision bound] subject 1: 75 fit rows
+[decision bound] subject 6: 75 fit rows
+[decision bound] subject 8: 75 fit rows
+[decision bound] subject 4: 75 fit rows
+[decision bound] subject 3: 75 fit rows
+[decision bound] subject 7: 75 fit rows
+[decision bound] subject 14: 60 fit rows
+[decision bound] subject 12: 75 fit rows
+[decision bound] subject 11: 75 fit rows
+[decision bound] subject 10: 75 fit rows
+[decision bound] subject 9: 75 fit rows
+[decision bound] subject 15: 75 fit rows
+[decision bound] subject 13: 75 fit rows
+[decision bound] subject 16: 75 fit rows
+[decision bound] subject 17: 75 fit rows
+[decision bound] subject 18: 75 fit rows
+[decision bound] subject 19: 75 fit rows
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_block_model_fits.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_block_model_weights.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_block_model_summary.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_strategy_switch_subject.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_mvpa_split_summary.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_mvpa_switch_link.csv
+[decision bound] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/decision_bound_qc_log.csv
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_block_model_evidence.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_glc_weight_subject_trajectories.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_best_model_heatmap.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_glc_advantage_heatmap.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_mvpa_switch_link.png

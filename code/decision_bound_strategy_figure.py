@@ -196,6 +196,9 @@ def save_glc_advantage_heatmap(weights_df, switch_df, figures_dir):
 def save_mvpa_link_figure(link_df, figures_dir):
     fig_path = figures_dir / "decision_bound_mvpa_switch_link.png"
     d = link_df.copy()
+    window_label = ""
+    if {"mvpa_tmin", "mvpa_tmax"}.issubset(d.columns) and d["mvpa_tmin"].notna().any():
+        window_label = f" ({float(d['mvpa_tmin'].dropna().iloc[0]):.1f}-{float(d['mvpa_tmax'].dropna().iloc[0]):.1f} s)"
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.8))
     finite = d[np.isfinite(d["strategy_switch_block"]) & np.isfinite(d["mvpa_best_split_block"])].copy()
     if finite.empty:
@@ -217,9 +220,9 @@ def save_mvpa_link_figure(link_df, figures_dir):
         axes[0].plot([lo, hi], [lo, hi], color="0.4", linestyle="--", linewidth=1.0)
         if len(finite) > 2:
             corr = np.corrcoef(finite["strategy_switch_block"], finite["mvpa_best_split_block"])[0, 1]
-            axes[0].set_title(f"Subject Switch Match (r={corr:.2f})")
+            axes[0].set_title(f"Subject Switch Match{window_label} (r={corr:.2f})")
         else:
-            axes[0].set_title("Subject Switch Match")
+            axes[0].set_title(f"Subject Switch Match{window_label}")
     axes[0].set_xlabel("Behavioral GLC switch block")
     axes[0].set_ylabel("Best MVPA discrete split block")
     axes[0].set_xlim(0.5, 25.5)
@@ -235,7 +238,7 @@ def save_mvpa_link_figure(link_df, figures_dir):
             axes[1].scatter(np.full(len(arr), i) + jitter, arr, color="#f58518", alpha=0.85, edgecolor="0.2", linewidth=0.4)
     axes[1].set_ylabel("Best MVPA discrete split block")
     axes[1].set_xlabel("Behavioral switch group")
-    axes[1].set_title("MVPA Split by Behavioral Switch Group")
+    axes[1].set_title(f"MVPA Split by Behavioral Switch Group{window_label}")
     axes[1].grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
