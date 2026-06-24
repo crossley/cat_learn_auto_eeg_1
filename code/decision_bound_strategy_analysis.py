@@ -419,23 +419,15 @@ def run_decision_bound_strategy_analysis(
     if n_workers == 1:
         results = [process_subject(task) for task in tasks]
     else:
-        try:
-            if threadpool_limits is None:
-                results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(iter_jobs())
-            else:
-                with threadpool_limits(limits=1):
-                    results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(iter_jobs())
-        except PermissionError as exc:
-            print(
-                "[decision bound] loky process backend unavailable "
-                f"({exc}); falling back to threading backend",
-                flush=True,
-            )
-            if threadpool_limits is None:
+        print(
+            "[decision bound] using threading backend for parallel subject fits",
+            flush=True,
+        )
+        if threadpool_limits is None:
+            results = Parallel(n_jobs=n_workers, backend="threading", verbose=0)(iter_jobs())
+        else:
+            with threadpool_limits(limits=1):
                 results = Parallel(n_jobs=n_workers, backend="threading", verbose=0)(iter_jobs())
-            else:
-                with threadpool_limits(limits=1):
-                    results = Parallel(n_jobs=n_workers, backend="threading", verbose=0)(iter_jobs())
 
     fit_rows = []
     qc_rows = []
