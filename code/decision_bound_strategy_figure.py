@@ -63,52 +63,130 @@ def save_model_evidence_figure(summary_df, figures_dir):
     return fig_path
 
 
-def save_switch_raster(switch_df, weights_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_strategy_switch_raster.png"
-    subjects = sorted(switch_df["subject"].dropna().astype(int).unique().tolist())
-    subj_to_y = {subject: i for i, subject in enumerate(subjects)}
+def subject_order_by_switch(switch_df):
+    d = switch_df.copy()
+    d["sort_switch"] = d["strategy_switch_block"].fillna(999).astype(float)
+    return d.sort_values(["sort_switch", "subject"])["subject"].astype(int).tolist()
+
+
+def save_glc_weight_subject_trajectories(weights_df, switch_df, figures_dir):
+    fig_path = figures_dir / "decision_bound_glc_weight_subject_trajectories.png"
     glc = weights_df[weights_df["model"] == "glc"].copy()
-    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.28 * len(subjects) + 1.3)))
-    for subject, g in glc.groupby("subject"):
-        if int(subject) not in subj_to_y:
+    subjects = subject_order_by_switch(switch_df)
+    fig, ax = plt.subplots(figsize=(10.5, 4.8))
+    for subject in subjects:
+        g = glc[glc["subject"] == subject].sort_values("block")
+        if g.empty:
             continue
-        y = subj_to_y[int(subject)]
-        g = g.sort_values("block")
-        sizes = 25.0 + 125.0 * np.clip(g["bic_weight"].to_numpy(dtype=float), 0.0, 1.0)
-        ax.scatter(
+        ax.plot(
             g["block"],
-            np.full(len(g), y),
-            s=sizes,
-            c=g["glc_bic_advantage_vs_best_1d"],
-            cmap="RdBu_r",
-            vmin=-20,
-            vmax=20,
-            alpha=0.85,
-            edgecolor="0.25",
-            linewidth=0.25,
+            g["bic_weight"],
+            color="0.62",
+            linewidth=0.9,
+            alpha=0.55,
         )
+    summary = (
+        glc.groupby("block", as_index=False)
+        .agg(
+            bic_weight_mean=("bic_weight", "mean"),
+            bic_weight_sem=(
+                "bic_weight",
+                lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))) if len(x) > 1 else np.nan,
+            ),
+        )
+        .sort_values("block")
+    )
+    x = summary["block"].to_numpy(dtype=float)
+    y = summary["bic_weight_mean"].to_numpy(dtype=float)
+    err = summary["bic_weight_sem"].fillna(0.0).to_numpy(dtype=float)
+    ax.plot(x, y, color="#f58518", linewidth=2.3, marker="o", label="Group mean")
+    ax.fill_between(x, y - err, y + err, color="#f58518", alpha=0.18, linewidth=0)
+    for boundary in [5.5, 10.5, 15.5, 20.5]:
+        ax.axvline(boundary, color="0.82", linewidth=0.8)
+    ax.set_xlabel("Accumulated block")
+    ax.set_ylabel("GLC BIC model weight")
+    ax.set_title("Subject-Level GLC Evidence Trajectories")
+    ax.set_xticks(np.arange(1, 26, 2))
+    ax.set_ylim(-0.03, 1.03)
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def save_best_model_heatmap(weights_df, switch_df, figures_dir):
+    fig_path = figures_dir / "decision_bound_best_model_heatmap.png"
+    subjects = subject_order_by_switch(switch_df)
+    models = ["unix", "uniy", "glc"]
+    model_to_val = {model: idx for idx, model in enumerate(models)}
+    mat = np.full((len(subjects), 25), np.nan)
+    best = weights_df[weights_df["is_best_model"].astype(bool)].copy()
+    for row_i, subject in enumerate(subjects):
+        g = best[best["subject"] == subject]
+        for _, row in g.iterrows():
+            block = int(row["block"])
+            if 1 <= block <= 25:
+                mat[row_i, block - 1] = model_to_val[str(row["model"])]
+    cmap = plt.matplotlib.colors.ListedColormap(["#4c78a8", "#72b7b2", "#f58518"])
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.28 * len(subjects) + 1.3)))
+    im = ax.imshow(np.ma.masked_invalid(mat), aspect="auto", interpolation="nearest", cmap=cmap, vmin=-0.5, vmax=2.5)
     for _, row in switch_df.iterrows():
         subject = int(row["subject"])
-        if subject not in subj_to_y or not np.isfinite(row["strategy_switch_block"]):
+        if subject not in subjects or not np.isfinite(row["strategy_switch_block"]):
             continue
-        ax.scatter(
-            [row["strategy_switch_block"]],
-            [subj_to_y[subject]],
-            marker="|",
-            s=260,
-            c="black",
-            linewidth=2.0,
-        )
-    for boundary in [5.5, 10.5, 15.5, 20.5]:
-        ax.axvline(boundary, color="0.8", linewidth=0.8)
+        y = subjects.index(subject)
+        ax.scatter(row["strategy_switch_block"] - 1, y, marker="|", s=260, c="black", linewidth=2.0)
+    for boundary in [4.5, 9.5, 14.5, 19.5]:
+        ax.axvline(boundary, color="white", linewidth=1.0)
     ax.set_yticks(np.arange(len(subjects)))
     ax.set_yticklabels([str(s) for s in subjects])
-    ax.set_xticks(np.arange(1, 26, 2))
+    ax.set_xticks(np.arange(0, 25, 2))
+    ax.set_xticklabels([str(x) for x in range(1, 26, 2)])
     ax.set_xlabel("Accumulated block")
     ax.set_ylabel("Subject")
-    ax.set_title("GRT Strategy Switches and GLC Evidence")
-    cbar = fig.colorbar(ax.collections[0], ax=ax, pad=0.02)
-    cbar.set_label("GLC BIC advantage vs best 1D")
+    ax.set_title("Best-Fitting Decision-Bound Model by Subject and Block")
+    cbar = fig.colorbar(im, ax=ax, ticks=[0, 1, 2], pad=0.02)
+    cbar.ax.set_yticklabels(["1D x", "1D y", "GLC"])
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def save_glc_advantage_heatmap(weights_df, switch_df, figures_dir):
+    fig_path = figures_dir / "decision_bound_glc_advantage_heatmap.png"
+    subjects = subject_order_by_switch(switch_df)
+    glc = weights_df[weights_df["model"] == "glc"].copy()
+    mat = np.full((len(subjects), 25), np.nan)
+    for row_i, subject in enumerate(subjects):
+        g = glc[glc["subject"] == subject]
+        for _, row in g.iterrows():
+            block = int(row["block"])
+            if 1 <= block <= 25:
+                mat[row_i, block - 1] = float(row["glc_bic_advantage_vs_best_1d"])
+    finite = mat[np.isfinite(mat)]
+    vmax = 20.0 if len(finite) == 0 else max(5.0, min(60.0, float(np.nanpercentile(np.abs(finite), 90))))
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.28 * len(subjects) + 1.3)))
+    im = ax.imshow(np.ma.masked_invalid(mat), aspect="auto", interpolation="nearest", cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+    for _, row in switch_df.iterrows():
+        subject = int(row["subject"])
+        if subject not in subjects or not np.isfinite(row["strategy_switch_block"]):
+            continue
+        y = subjects.index(subject)
+        ax.scatter(row["strategy_switch_block"] - 1, y, marker="|", s=260, c="black", linewidth=2.0)
+    for boundary in [4.5, 9.5, 14.5, 19.5]:
+        ax.axvline(boundary, color="0.75", linewidth=1.0)
+    ax.set_yticks(np.arange(len(subjects)))
+    ax.set_yticklabels([str(s) for s in subjects])
+    ax.set_xticks(np.arange(0, 25, 2))
+    ax.set_xticklabels([str(x) for x in range(1, 26, 2)])
+    ax.set_xlabel("Accumulated block")
+    ax.set_ylabel("Subject")
+    ax.set_title("GLC BIC Advantage Over Best 1D Model")
+    cbar = fig.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label("BIC advantage: GLC - best 1D")
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -175,7 +253,9 @@ def save_decision_bound_strategy_figures(output_dir=OUTPUT_DIR, figures_dir=FIGU
     link = require_csv(output_dir / "decision_bound_mvpa_switch_link.csv")
     paths = {
         "model_evidence": save_model_evidence_figure(summary, figures_dir),
-        "switch_raster": save_switch_raster(switch, weights, figures_dir),
+        "glc_weight_subject_trajectories": save_glc_weight_subject_trajectories(weights, switch, figures_dir),
+        "best_model_heatmap": save_best_model_heatmap(weights, switch, figures_dir),
+        "glc_advantage_heatmap": save_glc_advantage_heatmap(weights, switch, figures_dir),
         "mvpa_link": save_mvpa_link_figure(link, figures_dir),
     }
     for path in paths.values():
