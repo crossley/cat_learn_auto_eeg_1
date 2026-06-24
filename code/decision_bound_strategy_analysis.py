@@ -127,6 +127,18 @@ def _fit_glc(xy, y_resp, polarity, b_bounds, sigma_bounds):
     return _best_minimize(objective, starts, bounds)
 
 
+def _fit_fixed_line(xy, y_resp, a1, a2, b, polarity, sigma_bounds):
+    def objective(params):
+        log_sigma = params[0]
+        sigma = float(np.exp(log_sigma))
+        p_b = _line_probability_b(xy, a1, a2, b, sigma, polarity)
+        return _neg_loglike(y_resp, p_b)
+
+    starts = [[np.log(5.0)], [np.log(12.0)], [np.log(30.0)]]
+    bounds = [(np.log(sigma_bounds[0]), np.log(sigma_bounds[1]))]
+    return _best_minimize(objective, starts, bounds)
+
+
 def _best_minimize(objective, starts, bounds):
     best = None
     for start in starts:
@@ -201,6 +213,50 @@ def _fit_model_family(xy, y_resp, model, bounds):
     return min(fits, key=lambda row: row["bic"])
 
 
+def _fit_optimal_fixed_model(xy, y_resp, model, bounds):
+    specs = {
+        "unix": {"a1": 1.0, "a2": 0.0, "b": -50.0, "criterion": 50.0},
+        "uniy": {"a1": 0.0, "a2": 1.0, "b": -50.0, "criterion": 50.0},
+        "glc": {"a1": 1.0, "a2": -1.0, "b": 0.0, "criterion": np.nan},
+    }
+    if model not in specs:
+        raise ValueError(f"unknown optimal fixed decision-bound model: {model}")
+    spec = specs[model]
+    fits = []
+    for polarity in [1, -1]:
+        result = _fit_fixed_line(
+            xy,
+            y_resp,
+            spec["a1"],
+            spec["a2"],
+            spec["b"],
+            polarity,
+            bounds["sigma"],
+        )
+        log_sigma = result.x[0]
+        log_likelihood = -float(result.fun)
+        aic, bic = _criteria(log_likelihood, len(y_resp), 1)
+        fits.append(
+            {
+                "model": model,
+                "polarity": int(polarity),
+                "log_likelihood": log_likelihood,
+                "aic": aic,
+                "bic": bic,
+                "n_params": 1,
+                "fit_success": bool(result.success),
+                "fit_message": str(result.message),
+                "a1": float(spec["a1"]),
+                "a2": float(spec["a2"]),
+                "b": float(spec["b"]),
+                "criterion": float(spec["criterion"]) if np.isfinite(spec["criterion"]) else np.nan,
+                "theta": float(np.arctan2(spec["a2"], spec["a1"])),
+                "sigma": float(np.exp(log_sigma)),
+            }
+        )
+    return min(fits, key=lambda row: row["bic"])
+
+
 def _bounds_for_xy(xy):
     x_min, y_min = np.nanmin(xy, axis=0)
     x_max, y_max = np.nanmax(xy, axis=0)
@@ -213,13 +269,20 @@ def _bounds_for_xy(xy):
     }
 
 
-def fit_block_models(block_df):
+def fit_block_models(block_df, bound_mode="flexible"):
     xy = block_df[["x", "y"]].to_numpy(dtype=float)
     y_resp = _response_vector(block_df["resp"])
     bounds = _bounds_for_xy(xy)
     rows = []
     for model in ["unix", "uniy", "glc"]:
-        rows.append(_fit_model_family(xy, y_resp, model, bounds))
+        if bound_mode == "flexible":
+            row = _fit_model_family(xy, y_resp, model, bounds)
+        elif bound_mode == "optimal_fixed":
+            row = _fit_optimal_fixed_model(xy, y_resp, model, bounds)
+        else:
+            raise ValueError(f"unknown bound_mode: {bound_mode}")
+        row["bound_mode"] = bound_mode
+        rows.append(row)
     return rows
 
 
@@ -242,11 +305,12 @@ def load_block_behaviour(max_subjects=None):
 def process_subject(task):
     subject = int(task["subject"])
     d_sub = task["beh"]
+    bound_mode = task.get("bound_mode", "flexible")
     rows = []
     qc_rows = []
     for block, g in d_sub.groupby("block"):
         try:
-            model_rows = fit_block_models(g)
+            model_rows = fit_block_models(g, bound_mode=bound_mode)
             for row in model_rows:
                 row.update(
                     {
@@ -264,11 +328,12 @@ def process_subject(task):
         except Exception as exc:
             qc_rows.append(
                 {
-                    "subject": subject,
-                    "block": int(block),
-                    "stage": "fit_block",
-                    "reason": "fit_error",
-                    "detail": str(exc),
+                        "subject": subject,
+                        "bound_mode": bound_mode,
+                        "block": int(block),
+                        "stage": "fit_block",
+                        "reason": "fit_error",
+                        "detail": str(exc),
                 }
             )
     print(f"[decision bound] subject {subject}: {len(rows)} fit rows", flush=True)
@@ -389,6 +454,7 @@ def summarize_block_weights(weights_df):
         block, day, day_block, model = key
         rows.append(
             {
+                "bound_mode": str(g["bound_mode"].dropna().iloc[0]) if "bound_mode" in g.columns and g["bound_mode"].notna().any() else "unknown",
                 "block": int(block),
                 "day": int(day),
                 "day_block": int(day_block),
@@ -411,18 +477,25 @@ def run_decision_bound_strategy_analysis(
     min_bic_advantage=0.0,
     mvpa_tmin=0.3,
     mvpa_tmax=0.6,
+    bound_mode="flexible",
+    output_label=None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = "decision_bound" if not output_label else f"decision_bound_{output_label}"
     beh = load_block_behaviour(max_subjects=max_subjects)
     tasks = [
-        {"subject": int(subject), "beh": g.copy()}
+        {"subject": int(subject), "beh": g.copy(), "bound_mode": bound_mode}
         for subject, g in sorted(beh.groupby("subject"))
     ]
     if n_workers is None:
         n_workers = N_JOBS
     n_workers = max(1, int(n_workers))
-    print(f"[decision bound] Running {len(tasks)} subjects (n_workers={n_workers})", flush=True)
+    print(
+        f"[decision bound] Running {len(tasks)} subjects "
+        f"(n_workers={n_workers}, bound_mode={bound_mode})",
+        flush=True,
+    )
 
     def iter_jobs():
         for task in tasks:
@@ -449,7 +522,7 @@ def run_decision_bound_strategy_analysis(
     fits_df = pd.DataFrame(fit_rows)
     qc_df = pd.DataFrame(qc_rows, columns=["subject", "block", "stage", "reason", "detail"])
     if fits_df.empty:
-        qc_df.to_csv(output_dir / "decision_bound_qc_log.csv", index=False)
+        qc_df.to_csv(output_dir / f"{prefix}_qc_log.csv", index=False)
         raise RuntimeError("Decision-bound fitting produced no valid rows")
     weights_df = add_model_weights(fits_df)
     switch_df = infer_strategy_switch(weights_df, min_bic_advantage=min_bic_advantage)
@@ -462,13 +535,13 @@ def run_decision_bound_strategy_analysis(
     block_summary = summarize_block_weights(weights_df)
 
     paths = {
-        "fits": output_dir / "decision_bound_block_model_fits.csv",
-        "weights": output_dir / "decision_bound_block_model_weights.csv",
-        "block_summary": output_dir / "decision_bound_block_model_summary.csv",
-        "switch": output_dir / "decision_bound_strategy_switch_subject.csv",
-        "mvpa_split_summary": output_dir / "decision_bound_mvpa_split_summary.csv",
-        "mvpa_link": output_dir / "decision_bound_mvpa_switch_link.csv",
-        "qc": output_dir / "decision_bound_qc_log.csv",
+        "fits": output_dir / f"{prefix}_block_model_fits.csv",
+        "weights": output_dir / f"{prefix}_block_model_weights.csv",
+        "block_summary": output_dir / f"{prefix}_block_model_summary.csv",
+        "switch": output_dir / f"{prefix}_strategy_switch_subject.csv",
+        "mvpa_split_summary": output_dir / f"{prefix}_mvpa_split_summary.csv",
+        "mvpa_link": output_dir / f"{prefix}_mvpa_switch_link.csv",
+        "qc": output_dir / f"{prefix}_qc_log.csv",
     }
     fits_df.to_csv(paths["fits"], index=False)
     weights_df.to_csv(paths["weights"], index=False)
@@ -490,6 +563,8 @@ def build_arg_parser():
     parser.add_argument("--min-bic-advantage", type=float, default=0.0)
     parser.add_argument("--mvpa-tmin", type=float, default=0.3)
     parser.add_argument("--mvpa-tmax", type=float, default=0.6)
+    parser.add_argument("--bound-mode", choices=["flexible", "optimal_fixed"], default="flexible")
+    parser.add_argument("--output-label", default=None)
     return parser
 
 
@@ -502,4 +577,6 @@ if __name__ == "__main__":
         min_bic_advantage=args.min_bic_advantage,
         mvpa_tmin=args.mvpa_tmin,
         mvpa_tmax=args.mvpa_tmax,
+        bound_mode=args.bound_mode,
+        output_label=args.output_label,
     )

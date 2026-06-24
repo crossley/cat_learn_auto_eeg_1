@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 from pathlib import Path
 
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
@@ -33,8 +34,12 @@ def require_csv(path):
     return d
 
 
-def save_model_evidence_figure(summary_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_block_model_evidence.png"
+def _prefix(output_label=None):
+    return "decision_bound" if not output_label else f"decision_bound_{output_label}"
+
+
+def save_model_evidence_figure(summary_df, figures_dir, output_label=None):
+    fig_path = figures_dir / f"{_prefix(output_label)}_block_model_evidence.png"
     d = summary_df.copy()
     fig, ax = plt.subplots(figsize=(10.5, 4.8))
     colors = {"unix": "#4c78a8", "uniy": "#72b7b2", "glc": "#f58518"}
@@ -52,7 +57,11 @@ def save_model_evidence_figure(summary_df, figures_dir):
         ax.axvline(boundary, color="0.8", linewidth=0.8)
     ax.set_xlabel("Accumulated block")
     ax.set_ylabel("BIC model weight")
-    ax.set_title("Decision-Bound Model Evidence Over Blocks")
+    title = "Decision-Bound Model Evidence Over Blocks"
+    if "bound_mode" in d.columns and d["bound_mode"].notna().any():
+        mode = str(d["bound_mode"].dropna().iloc[0]).replace("_", " ")
+        title = f"{title}: {mode}"
+    ax.set_title(title)
     ax.set_xticks(np.arange(1, 26, 2))
     ax.set_ylim(-0.03, 1.03)
     ax.grid(alpha=0.25)
@@ -69,8 +78,8 @@ def subject_order_by_switch(switch_df):
     return d.sort_values(["sort_switch", "subject"])["subject"].astype(int).tolist()
 
 
-def save_glc_weight_subject_trajectories(weights_df, switch_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_glc_weight_subject_trajectories.png"
+def save_glc_weight_subject_trajectories(weights_df, switch_df, figures_dir, output_label=None):
+    fig_path = figures_dir / f"{_prefix(output_label)}_glc_weight_subject_trajectories.png"
     glc = weights_df[weights_df["model"] == "glc"].copy()
     subjects = subject_order_by_switch(switch_df)
     fig, ax = plt.subplots(figsize=(10.5, 4.8))
@@ -116,8 +125,8 @@ def save_glc_weight_subject_trajectories(weights_df, switch_df, figures_dir):
     return fig_path
 
 
-def save_best_model_heatmap(weights_df, switch_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_best_model_heatmap.png"
+def save_best_model_heatmap(weights_df, switch_df, figures_dir, output_label=None):
+    fig_path = figures_dir / f"{_prefix(output_label)}_best_model_heatmap.png"
     subjects = subject_order_by_switch(switch_df)
     models = ["unix", "uniy", "glc"]
     model_to_val = {model: idx for idx, model in enumerate(models)}
@@ -155,8 +164,8 @@ def save_best_model_heatmap(weights_df, switch_df, figures_dir):
     return fig_path
 
 
-def save_glc_advantage_heatmap(weights_df, switch_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_glc_advantage_heatmap.png"
+def save_glc_advantage_heatmap(weights_df, switch_df, figures_dir, output_label=None):
+    fig_path = figures_dir / f"{_prefix(output_label)}_glc_advantage_heatmap.png"
     subjects = subject_order_by_switch(switch_df)
     glc = weights_df[weights_df["model"] == "glc"].copy()
     mat = np.full((len(subjects), 25), np.nan)
@@ -193,8 +202,8 @@ def save_glc_advantage_heatmap(weights_df, switch_df, figures_dir):
     return fig_path
 
 
-def save_mvpa_link_figure(link_df, figures_dir):
-    fig_path = figures_dir / "decision_bound_mvpa_switch_link.png"
+def save_mvpa_link_figure(link_df, figures_dir, output_label=None):
+    fig_path = figures_dir / f"{_prefix(output_label)}_mvpa_switch_link.png"
     d = link_df.copy()
     window_label = ""
     if {"mvpa_tmin", "mvpa_tmax"}.issubset(d.columns) and d["mvpa_tmin"].notna().any():
@@ -246,20 +255,21 @@ def save_mvpa_link_figure(link_df, figures_dir):
     return fig_path
 
 
-def save_decision_bound_strategy_figures(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR):
+def save_decision_bound_strategy_figures(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR, output_label=None):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
-    weights = require_csv(output_dir / "decision_bound_block_model_weights.csv")
-    summary = require_csv(output_dir / "decision_bound_block_model_summary.csv")
-    switch = require_csv(output_dir / "decision_bound_strategy_switch_subject.csv")
-    link = require_csv(output_dir / "decision_bound_mvpa_switch_link.csv")
+    prefix = _prefix(output_label)
+    weights = require_csv(output_dir / f"{prefix}_block_model_weights.csv")
+    summary = require_csv(output_dir / f"{prefix}_block_model_summary.csv")
+    switch = require_csv(output_dir / f"{prefix}_strategy_switch_subject.csv")
+    link = require_csv(output_dir / f"{prefix}_mvpa_switch_link.csv")
     paths = {
-        "model_evidence": save_model_evidence_figure(summary, figures_dir),
-        "glc_weight_subject_trajectories": save_glc_weight_subject_trajectories(weights, switch, figures_dir),
-        "best_model_heatmap": save_best_model_heatmap(weights, switch, figures_dir),
-        "glc_advantage_heatmap": save_glc_advantage_heatmap(weights, switch, figures_dir),
-        "mvpa_link": save_mvpa_link_figure(link, figures_dir),
+        "model_evidence": save_model_evidence_figure(summary, figures_dir, output_label=output_label),
+        "glc_weight_subject_trajectories": save_glc_weight_subject_trajectories(weights, switch, figures_dir, output_label=output_label),
+        "best_model_heatmap": save_best_model_heatmap(weights, switch, figures_dir, output_label=output_label),
+        "glc_advantage_heatmap": save_glc_advantage_heatmap(weights, switch, figures_dir, output_label=output_label),
+        "mvpa_link": save_mvpa_link_figure(link, figures_dir, output_label=output_label),
     }
     for path in paths.values():
         print(f"[decision bound figure] wrote {path}", flush=True)
@@ -267,4 +277,13 @@ def save_decision_bound_strategy_figures(output_dir=OUTPUT_DIR, figures_dir=FIGU
 
 
 if __name__ == "__main__":
-    save_decision_bound_strategy_figures()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--figures-dir", default=str(FIGURES_DIR))
+    parser.add_argument("--output-label", default=None)
+    args = parser.parse_args()
+    save_decision_bound_strategy_figures(
+        output_dir=args.output_dir,
+        figures_dir=args.figures_dir,
+        output_label=args.output_label,
+    )
