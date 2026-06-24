@@ -87,7 +87,7 @@ def classify_subjects(glc_mat, threshold=6.0):
     return d.sort_values(["group_order", "early_glc_mean_blocks_1_2", "subject"], ascending=[True, False, True])
 
 
-def mvpa_split_evidence(mvpa, tmin=0.3, tmax=0.6):
+def mvpa_split_evidence(mvpa, tmin=0.3, tmax=0.6, metric="baseline"):
     d = mvpa[
         (mvpa["model"] == "discrete")
         & np.isfinite(mvpa["split_block"])
@@ -96,16 +96,23 @@ def mvpa_split_evidence(mvpa, tmin=0.3, tmax=0.6):
     ].copy()
     if d.empty:
         raise ValueError("No MVPA discrete rows in requested diagnostic window")
-    d["evidence_over_baseline"] = -d["delta_bic_baseline"].astype(float)
+    if metric == "baseline":
+        value_col = "evidence_over_baseline"
+        d[value_col] = -d["delta_bic_baseline"].astype(float)
+    elif metric == "relative_best":
+        value_col = "evidence_relative_best"
+        d[value_col] = -d["delta_bic_best"].astype(float)
+    else:
+        raise ValueError(f"unknown MVPA split metric: {metric}")
     split = (
         d.groupby(["subject", "split_block"], as_index=False)
-        .agg(mean_evidence_over_baseline=("evidence_over_baseline", "mean"))
+        .agg(mean_evidence=(value_col, "mean"))
         .sort_values(["subject", "split_block"])
     )
     mat = split.pivot_table(
         index="subject",
         columns="split_block",
-        values="mean_evidence_over_baseline",
+        values="mean_evidence",
         aggfunc="mean",
     )
     mat = mat.reindex(columns=np.arange(1, 25))
@@ -141,8 +148,8 @@ def save_glc_heatmap(glc_mat, groups, figures_dir, output_label, threshold):
     return fig_path
 
 
-def save_linked_heatmap(glc_mat, mvpa_mat, groups, figures_dir, output_label, tmin, tmax):
-    fig_path = figures_dir / f"{_prefix(output_label)}_diagnostic_glc_mvpa_linked_heatmaps.png"
+def save_linked_heatmap(glc_mat, mvpa_mat, groups, figures_dir, output_label, tmin, tmax, suffix, mvpa_label, relative=False):
+    fig_path = figures_dir / f"{_prefix(output_label)}_diagnostic_glc_mvpa_{suffix}_linked_heatmaps.png"
     order = groups["subject"].tolist()
     glc = glc_mat.reindex(order)
     mvpa = mvpa_mat.reindex(order)
@@ -155,12 +162,19 @@ def save_linked_heatmap(glc_mat, mvpa_mat, groups, figures_dir, output_label, tm
 
     mvpa_vals = mvpa.to_numpy(dtype=float)
     finite_mvpa = mvpa_vals[np.isfinite(mvpa_vals)]
-    mvpa_vmax = max(5.0, min(80.0, float(np.nanpercentile(np.abs(finite_mvpa), 90)))) if len(finite_mvpa) else 10.0
-    im1 = axes[1].imshow(mvpa_vals, aspect="auto", cmap="viridis", vmin=np.nanmin(finite_mvpa) if len(finite_mvpa) else 0, vmax=mvpa_vmax)
+    if relative:
+        mvpa_vmin = min(-5.0, max(-80.0, float(np.nanpercentile(finite_mvpa, 10)))) if len(finite_mvpa) else -10.0
+        mvpa_vmax = 0.0
+        mvpa_cmap = "magma"
+    else:
+        mvpa_vmin = np.nanmin(finite_mvpa) if len(finite_mvpa) else 0.0
+        mvpa_vmax = max(5.0, min(80.0, float(np.nanpercentile(np.abs(finite_mvpa), 90)))) if len(finite_mvpa) else 10.0
+        mvpa_cmap = "viridis"
+    im1 = axes[1].imshow(mvpa_vals, aspect="auto", cmap=mvpa_cmap, vmin=mvpa_vmin, vmax=mvpa_vmax)
 
     for ax, n_cols, title in [
         (axes[0], 25, "Behavior: optimal GLC evidence"),
-        (axes[1], 24, f"MVPA split evidence ({tmin:.1f}-{tmax:.1f} s)"),
+        (axes[1], 24, f"MVPA split evidence: {mvpa_label} ({tmin:.1f}-{tmax:.1f} s)"),
     ]:
         for boundary in [4.5, 9.5, 14.5, 19.5]:
             ax.axvline(boundary, color="0.65" if ax is axes[0] else "white", linewidth=0.9)
@@ -177,38 +191,46 @@ def save_linked_heatmap(glc_mat, mvpa_mat, groups, figures_dir, output_label, tm
     c0 = fig.colorbar(im0, ax=axes[0], pad=0.02)
     c0.set_label("GLC BIC advantage")
     c1 = fig.colorbar(im1, ax=axes[1], pad=0.02)
-    c1.set_label("MVPA evidence over baseline")
+    c1.set_label(mvpa_label)
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return fig_path
 
 
-def _mvpa_timecourse_table(mvpa):
+def _mvpa_timecourse_table(mvpa, metric="baseline"):
     d = mvpa[mvpa["model"].isin(["continuous", "discrete"])].copy()
-    d["evidence_over_baseline"] = -d["delta_bic_baseline"].astype(float)
+    if metric == "baseline":
+        value_col = "evidence_over_baseline"
+        d[value_col] = -d["delta_bic_baseline"].astype(float)
+    elif metric == "relative_best":
+        value_col = "evidence_relative_best"
+        d[value_col] = -d["delta_bic_best"].astype(float)
+    else:
+        raise ValueError(f"unknown MVPA timecourse metric: {metric}")
     cont = d[d["model"] == "continuous"].copy()
     cont["mvpa_model_set"] = "continuous"
     disc = d[d["model"] == "discrete"].copy()
     early = (
         disc[disc["split_block"].astype(float) <= 5]
         .groupby(["subject", "time_sec"], as_index=False)
-        .agg(evidence_over_baseline=("evidence_over_baseline", "max"))
+        .agg(evidence=(value_col, "max"))
     )
     early["mvpa_model_set"] = "day1_discrete"
     late = (
         disc[disc["split_block"].astype(float) > 5]
         .groupby(["subject", "time_sec"], as_index=False)
-        .agg(evidence_over_baseline=("evidence_over_baseline", "max"))
+        .agg(evidence=(value_col, "max"))
     )
     late["mvpa_model_set"] = "later_discrete"
-    cont = cont[["subject", "time_sec", "mvpa_model_set", "evidence_over_baseline"]]
+    cont = cont[["subject", "time_sec", "mvpa_model_set", value_col]].rename(columns={value_col: "evidence"})
     return pd.concat([cont, early, late], ignore_index=True)
 
 
-def save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label):
-    fig_path = figures_dir / f"{_prefix(output_label)}_diagnostic_group_mvpa_timecourses.png"
-    d = _mvpa_timecourse_table(mvpa).merge(groups[["subject", "behavior_group"]], on="subject", how="inner")
+def save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label, metric="baseline"):
+    suffix = "relative_group_mvpa_timecourses" if metric == "relative_best" else "group_mvpa_timecourses"
+    fig_path = figures_dir / f"{_prefix(output_label)}_diagnostic_{suffix}.png"
+    d = _mvpa_timecourse_table(mvpa, metric=metric).merge(groups[["subject", "behavior_group"]], on="subject", how="inner")
     model_sets = ["continuous", "day1_discrete", "later_discrete"]
     group_order = ["already_glc", "later_glc", "weak_or_no_glc"]
     colors = {"already_glc": "#4c78a8", "later_glc": "#f58518", "weak_or_no_glc": "#54a24b"}
@@ -228,8 +250,8 @@ def save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label):
             summary = (
                 g.groupby("time_sec", as_index=False)
                 .agg(
-                    mean_evidence=("evidence_over_baseline", "mean"),
-                    sem_evidence=("evidence_over_baseline", sem),
+                    mean_evidence=("evidence", "mean"),
+                    sem_evidence=("evidence", sem),
                     n_subjects=("subject", "nunique"),
                 )
                 .sort_values("time_sec")
@@ -244,9 +266,55 @@ def save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label):
         ax.set_title(titles[model_set])
         ax.set_xlabel("time from stimulus (s)")
         ax.grid(alpha=0.25)
-    axes[0].set_ylabel("MVPA evidence over baseline")
+    y_label = "MVPA evidence over baseline" if metric == "baseline" else "MVPA evidence relative to best model"
+    axes[0].set_ylabel(y_label)
     axes[-1].legend(frameon=False, fontsize=8)
-    fig.suptitle("MVPA Model Evidence by Behavioral GLC Group", y=1.02)
+    title_suffix = "over baseline" if metric == "baseline" else "relative to best model"
+    fig.suptitle(f"MVPA Model Evidence by Behavioral GLC Group ({title_suffix})", y=1.02)
+    fig.tight_layout()
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
+
+
+def best_mvpa_model_identity(mvpa):
+    d = mvpa.copy()
+    discrete = d["model"].eq("discrete")
+    d["model_set"] = d["model"].astype(str)
+    d.loc[discrete & (d["split_block"].astype(float) <= 5), "model_set"] = "day1_discrete"
+    d.loc[discrete & (d["split_block"].astype(float) > 5), "model_set"] = "later_discrete"
+    idx = d.groupby(["subject", "time_sec"])["bic"].idxmin()
+    best = d.loc[idx, ["subject", "time_sec", "model_set"]].copy()
+    labels = ["baseline", "continuous", "day1_discrete", "later_discrete"]
+    label_to_val = {label: i for i, label in enumerate(labels)}
+    best["value"] = best["model_set"].map(label_to_val)
+    mat = best.pivot_table(index="subject", columns="time_sec", values="value", aggfunc="first")
+    return mat.sort_index(), labels
+
+
+def save_best_mvpa_identity_heatmap(mvpa, groups, figures_dir, output_label):
+    fig_path = figures_dir / f"{_prefix(output_label)}_diagnostic_best_mvpa_model_identity.png"
+    mat, labels = best_mvpa_model_identity(mvpa)
+    order = groups["subject"].tolist()
+    mat = mat.reindex(order)
+    times = mat.columns.to_numpy(dtype=float)
+    cmap = plt.matplotlib.colors.ListedColormap(["#bab0ac", "#4c78a8", "#f58518", "#54a24b"])
+    fig, ax = plt.subplots(figsize=(11.5, max(4.8, 0.28 * len(order) + 1.4)))
+    im = ax.imshow(mat.to_numpy(dtype=float), aspect="auto", interpolation="nearest", cmap=cmap, vmin=-0.5, vmax=3.5)
+    for y, group in enumerate(groups["behavior_group"].tolist()):
+        if y > 0 and group != groups["behavior_group"].iloc[y - 1]:
+            ax.axhline(y - 0.5, color="black", linewidth=1.0)
+    ax.axvline(np.argmin(np.abs(times - 0.0)), color="white", linewidth=0.8)
+    tick_idx = np.linspace(0, len(times) - 1, 7, dtype=int)
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels([f"{times[i]:.2f}" for i in tick_idx])
+    ax.set_yticks(np.arange(len(order)))
+    ax.set_yticklabels([str(s) for s in order])
+    ax.set_xlabel("time from stimulus (s)")
+    ax.set_ylabel("Subject, sorted by behavioral GLC group")
+    ax.set_title("Best MVPA Model Identity Over Time")
+    cbar = fig.colorbar(im, ax=ax, ticks=np.arange(len(labels)), pad=0.02)
+    cbar.ax.set_yticklabels(["baseline", "continuous", "day-1 discrete", "later discrete"])
     fig.tight_layout()
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -260,15 +328,41 @@ def save_diagnostics(output_dir=OUTPUT_DIR, figures_dir=FIGURES_DIR, output_labe
     weights, mvpa = load_inputs(output_dir, output_label)
     glc_mat = glc_matrix(weights)
     groups = classify_subjects(glc_mat, threshold=threshold)
-    mvpa_mat = mvpa_split_evidence(mvpa, tmin=mvpa_tmin, tmax=mvpa_tmax)
+    mvpa_baseline_mat = mvpa_split_evidence(mvpa, tmin=mvpa_tmin, tmax=mvpa_tmax, metric="baseline")
+    mvpa_relative_mat = mvpa_split_evidence(mvpa, tmin=mvpa_tmin, tmax=mvpa_tmax, metric="relative_best")
     prefix = _prefix(output_label)
     group_path = output_dir / f"{prefix}_diagnostic_behavior_groups.csv"
     groups.to_csv(group_path, index=False)
     paths = {
         "behavior_groups": group_path,
         "glc_heatmap": save_glc_heatmap(glc_mat, groups, figures_dir, output_label, threshold),
-        "linked_heatmaps": save_linked_heatmap(glc_mat, mvpa_mat, groups, figures_dir, output_label, mvpa_tmin, mvpa_tmax),
-        "group_mvpa_timecourses": save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label),
+        "baseline_linked_heatmaps": save_linked_heatmap(
+            glc_mat,
+            mvpa_baseline_mat,
+            groups,
+            figures_dir,
+            output_label,
+            mvpa_tmin,
+            mvpa_tmax,
+            suffix="baseline",
+            mvpa_label="MVPA evidence over baseline",
+            relative=False,
+        ),
+        "relative_linked_heatmaps": save_linked_heatmap(
+            glc_mat,
+            mvpa_relative_mat,
+            groups,
+            figures_dir,
+            output_label,
+            mvpa_tmin,
+            mvpa_tmax,
+            suffix="relative",
+            mvpa_label="MVPA evidence relative to best model",
+            relative=True,
+        ),
+        "best_mvpa_identity": save_best_mvpa_identity_heatmap(mvpa, groups, figures_dir, output_label),
+        "group_mvpa_timecourses": save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label, metric="baseline"),
+        "relative_group_mvpa_timecourses": save_group_mvpa_timecourses(mvpa, groups, figures_dir, output_label, metric="relative_best"),
     }
     for path in paths.values():
         print(f"[decision bound diagnostic] wrote {path}", flush=True)
