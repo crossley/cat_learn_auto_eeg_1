@@ -17,6 +17,7 @@ os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.mixture import GaussianMixture
@@ -34,7 +35,11 @@ except Exception:
     HMM_BACKEND = "gmm_state_surrogate"
     HMM_IMPORT_ERROR = "hmmlearn unavailable"
 
-from analysis_utils import parallel_collect
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:
+    threadpool_limits = None
+
 from sequence_feature_interface import load_feature_sequence, load_sequence_sessions
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -225,6 +230,7 @@ def fit_state_models_for_dataset(
     max_components: int = 12,
     random_state: int = 42,
     heldout_fraction: float = 0.2,
+    diagnostic_states: list[int] | None = None,
 ):
     X_flat, valid_obs = _as_clean_sequence(dataset.X)
     if X_flat.shape[0] < 10:
@@ -341,18 +347,35 @@ def fit_state_models_for_dataset(
     if not ok_rows:
         raise RuntimeError("no state model fit succeeded")
     best_states = int(min(ok_rows, key=lambda r: r["bic"])["n_states"])
-    best_model = fitted[best_states]
-    if GaussianHMM is not None:
-        posterior = best_model.predict_proba(X_all, lengths=lengths_all)
-        states = best_model.predict(X_all, lengths=lengths_all)
-    else:
-        posterior = best_model.predict_proba(X_all)
-        states = best_model.predict(X_all)
-    time_rows, trial_rows, dwell_rows, transition_rows = _state_summary_rows(
-        posterior, states, valid_obs, dataset, best_states, model_family
-    )
     for row in model_rows:
         row["selected_by_bic"] = bool(row["n_states"] == best_states and row["status"] == "ok")
+    requested_states = {best_states}
+    if diagnostic_states is not None:
+        requested_states.update(int(x) for x in diagnostic_states)
+    requested_states = sorted(x for x in requested_states if x in fitted)
+
+    time_rows = []
+    trial_rows = []
+    dwell_rows = []
+    transition_rows = []
+    for n_states in requested_states:
+        model = fitted[n_states]
+        if GaussianHMM is not None:
+            posterior = model.predict_proba(X_all, lengths=lengths_all)
+            states = model.predict(X_all, lengths=lengths_all)
+        else:
+            posterior = model.predict_proba(X_all)
+            states = model.predict(X_all)
+        state_rows = _state_summary_rows(
+            posterior, states, valid_obs, dataset, n_states, model_family
+        )
+        for rows in state_rows:
+            for row in rows:
+                row["selected_by_bic"] = bool(n_states == best_states)
+        time_rows.extend(state_rows[0])
+        trial_rows.extend(state_rows[1])
+        dwell_rows.extend(state_rows[2])
+        transition_rows.extend(state_rows[3])
     return {
         "model_rows": model_rows,
         "time_rows": time_rows,
@@ -364,6 +387,9 @@ def fit_state_models_for_dataset(
 
 def process_sequence_hmm_session(task: dict):
     session_item = task["session_item"]
+    subject = int(session_item.get("subject", -1))
+    day = int(session_item.get("day", -1))
+    session_file = session_item.get("epo_file", "")
     try:
         dataset = load_feature_sequence(
             session_item,
@@ -380,21 +406,64 @@ def process_sequence_hmm_session(task: dict):
             max_components=task["max_components"],
             random_state=task["random_state"],
             heldout_fraction=task["heldout_fraction"],
+            diagnostic_states=task.get("diagnostic_states"),
         )
-        return {"ok": True, **result}
+        return {
+            "ok": True,
+            "subject": subject,
+            "day": day,
+            "session_file": session_file,
+            **result,
+        }
     except Exception as exc:
         return {
             "ok": False,
             "qc": {
-                "session_file": session_item.get("epo_file", ""),
-                "subject": int(session_item.get("subject", -1)),
-                "day": int(session_item.get("day", -1)),
+                "session_file": session_file,
+                "subject": subject,
+                "day": day,
                 "feature_kind": task["feature_kind"],
                 "stage": "fit",
                 "reason": "analysis_error",
                 "detail": str(exc),
             },
         }
+
+
+def iter_parallel_hmm_results(tasks: list[dict], n_workers: int):
+    def delayed_items():
+        for task in tasks:
+            yield delayed(process_sequence_hmm_session)(task)
+
+    def make_iterator(backend: str):
+        return Parallel(
+            n_jobs=int(n_workers),
+            backend=backend,
+            verbose=0,
+            return_as="generator_unordered",
+        )(delayed_items())
+
+    try:
+        if threadpool_limits is None:
+            iterator = make_iterator("loky")
+            yield from iterator
+        else:
+            with threadpool_limits(limits=1):
+                iterator = make_iterator("loky")
+                yield from iterator
+    except PermissionError as exc:
+        print(
+            "[sequence HMM] loky process backend unavailable "
+            f"({exc}); falling back to threading backend",
+            flush=True,
+        )
+        if threadpool_limits is None:
+            iterator = make_iterator("threading")
+            yield from iterator
+        else:
+            with threadpool_limits(limits=1):
+                iterator = make_iterator("threading")
+                yield from iterator
 
 
 def _parse_feature_kwargs(args) -> dict:
@@ -427,6 +496,7 @@ def run_sequence_hmm_analysis(
     max_sessions: int | None = None,
     heldout_fraction: float = 0.2,
     feature_kwargs: dict | None = None,
+    diagnostic_states: list[int] | None = None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -485,6 +555,7 @@ def run_sequence_hmm_analysis(
             "use_feature_cache": use_feature_cache,
             "force_feature_recompute": force_feature_recompute,
             "feature_cache_verbose": feature_cache_verbose,
+            "diagnostic_states": diagnostic_states,
         }
         for item in sessions
     ]
@@ -509,9 +580,22 @@ def run_sequence_hmm_analysis(
             f"[sequence HMM] parallel batch running; progress JSON: {progress_json}",
             flush=True,
         )
-        raw_results = parallel_collect(process_sequence_hmm_session, tasks, n_workers)
-        write_progress("running", len(tasks), len(tasks))
-        print(f"[sequence HMM] completed {len(tasks)}/{len(tasks)} sessions", flush=True)
+        for done, result in enumerate(iter_parallel_hmm_results(tasks, n_workers), start=1):
+            raw_results.append(result)
+            write_progress("running", done, len(tasks))
+            status = "ok" if result.get("ok") else "failed"
+            if done == len(tasks) or done % 5 == 0 or not result.get("ok"):
+                if result.get("ok"):
+                    ident = f"sub={result.get('subject')} day={result.get('day')}"
+                else:
+                    qc = result.get("qc", {})
+                    ident = f"sub={qc.get('subject')} day={qc.get('day')}"
+                elapsed = (time.time() - t0) / 60.0
+                print(
+                    f"[sequence HMM] completed {done}/{len(tasks)} sessions "
+                    f"({ident}, {status}, elapsed={elapsed:.1f} min)",
+                    flush=True,
+                )
 
     model_rows = []
     time_rows = []
@@ -585,7 +669,21 @@ def build_arg_parser():
     parser.add_argument("--no-feature-cache", action="store_true")
     parser.add_argument("--force-feature-recompute", action="store_true")
     parser.add_argument("--feature-cache-verbose", action="store_true")
+    parser.add_argument(
+        "--diagnostic-states",
+        default="",
+        help="Comma-separated state counts to save full diagnostics for in addition to the BIC-selected model, e.g. 4,6.",
+    )
     return parser
+
+
+def _parse_diagnostic_states(text: str):
+    vals = []
+    for item in str(text).split(","):
+        item = item.strip()
+        if item:
+            vals.append(int(item))
+    return vals or None
 
 
 if __name__ == "__main__":
@@ -608,4 +706,5 @@ if __name__ == "__main__":
             "_force_feature_recompute": args.force_feature_recompute,
             "_feature_cache_verbose": args.feature_cache_verbose,
         },
+        diagnostic_states=_parse_diagnostic_states(args.diagnostic_states),
     )
