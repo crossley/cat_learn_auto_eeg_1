@@ -1,0 +1,41 @@
+[decision bound] Running 19 subjects (n_workers=8)
+joblib.externals.loky.process_executor._RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/externals/loky/process_executor.py", line 453, in _process_worker
+    call_item = call_queue.get(block=True, timeout=timeout)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/multiprocessing/queues.py", line 122, in get
+    return _ForkingPickler.loads(res)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: Can't get attribute 'ndtr' on <module 'joblib.externals.loky.backend.popen_loky_posix' from '/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/externals/loky/backend/popen_loky_posix.py'>
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/mq20185996/projects/cat_learn_auto_eeg/code/decision_bound_strategy_analysis.py", line 488, in <module>
+    run_decision_bound_strategy_analysis(
+  File "/Users/mq20185996/projects/cat_learn_auto_eeg/code/decision_bound_strategy_analysis.py", line 427, in run_decision_bound_strategy_analysis
+    results = Parallel(n_jobs=n_workers, backend="loky", verbose=0)(iter_jobs())
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 2072, in __call__
+    return output if self.return_generator else list(output)
+                                                ^^^^^^^^^^^^
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 1682, in _get_outputs
+    yield from self._retrieve()
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 1784, in _retrieve
+    self._raise_error_fast()
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 1859, in _raise_error_fast
+    error_job.get_result(self.timeout)
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 758, in get_result
+    return self._return_or_raise()
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/parallel.py", line 773, in _return_or_raise
+    raise self._result
+joblib.externals.loky.process_executor.BrokenProcessPool: A task has failed to un-serialize. Please ensure that the arguments of the function are all picklable.
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_block_model_evidence.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_glc_weight_subject_trajectories.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_best_model_heatmap.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_glc_advantage_heatmap.png
+[decision bound figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/decision_bound_mvpa_switch_link.png
