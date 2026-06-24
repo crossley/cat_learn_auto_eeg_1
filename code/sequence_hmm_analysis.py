@@ -470,14 +470,18 @@ def _parse_feature_kwargs(args) -> dict:
     kwargs = {}
     if args.feature_kind in {"voltage", "time_frequency", "mvpa", "mvpa_decision"}:
         kwargs["resample_hz"] = None if args.resample_hz <= 0 else float(args.resample_hz)
+        if args.tmin is not None:
+            kwargs["tmin"] = float(args.tmin)
+        if args.tmax is not None:
+            kwargs["tmax"] = float(args.tmax)
     if args.feature_kind in {"connectivity", "imcoh"}:
         kwargs.update(
             {
                 "roi_pair": args.roi_pair,
                 "window_sec": float(args.window_sec),
                 "step_sec": float(args.step_sec),
-                "tmin": float(args.tmin),
-                "tmax": float(args.tmax),
+                "tmin": 0.0 if args.tmin is None else float(args.tmin),
+                "tmax": 0.8 if args.tmax is None else float(args.tmax),
             }
         )
     return kwargs
@@ -497,6 +501,7 @@ def run_sequence_hmm_analysis(
     heldout_fraction: float = 0.2,
     feature_kwargs: dict | None = None,
     diagnostic_states: list[int] | None = None,
+    output_label: str | None = None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -507,7 +512,8 @@ def run_sequence_hmm_analysis(
         n_workers = 1
         max_states = min(max_states, 3)
 
-    prefix = f"sequence_hmm_{feature_kind}"
+    label = feature_kind if output_label is None else str(output_label)
+    prefix = f"sequence_hmm_{label}"
     progress_json = output_dir / f"{prefix}_progress.json"
     qc_csv = output_dir / f"{prefix}_qc_log.csv"
     model_csv = output_dir / f"{prefix}_model_selection.csv"
@@ -664,8 +670,13 @@ def build_arg_parser():
     parser.add_argument("--roi-pair", default="visual_to_central")
     parser.add_argument("--window-sec", type=float, default=0.05)
     parser.add_argument("--step-sec", type=float, default=0.025)
-    parser.add_argument("--tmin", type=float, default=0.0)
-    parser.add_argument("--tmax", type=float, default=0.8)
+    parser.add_argument("--tmin", type=float, default=None)
+    parser.add_argument("--tmax", type=float, default=None)
+    parser.add_argument(
+        "--output-label",
+        default=None,
+        help="Output label used in sequence_hmm_<label> files; defaults to feature kind.",
+    )
     parser.add_argument("--no-feature-cache", action="store_true")
     parser.add_argument("--force-feature-recompute", action="store_true")
     parser.add_argument("--feature-cache-verbose", action="store_true")
@@ -707,4 +718,5 @@ if __name__ == "__main__":
             "_feature_cache_verbose": args.feature_cache_verbose,
         },
         diagnostic_states=_parse_diagnostic_states(args.diagnostic_states),
+        output_label=args.output_label,
     )

@@ -171,10 +171,23 @@ def _read_sequence_cache(path: Path) -> SequenceDataset:
         )
 
 
+def _time_mask(times: np.ndarray, tmin: float | None, tmax: float | None) -> np.ndarray:
+    mask = np.ones(len(times), dtype=bool)
+    if tmin is not None:
+        mask &= times >= float(tmin)
+    if tmax is not None:
+        mask &= times <= float(tmax)
+    if not np.any(mask):
+        raise ValueError(f"time crop produced no samples: tmin={tmin}, tmax={tmax}")
+    return mask
+
+
 def load_voltage_sequence(
     session_item: dict,
     resample_hz: float | None = 128.0,
     picks: list[str] | None = None,
+    tmin: float | None = None,
+    tmax: float | None = None,
 ) -> SequenceDataset:
     """Voltage ERP features as trials x time x channels."""
 
@@ -187,12 +200,16 @@ def load_voltage_sequence(
     if resample_hz is not None:
         epochs.resample(float(resample_hz), npad="auto")
     data = epochs.get_data()
+    times = epochs.times.copy()
+    mask = _time_mask(times, tmin, tmax)
+    data = data[:, :, mask]
+    times = times[mask]
     X = np.transpose(data, (0, 2, 1))
     y = _label_vector_from_behaviour(beh)
     return SequenceDataset(
         X=X,
         y=y,
-        time=epochs.times.copy(),
+        time=times,
         feature_names=list(epochs.ch_names),
         metadata=_metadata(session_item, beh, len(y)),
         subject=int(session_item["subject"]),
@@ -210,6 +227,8 @@ def load_time_frequency_sequence(
     baseline: tuple[float | None, float | None] = (None, 0.0),
     mode: str = "logratio",
     picks: list[str] | None = None,
+    tmin: float | None = None,
+    tmax: float | None = None,
 ) -> SequenceDataset:
     """Morlet power features as trials x time x channel-frequency features."""
 
@@ -257,6 +276,9 @@ def load_time_frequency_sequence(
                 power = power - base
             else:
                 raise ValueError(f"unsupported baseline mode: {mode}")
+    mask = _time_mask(times, tmin, tmax)
+    power = power[:, :, :, mask]
+    times = times[mask]
     X = np.transpose(power, (0, 3, 1, 2)).reshape(len(epochs), len(times), -1)
     feature_names = [
         f"{ch}_{freq:g}Hz" for ch in epochs.ch_names for freq in freqs
@@ -352,10 +374,17 @@ def load_mvpa_decision_sequence(
     session_item: dict,
     resample_hz: float | None = 128.0,
     random_state: int = 42,
+    tmin: float | None = None,
+    tmax: float | None = None,
 ) -> SequenceDataset:
     """Cross-validated linear MVPA decision values as trials x time x 1."""
 
-    voltage = load_voltage_sequence(session_item, resample_hz=resample_hz)
+    voltage = load_voltage_sequence(
+        session_item,
+        resample_hz=resample_hz,
+        tmin=tmin,
+        tmax=tmax,
+    )
     n_trials, n_times, _ = voltage.X.shape
     decision = np.full((n_trials, n_times), np.nan, dtype=float)
     min_class = int(min(np.sum(voltage.y == 0), np.sum(voltage.y == 1)))

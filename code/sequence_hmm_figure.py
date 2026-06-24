@@ -54,11 +54,13 @@ def save_sequence_hmm_figures(
     output_dir: Path | str = OUTPUT_DIR,
     figures_dir: Path | str = FIGURES_DIR,
     n_states: int | None = None,
+    output_label: str | None = None,
 ):
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
-    prefix = f"sequence_hmm_{feature_kind}"
+    label = feature_kind if output_label is None else str(output_label)
+    prefix = f"sequence_hmm_{label}"
     model_csv = output_dir / f"{prefix}_model_selection.csv"
     time_csv = output_dir / f"{prefix}_state_timecourse.csv"
     transition_csv = output_dir / f"{prefix}_transitions.csv"
@@ -326,6 +328,7 @@ def build_arg_parser():
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
     parser.add_argument("--figures-dir", default=str(FIGURES_DIR))
     parser.add_argument("--n-states", type=int, default=None)
+    parser.add_argument("--output-label", default=None)
     return parser
 
 
@@ -336,4 +339,5 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         figures_dir=args.figures_dir,
         n_states=args.n_states,
+        output_label=args.output_label,
     )
