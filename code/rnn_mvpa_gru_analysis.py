@@ -37,7 +37,7 @@ OUTPUT_DIR = PROJECT_DIR / "output"
 TMIN = 0.0
 TMAX = 0.8
 RESAMPLE_HZ = 128.0
-END_TIMES_SEC = np.array([0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80])
+END_TIMES_SEC = np.round(np.arange(0.01, 0.8001, 0.01), 2)
 
 RANDOM_STATE = 42
 HIDDEN_SIZE = 16
@@ -49,7 +49,7 @@ LEARNING_RATE = 0.001
 WEIGHT_DECAY = 0.0001
 MIN_CLASS_TRIALS = 12
 PROGRESS_EVERY_SUBJECTS = 1
-N_WORKERS = 4
+N_WORKERS = 16
 
 torch.set_num_threads(1)
 try:
@@ -452,45 +452,66 @@ def run_rnn_mvpa_gru_analysis(output_dir: Path | str = OUTPUT_DIR):
     qc_csv = output_dir / "rnn_mvpa_gru_qc_log.csv"
     progress_json = output_dir / "rnn_mvpa_gru_progress.json"
 
-    for path in [transfer_csv, transfer_summary_csv, score_csv, score_summary_csv, qc_csv]:
-        if path.exists():
-            path.unlink()
-
     t0 = time.time()
     sessions = load_sequence_sessions(load_epochs=False)
     by_subject = {}
     for item in sessions:
         by_subject.setdefault(int(item["subject"]), {})[int(item["day"])] = item
 
+    subjects = sorted(by_subject)
     all_transfer_rows = []
     all_score_rows = []
     all_qc_rows = []
-    subjects = sorted(by_subject)
+    completed_subjects = set()
+
+    if transfer_csv.exists():
+        existing_transfer = pd.read_csv(transfer_csv)
+        if not existing_transfer.empty:
+            expected_end_times = set(np.round(END_TIMES_SEC, 2).tolist())
+            for subject, g in existing_transfer.groupby("subject"):
+                got_end_times = set(np.round(g["end_time_sec"].to_numpy(float), 2).tolist())
+                if expected_end_times.issubset(got_end_times):
+                    completed_subjects.add(int(subject))
+            existing_transfer = existing_transfer[
+                existing_transfer["subject"].isin(completed_subjects)
+            ].copy()
+            all_transfer_rows = existing_transfer.to_dict("records")
+    if score_csv.exists() and completed_subjects:
+        existing_score = pd.read_csv(score_csv)
+        existing_score = existing_score[existing_score["subject"].isin(completed_subjects)].copy()
+        all_score_rows = existing_score.to_dict("records")
+    if qc_csv.exists():
+        existing_qc = pd.read_csv(qc_csv)
+        all_qc_rows = existing_qc.to_dict("records")
+
+    subjects_to_run = [subject for subject in subjects if subject not in completed_subjects]
     write_progress(
         progress_json,
         {
             "status": "started",
             "subjects_total": len(subjects),
-            "subjects_done": 0,
+            "subjects_done": len(completed_subjects),
             "last_subject": None,
             "elapsed_min": 0.0,
         },
     )
     print(
-        f"[RNN MVPA] starting {len(subjects)} subjects, "
+        f"[RNN MVPA] starting {len(subjects_to_run)} missing of {len(subjects)} subjects, "
         f"{len(END_TIMES_SEC)} end times, {N_WORKERS} workers",
         flush=True,
     )
+    if completed_subjects:
+        done_text = ", ".join(f"P{subject}" for subject in sorted(completed_subjects))
+        print(f"[RNN MVPA] resuming after completed subjects: {done_text}", flush=True)
 
-    def record_subject_result(subject_i, subject, transfer_rows, score_rows, qc_rows):
-        all_transfer_rows.extend(transfer_rows)
-        all_score_rows.extend(score_rows)
-        all_qc_rows.extend(qc_rows)
-
+    def write_current_outputs():
         transfer_df = pd.DataFrame(all_transfer_rows)
         score_df = pd.DataFrame(all_score_rows)
         qc_df = pd.DataFrame(all_qc_rows)
         if not transfer_df.empty:
+            transfer_df = transfer_df.sort_values(
+                ["subject", "end_time_sec", "train_day", "test_day"]
+            )
             transfer_df.to_csv(transfer_csv, index=False)
             transfer_summary = (
                 transfer_df.groupby(["end_time_sec", "train_day", "test_day"], as_index=False)
@@ -509,31 +530,39 @@ def run_rnn_mvpa_gru_analysis(output_dir: Path | str = OUTPUT_DIR):
             transfer_summary.to_csv(transfer_summary_csv, index=False)
         if not score_df.empty:
             score_df = add_delta_bic(score_df)
+            score_df = score_df.sort_values(["subject", "end_time_sec", "model_label"])
             score_df.to_csv(score_csv, index=False)
             summarize_scores(score_df).to_csv(score_summary_csv, index=False)
         if not qc_df.empty:
             qc_df.to_csv(qc_csv, index=False)
 
+    def record_subject_result(subject_i, subject, transfer_rows, score_rows, qc_rows):
+        all_transfer_rows.extend(transfer_rows)
+        all_score_rows.extend(score_rows)
+        all_qc_rows.extend(qc_rows)
+        write_current_outputs()
+
         elapsed_min = (time.time() - t0) / 60.0
+        subjects_done = len(completed_subjects) + subject_i
         write_progress(
             progress_json,
             {
                 "status": "running",
                 "subjects_total": len(subjects),
-                "subjects_done": subject_i,
+                "subjects_done": subjects_done,
                 "last_subject": int(subject),
                 "elapsed_min": round(elapsed_min, 2),
             },
         )
         if subject_i % PROGRESS_EVERY_SUBJECTS == 0:
             print(
-                f"[RNN MVPA] subject {subject_i}/{len(subjects)} done "
+                f"[RNN MVPA] subject {subjects_done}/{len(subjects)} done "
                 f"(P{subject}, {elapsed_min:.1f} min)",
                 flush=True,
             )
 
     if N_WORKERS == 1:
-        for subject_i, subject in enumerate(subjects, start=1):
+        for subject_i, subject in enumerate(subjects_to_run, start=1):
             subject, transfer_rows, score_rows, qc_rows = run_subject_job(
                 subject,
                 by_subject[subject],
@@ -543,19 +572,20 @@ def run_rnn_mvpa_gru_analysis(output_dir: Path | str = OUTPUT_DIR):
         with ProcessPoolExecutor(max_workers=N_WORKERS) as pool:
             futures = {
                 pool.submit(run_subject_job, subject, by_subject[subject]): subject
-                for subject in subjects
+                for subject in subjects_to_run
             }
             for subject_i, fut in enumerate(as_completed(futures), start=1):
                 subject, transfer_rows, score_rows, qc_rows = fut.result()
                 record_subject_result(subject_i, subject, transfer_rows, score_rows, qc_rows)
 
     elapsed_min = (time.time() - t0) / 60.0
+    write_current_outputs()
     write_progress(
         progress_json,
         {
             "status": "complete",
             "subjects_total": len(subjects),
-            "subjects_done": len(subjects),
+            "subjects_done": len(completed_subjects) + len(subjects_to_run),
             "last_subject": int(subjects[-1]) if subjects else None,
             "elapsed_min": round(elapsed_min, 2),
         },
