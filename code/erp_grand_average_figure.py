@@ -17,6 +17,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import mne
 
+from figure_style import DAYS, DAY_COLORS, setup_axis
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
@@ -96,6 +98,138 @@ def plot_day_grid(evoked_map, title, fig_path):
     return fig_path
 
 
+def plot_publication_day_grid(evoked_map, title, fig_path):
+    days_sorted = sorted(evoked_map.keys())
+    if len(days_sorted) == 0:
+        raise ValueError(f"No ERP data available for figure: {fig_path}")
+    font_context = {
+        "font.size": 9,
+        "axes.titlesize": 10,
+        "axes.labelsize": 9,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+    }
+    with plt.rc_context(font_context):
+        fig, axes = plt.subplots(2, 3, figsize=(13, 7), squeeze=False)
+        fig.subplots_adjust(
+            left=0.06, right=0.99, bottom=0.10, top=0.87,
+            wspace=0.42, hspace=0.35,
+        )
+        ax_cmap = axes[0, 0]
+        parent_bbox = ax_cmap.get_position()
+        axes_before = set(id(a) for a in fig.axes)
+        evoked_map[days_sorted[0]].plot(
+            axes=ax_cmap,
+            show=False,
+            spatial_colors=True,
+            titles="",
+        )
+        sensor_axes = [a for a in fig.axes if id(a) not in axes_before]
+        ax_cmap.cla()
+        ax_cmap.axis("off")
+        for sensor_ax in sensor_axes:
+            sensor_ax.set_axes_locator(None)
+            title_room = 0.04
+            margin = 0.005
+            sensor_ax.set_position(
+                [
+                    parent_bbox.x0 + margin,
+                    parent_bbox.y0 + margin,
+                    parent_bbox.width - 2 * margin,
+                    parent_bbox.height - title_room - 2 * margin,
+                ]
+            )
+            for col in sensor_ax.collections:
+                col.set_sizes([120.0])
+
+        erp_positions = [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+        for (row, col), day in zip(erp_positions, days_sorted):
+            ax = axes[row, col]
+            axes_before = set(id(a) for a in fig.axes)
+            evoked_map[day].plot(
+                axes=ax,
+                show=False,
+                spatial_colors=True,
+                titles=f"Day {day}",
+            )
+            ax.set_title(f"Day {day}")
+            ax.set_xlim(-0.1, 0.8)
+            for txt in list(ax.texts):
+                if "ave" in txt.get_text():
+                    txt.remove()
+            new_axes = [a for a in fig.axes if id(a) not in axes_before]
+            for child_ax in new_axes:
+                child_ax.remove()
+
+        fig.suptitle(title, fontsize=14)
+        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    return fig_path
+
+
+def plot_gfp_stim_all(output_dir, figures_dir):
+    d = pd.read_csv(output_dir / "erp_grand_average_subject_day_all.csv")
+    d = d[(d["lock_type"] == "stim") & (d["condition"] == "all")].copy()
+    if d.empty:
+        raise ValueError("No stim/all rows in subject-level ERP data")
+    rows = []
+    for (subject, day, time_s), g in d.groupby(["subject", "day", "time_s"]):
+        vals = g["amplitude_v"].to_numpy(float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) < 2:
+            continue
+        rows.append(
+            {
+                "subject": int(subject),
+                "day": int(day),
+                "time_s": float(time_s),
+                "gfp": float(np.std(vals, ddof=1)),
+            }
+        )
+    gfp_df = pd.DataFrame(rows)
+    if gfp_df.empty:
+        raise ValueError("Could not compute GFP from subject-level data")
+
+    fig, ax = plt.subplots(figsize=(7.2, 3.8))
+    for day in DAYS:
+        d_day = gfp_df[gfp_df["day"] == day]
+        summary = (
+            d_day.groupby("time_s")["gfp"]
+            .agg(
+                mean="mean",
+                sem=lambda x: float(np.std(x, ddof=1) / np.sqrt(len(x))),
+            )
+            .reset_index()
+            .sort_values("time_s")
+        )
+        t = summary["time_s"].to_numpy(float)
+        y = summary["mean"].to_numpy(float)
+        y_sem = summary["sem"].to_numpy(float)
+        color = DAY_COLORS[day]
+        ax.plot(t, y * 1e6, color=color, linewidth=2.0, label=f"Day {day}")
+        ax.fill_between(
+            t,
+            (y - y_sem) * 1e6,
+            (y + y_sem) * 1e6,
+            color=color,
+            alpha=0.18,
+            linewidth=0,
+        )
+    ax.axvline(0, color="0.3", linewidth=0.8, linestyle="--")
+    ax.set_xlim(-0.1, 0.8)
+    ax.set_xlabel("time from stimulus (s)")
+    ax.set_ylabel("GFP (uV)")
+    ax.set_title("Stimulus-Locked Global Field Power")
+    ax.legend(frameon=False, ncol=1, loc="upper right")
+    setup_axis(ax)
+    fig.tight_layout()
+    path = figures_dir / "erp_gfp_stim_all.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
 def plot_day_condition_grid(
     evoked_by_day_cond, title, fig_path, conds=("correct", "incorrect")
 ):
@@ -154,57 +288,16 @@ def save_fig_erp_grand_average(
         )
     d_grand_plot = pd.read_csv(d_grand_path)
     paths = {}
-    paths["stim_all"] = plot_day_grid(
+    paths["stim_all"] = plot_publication_day_grid(
         require_evoked_map(d_grand_plot, "stim", "all"),
-        title="Grand Average ERP: stim_all",
+        title="Stimulus-Locked ERPs",
         fig_path=figures_dir / "erp_grand_average_stim_all.png",
     )
-    stim_correct_incorrect = {}
-    for day, ev in require_evoked_map(d_grand_plot, "stim", "correct").items():
-        stim_correct_incorrect[(day, "correct")] = ev
-    for day, ev in require_evoked_map(d_grand_plot, "stim", "incorrect").items():
-        stim_correct_incorrect[(day, "incorrect")] = ev
-    paths["stim_correct_vs_incorrect"] = plot_day_condition_grid(
-        stim_correct_incorrect,
-        title="Grand Average ERP: stim locked by feedback correctness",
-        fig_path=figures_dir / "erp_grand_average_stim_correct_vs_incorrect.png",
-    )
-    stim_cat = {}
-    for day, ev in require_evoked_map(d_grand_plot, "stim", "cat_a").items():
-        stim_cat[(day, "cat_a")] = ev
-    for day, ev in require_evoked_map(d_grand_plot, "stim", "cat_b").items():
-        stim_cat[(day, "cat_b")] = ev
-    paths["stim_cat_a_vs_cat_b"] = plot_day_condition_grid(
-        stim_cat,
-        title="Grand Average ERP: stim locked by category",
-        fig_path=figures_dir / "erp_grand_average_stim_cat_a_vs_cat_b.png",
-        conds=("cat_a", "cat_b"),
-    )
-    paths["feedback_all"] = plot_day_grid(
+    paths["gfp_stim_all"] = plot_gfp_stim_all(output_dir, figures_dir)
+    paths["feedback_all"] = plot_publication_day_grid(
         require_evoked_map(d_grand_plot, "feedback", "all"),
-        title="Grand Average ERP: feedback locked",
+        title="Feedback-Locked ERPs",
         fig_path=figures_dir / "erp_grand_average_feedback_all.png",
-    )
-    feedback_correct_incorrect = {}
-    for day, ev in require_evoked_map(d_grand_plot, "feedback", "correct").items():
-        feedback_correct_incorrect[(day, "correct")] = ev
-    for day, ev in require_evoked_map(d_grand_plot, "feedback", "incorrect").items():
-        feedback_correct_incorrect[(day, "incorrect")] = ev
-    paths["feedback_correct_vs_incorrect"] = plot_day_condition_grid(
-        feedback_correct_incorrect,
-        title="Grand Average ERP: feedback locked by feedback correctness",
-        fig_path=figures_dir / "erp_grand_average_feedback_correct_vs_incorrect.png",
-    )
-    feedback_cat = {}
-    for day, ev in require_evoked_map(d_grand_plot, "feedback", "cat_a").items():
-        feedback_cat[(day, "cat_a")] = ev
-    for day, ev in require_evoked_map(d_grand_plot, "feedback", "cat_b").items():
-        feedback_cat[(day, "cat_b")] = ev
-    paths["feedback_cat_a_vs_cat_b"] = plot_day_condition_grid(
-        feedback_cat,
-        title="Grand Average ERP: feedback locked by category",
-        fig_path=figures_dir / "erp_grand_average_feedback_cat_a_vs_cat_b.png",
-        conds=("cat_a", "cat_b"),
     )
     return paths
 

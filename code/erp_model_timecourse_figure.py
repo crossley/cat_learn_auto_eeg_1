@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from erp_model_timecourse_analysis import OUTPUT_DIR
-from presentation_figure import FIGURES_DIR, setup_axis
+from figure_style import FIGURES_DIR, setup_axis
 
 
 def require_csv(path):

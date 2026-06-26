@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from connect_sensorwide_analysis import OUTPUT_DIR, FIGURES_DIR
-from presentation_figure import setup_axis
+from figure_style import setup_axis
 
 MODALITIES = {
     "erp": {

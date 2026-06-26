@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from mvpa_stim_locked_cat_roi_time_resolved_analysis import OUTPUT_DIR
-from presentation_figure import DAYS, DAY_COLORS, FIGURES_DIR, setup_axis
+from figure_style import DAYS, DAY_COLORS, FIGURES_DIR, setup_axis
 from sensor_rois import ROI_LABELS
 
 

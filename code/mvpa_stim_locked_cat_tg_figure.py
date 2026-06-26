@@ -2,15 +2,97 @@
 """Plot stimulus-locked cross-day temporal generalization figures."""
 
 from pathlib import Path
+import os
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/xdg-cache")
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import pandas as pd
 
+from figure_style import DAYS
 from mvpa_stim_locked_cat_tg_analysis import FIGURES_DIR, OUTPUT_DIR
+
+
+def template_matrix(kind, split_day=None):
+    mat = np.full((5, 5), np.nan)
+    for train_day in DAYS:
+        for test_day in DAYS:
+            if kind == "gradual":
+                val = 0.65 * min(train_day, test_day) / float(max(DAYS))
+                if train_day == test_day:
+                    val = train_day / float(max(DAYS))
+            elif kind == "split_gradual":
+                if split_day is None:
+                    raise ValueError("split_gradual requires split_day")
+                train_late = train_day > split_day
+                test_late = test_day > split_day
+                if train_late != test_late:
+                    val = 0.0
+                else:
+                    val = 0.65 * min(train_day, test_day) / float(max(DAYS))
+                    if train_day == test_day:
+                        val = train_day / float(max(DAYS))
+            else:
+                raise ValueError(f"Unknown template: {kind}")
+            mat[train_day - 1, test_day - 1] = val
+    return mat
+
+
+def plot_matrix(ax, mat, title):
+    image = ax.imshow(mat, origin="upper", cmap="viridis", vmin=0, vmax=1)
+    ax.set_title(title, fontsize=9)
+    ax.set_xticks(range(5))
+    ax.set_yticks(range(5))
+    ax.set_xticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
+    ax.set_yticklabels(["D1", "D2", "D3", "D4", "D5"], fontsize=8)
+    ax.set_xticks(np.arange(-0.5, 5, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, 5, 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.8)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    return image
+
+
+def save_fig_mvpa_window_transfer_model_predictions(figures_dir=FIGURES_DIR):
+    figures_dir = Path(figures_dir)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig = plt.figure(figsize=(11.0, 5.5))
+    gs = gridspec.GridSpec(
+        2,
+        8,
+        figure=fig,
+        hspace=0.45,
+        wspace=0.35,
+        left=0.05,
+        right=0.99,
+        top=0.88,
+        bottom=0.07,
+    )
+    ax_top = fig.add_subplot(gs[0, 3:5])
+    image = plot_matrix(
+        ax_top,
+        template_matrix("gradual"),
+        "Continuous Restructuring",
+    )
+    for idx, split_day in enumerate([1, 2, 3, 4]):
+        ax = fig.add_subplot(gs[1, idx * 2: idx * 2 + 2])
+        plot_matrix(
+            ax,
+            template_matrix("split_gradual", split_day=split_day),
+            f"Discrete Restructuring (D{split_day})",
+        )
+    fig.colorbar(image, ax=fig.axes, fraction=0.022, pad=0.01)
+    fig.suptitle("MVPA Transfer Model Predictions", y=0.97)
+    path = figures_dir / "mvpa_stim_locked_cat_window_transfer_model_predictions.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[TG figure] wrote {path}", flush=True)
+    return path
 
 
 def save_fig_mvpa_stim_locked_cat_tg(
@@ -20,65 +102,18 @@ def save_fig_mvpa_stim_locked_cat_tg(
     output_dir = Path(output_dir)
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
-    cross_day_mean_csv = output_dir / "mvpa_stim_locked_cat_tg_day_mean.csv"
     cross_matrix_day_mean_csv = output_dir / "mvpa_stim_locked_cat_tg_timegen_day_mean.csv"
-    if (not cross_day_mean_csv.exists()) or (not cross_matrix_day_mean_csv.exists()):
+    if not cross_matrix_day_mean_csv.exists():
         raise FileNotFoundError(
             f"Missing TG cross-day output in {output_dir}. "
             "Run mvpa_stim_locked_cat_tg_analysis.py first."
         )
-    cross_day_mean_df = pd.read_csv(cross_day_mean_csv)
-    if cross_day_mean_df.empty:
-        raise ValueError(f"Empty TG cross-day output table: {cross_day_mean_csv}")
     d_mat = pd.read_csv(cross_matrix_day_mean_csv)
     if d_mat.empty:
         raise ValueError(f"Empty TG cross-day timegen output table: {cross_matrix_day_mean_csv}")
-    fig_cross = figures_dir / "mvpa_stim_locked_cat_tg_transfer_5x4.png"
     fig_cross_timegen = figures_dir / "mvpa_stim_locked_cat_tg_timegen_matrices_5x5.png"
 
-    fig, ax = plt.subplots(figsize=(5.2, 4.6))
     day_grid = sorted({1, 2, 3, 4, 5})
-    mat = np.full((len(day_grid), len(day_grid)), np.nan)
-    for _, r in cross_day_mean_df.iterrows():
-        i = day_grid.index(int(r["train_day"]))
-        j = day_grid.index(int(r["test_day"]))
-        mat[i, j] = float(r["auc_mean"])
-    missing_pairs = []
-    for train_day in day_grid:
-        for test_day in day_grid:
-            i = day_grid.index(train_day)
-            j = day_grid.index(test_day)
-            if not np.isfinite(mat[i, j]):
-                missing_pairs.append(f"train_day={train_day}, test_day={test_day}")
-    if len(missing_pairs) > 0:
-        raise ValueError(
-            f"Missing day-pair rows in {cross_day_mean_csv}:\n"
-            + "\n".join(missing_pairs)
-        )
-    masked = np.ma.masked_invalid(mat)
-    im = ax.imshow(masked, cmap="viridis", aspect="equal")
-    ax.set_xticks(range(len(day_grid)))
-    ax.set_yticks(range(len(day_grid)))
-    x_labels = []
-    for d in day_grid:
-        x_labels.append(f"D{d}")
-    y_labels = []
-    for d in day_grid:
-        y_labels.append(f"D{d}")
-    ax.set_xticklabels(x_labels)
-    ax.set_yticklabels(y_labels)
-    ax.set_xlabel("Test Day")
-    ax.set_ylabel("Train Day")
-    ax.set_title("Cross-Day Transfer (Diagonal Mean AUC)")
-    for i in range(len(day_grid)):
-        for j in range(len(day_grid)):
-            if np.isfinite(mat[i, j]):
-                ax.text(j, i, f"{mat[i, j]:.3f}", ha="center", va="center", color="white")
-    fig.colorbar(im, ax=ax, shrink=0.9, label="AUC")
-    fig.tight_layout()
-    fig.savefig(fig_cross, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
     fig, axes = plt.subplots(5, 5, figsize=(18, 16), squeeze=False)
     vmin = float(d_mat["auc_mean"].min())
     vmax = float(d_mat["auc_mean"].max())
@@ -133,7 +168,11 @@ def save_fig_mvpa_stim_locked_cat_tg(
     fig.savefig(fig_cross_timegen, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    return {"figure_path": fig_cross, "timegen_figure_path": fig_cross_timegen}
+    model_path = save_fig_mvpa_window_transfer_model_predictions(figures_dir)
+    return {
+        "timegen_figure_path": fig_cross_timegen,
+        "model_prediction_figure_path": model_path,
+    }
 
 
 if __name__ == "__main__":

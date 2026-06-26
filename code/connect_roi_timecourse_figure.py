@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from connect_sensorwide_analysis import OUTPUT_DIR, FIGURES_DIR
-from presentation_figure import DAYS, DAY_COLORS, setup_axis
+from figure_style import DAYS, DAY_COLORS, setup_axis
 from sensor_rois import ROI_LABELS
 
 

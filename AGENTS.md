@@ -116,6 +116,27 @@ or explicit user request.
 When adding outputs, prefer a small set of useful files over many loosely
 related files.
 
+## Figure Design
+
+Figures should be publication quality by default.
+
+- Prefer clean, readable figures over decorative figures.
+- Use consistent colors across analysis families when the same concept is
+  shown repeatedly.
+- Use the shared day colors in `code/figure_style.py` for day-wise plots.
+- Keep titles, axis labels, legends, and colorbars explicit enough that the
+  figure can be understood outside the immediate script context.
+- Remove unnecessary top and right spines unless the plot type benefits from a
+  full frame.
+- Use restrained gridlines only when they help read values.
+- Use uncertainty bands or error bars when the figure summarizes subjects.
+- Do not overplot many models without a readable legend or grouping scheme.
+- Save figures at a resolution suitable for talks and manuscripts.
+- Avoid `presentation_` as a separate figure family. If a figure is worth
+  keeping, put it in the relevant analysis family.
+- Do not create alternate polished copies of the same result unless the user
+  explicitly asks for a presentation variant.
+
 ## Execution, Permissions, and Compute
 
 Do not run heavy analyses unless the user asks.
