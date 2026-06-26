@@ -46,6 +46,8 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 FIGURES_DIR = PROJECT_DIR / "figures"
 N_JOBS = 8
+DEFAULT_TMIN = 0.0
+DEFAULT_TMAX = 0.8
 
 
 def _as_clean_sequence(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -470,18 +472,16 @@ def _parse_feature_kwargs(args) -> dict:
     kwargs = {}
     if args.feature_kind in {"voltage", "time_frequency", "mvpa", "mvpa_decision"}:
         kwargs["resample_hz"] = None if args.resample_hz <= 0 else float(args.resample_hz)
-        if args.tmin is not None:
-            kwargs["tmin"] = float(args.tmin)
-        if args.tmax is not None:
-            kwargs["tmax"] = float(args.tmax)
+        kwargs["tmin"] = DEFAULT_TMIN if args.tmin is None else float(args.tmin)
+        kwargs["tmax"] = DEFAULT_TMAX if args.tmax is None else float(args.tmax)
     if args.feature_kind in {"connectivity", "imcoh"}:
         kwargs.update(
             {
                 "roi_pair": args.roi_pair,
                 "window_sec": float(args.window_sec),
                 "step_sec": float(args.step_sec),
-                "tmin": 0.0 if args.tmin is None else float(args.tmin),
-                "tmax": 0.8 if args.tmax is None else float(args.tmax),
+                "tmin": DEFAULT_TMIN if args.tmin is None else float(args.tmin),
+                "tmax": DEFAULT_TMAX if args.tmax is None else float(args.tmax),
             }
         )
     return kwargs
