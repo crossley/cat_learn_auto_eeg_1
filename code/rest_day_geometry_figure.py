@@ -53,12 +53,19 @@ def save_rest_distance_matrices(output_dir, figures_dir):
         g = d[d["feature_kind"] == feature_kind]
         if g.empty:
             raise ValueError(f"No group distances for {feature_kind}")
-        mats.append(distance_matrix(g))
-    vmax = np.nanmax([np.nanmax(mat) for mat in mats])
+        mat = distance_matrix(g)
+        for idx in range(len(DAYS)):
+            mat[idx, idx] = np.nan
+        mats.append(mat)
+    finite_vals = np.concatenate([mat[np.isfinite(mat)] for mat in mats])
+    vmin = float(np.nanmin(finite_vals))
+    vmax = float(np.nanmax(finite_vals))
 
     fig, axes = plt.subplots(1, 2, figsize=(8.2, 3.8), constrained_layout=True)
     for ax, mat, (_feature_kind, title) in zip(axes, mats, panels):
-        im = ax.imshow(mat, cmap="viridis", vmin=0.0, vmax=vmax)
+        cmap = plt.get_cmap("viridis").copy()
+        cmap.set_bad(color="0.88")
+        im = ax.imshow(np.ma.masked_invalid(mat), cmap=cmap, vmin=vmin, vmax=vmax)
         ax.set_title(title)
         ax.set_xticks(range(len(DAYS)))
         ax.set_yticks(range(len(DAYS)))
@@ -66,6 +73,9 @@ def save_rest_distance_matrices(output_dir, figures_dir):
         ax.set_yticklabels([f"D{day}" for day in DAYS])
         for i in range(len(DAYS)):
             for j in range(len(DAYS)):
+                if not np.isfinite(mat[i, j]):
+                    ax.text(j, i, "-", ha="center", va="center", fontsize=9)
+                    continue
                 ax.text(
                     j,
                     i,
@@ -73,7 +83,7 @@ def save_rest_distance_matrices(output_dir, figures_dir):
                     ha="center",
                     va="center",
                     fontsize=8,
-                    color="white" if mat[i, j] > 0.55 * vmax else "black",
+                    color="white" if mat[i, j] > vmin + 0.55 * (vmax - vmin) else "black",
                 )
     cbar = fig.colorbar(im, ax=axes, shrink=0.85)
     cbar.set_label("mean z-Euclidean distance")
@@ -85,8 +95,11 @@ def save_rest_distance_matrices(output_dir, figures_dir):
 
 def save_rest_model_evidence(output_dir, figures_dir):
     d = require_csv(output_dir / "rest_day_geometry_model_summary.csv")
+    s = require_csv(output_dir / "rest_day_geometry_model_subject.csv")
     d = d[d["band_group"] == "all_bands"].copy()
     d = d[d["model_label"] != "Baseline"].copy()
+    s = s[s["band_group"] == "all_bands"].copy()
+    s = s[s["model_label"] != "Baseline"].copy()
     order = ["Gradual", "Discrete D1", "Discrete D2", "Discrete D3", "Discrete D4"]
     panels = [
         ("connectivity", "Rest Connectivity"),
@@ -110,6 +123,25 @@ def save_rest_model_evidence(output_dir, figures_dir):
         x = np.arange(len(order))
         ax.bar(x, vals, color="#4c78a8", alpha=0.85)
         ax.errorbar(x, vals, yerr=errs, fmt="none", color="black", linewidth=1.0)
+        for xi, label in enumerate(order):
+            sub = s[
+                (s["feature_kind"] == feature_kind)
+                & (s["model_label"] == label)
+            ].copy()
+            y = -sub["delta_bic_baseline"].to_numpy(float)
+            y = y[np.isfinite(y)]
+            if len(y) == 0:
+                continue
+            jitter = np.linspace(-0.14, 0.14, len(y))
+            ax.scatter(
+                np.full(len(y), xi) + jitter,
+                y,
+                s=14,
+                color="black",
+                alpha=0.35,
+                linewidths=0,
+                zorder=3,
+            )
         ax.axhline(0, color="0.25", linewidth=0.8)
         ax.set_title(title)
         ax.set_xticks(x)
