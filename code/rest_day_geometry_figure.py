@@ -110,19 +110,27 @@ def save_rest_model_evidence(output_dir, figures_dir):
         g = d[d["feature_kind"] == feature_kind].copy()
         if g.empty:
             raise ValueError(f"No model evidence rows for {feature_kind}")
-        vals = []
-        errs = []
+        box_vals = []
         for label in order:
-            row = g[g["model_label"] == label]
-            if row.empty:
-                vals.append(np.nan)
-                errs.append(np.nan)
-            else:
-                vals.append(-float(row["delta_bic_baseline_mean"].iloc[0]))
-                errs.append(float(row["delta_bic_baseline_sem"].iloc[0]))
+            sub = s[
+                (s["feature_kind"] == feature_kind)
+                & (s["model_label"] == label)
+            ].copy()
+            y = -sub["delta_bic_baseline"].to_numpy(float)
+            y = y[np.isfinite(y)]
+            box_vals.append(y)
         x = np.arange(len(order))
-        ax.bar(x, vals, color="#4c78a8", alpha=0.85)
-        ax.errorbar(x, vals, yerr=errs, fmt="none", color="black", linewidth=1.0)
+        ax.boxplot(
+            box_vals,
+            positions=x,
+            widths=0.55,
+            patch_artist=True,
+            showfliers=False,
+            medianprops={"color": "black", "linewidth": 1.2},
+            boxprops={"facecolor": "#4c78a8", "alpha": 0.55, "edgecolor": "black"},
+            whiskerprops={"color": "black", "linewidth": 1.0},
+            capprops={"color": "black", "linewidth": 1.0},
+        )
         for xi, label in enumerate(order):
             sub = s[
                 (s["feature_kind"] == feature_kind)
