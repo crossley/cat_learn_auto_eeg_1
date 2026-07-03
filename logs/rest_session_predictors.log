@@ -1,0 +1,4 @@
+[rest predictors] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_session_predictors_table.csv
+[rest predictors] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_session_predictor_correlations.csv
+[rest predictors figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/rest_session_predictor_correlations.png
+[rest predictors figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/rest_session_predictor_top_scatter.png
