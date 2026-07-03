@@ -1,0 +1,7 @@
+[rest] extracting features from 95 raw files
+/Users/mq20185996/miniforge3/envs/eeg-core/lib/python3.12/site-packages/joblib/externals/loky/process_executor.py:782: UserWarning: A worker stopped while some jobs were given to the executor. This can be caused by a too short worker timeout or by a memory leak.
+  warnings.warn(
+[rest] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_day_features.csv
+[rest] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_day_geometry_model_summary.csv
+[rest figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/rest_day_geometry_matrices.png
+[rest figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/rest_day_geometry_model_evidence.png
