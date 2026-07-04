@@ -1,0 +1,16 @@
+[latent ERP] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_erp_trajectory_points.csv
+[latent ERP] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_erp_trajectory_model_summary.csv
+[latent ERP figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_erp_trajectories.png
+[latent ERP figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_erp_day_geometry_matrix.png
+[latent ERP figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_erp_model_evidence.png
+[latent connectivity] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_connectivity_trajectory_points.csv
+[latent connectivity] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_connectivity_trajectory_model_summary.csv
+[latent connectivity figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_connectivity_trajectories.png
+[latent connectivity figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_connectivity_day_geometry_matrix.png
+[latent connectivity figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_connectivity_model_evidence.png
+[rest predictors] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_session_predictors_table.csv
+[rest predictors] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/rest_session_predictor_correlations.csv
+[latent rest-task] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_rest_task_coupling_table.csv
+[latent rest-task] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/latent_rest_task_coupling_correlations.csv
+[latent rest-task figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_rest_task_coupling_correlations.png
+[latent rest-task figure] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/figures/latent_rest_task_coupling_top_scatter.png
