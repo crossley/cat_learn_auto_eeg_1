@@ -1,0 +1,23 @@
+[connect induced primary block] sessions 1/5
+[connect induced primary block] sessions 2/5
+[connect induced primary block] sessions 3/5
+[connect induced primary block] sessions 4/5
+[connect induced primary block] sessions 5/5
+[connect induced primary block] induced times 10/81
+[connect induced primary block] induced times 20/81
+[connect induced primary block] induced times 30/81
+[connect induced primary block] induced times 40/81
+[connect induced primary block] induced times 50/81
+[connect induced primary block] induced times 60/81
+[connect induced primary block] induced times 70/81
+[connect induced primary block] induced times 80/81
+[connect induced primary block] total times 10/81
+[connect induced primary block] total times 20/81
+[connect induced primary block] total times 30/81
+[connect induced primary block] total times 40/81
+[connect induced primary block] total times 50/81
+[connect induced primary block] total times 60/81
+[connect induced primary block] total times 70/81
+[connect induced primary block] total times 80/81
+[connect induced primary block] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/connect_induced_primary_smoke_block_model_timecourse_subject.csv
+[connect induced primary block] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/connect_induced_primary_smoke_block_model_timecourse_summary.csv

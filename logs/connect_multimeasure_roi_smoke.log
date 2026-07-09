@@ -1,0 +1,3 @@
+[connect multimeasure ROI] chunks 10
+[connect multimeasure ROI] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/connect_multimeasure_smoke_roi_timecourse_subject.csv
+[connect multimeasure ROI] wrote /Users/mq20185996/projects/cat_learn_auto_eeg/output/connect_multimeasure_smoke_roi_timecourse_day_mean.csv
