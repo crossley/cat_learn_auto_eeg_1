@@ -218,3 +218,40 @@ def write_scores(score_rows, subject_path, summary_path):
     score_df.to_csv(subject_path, index=False)
     summary_df.to_csv(summary_path, index=False)
     return score_df, summary_df
+
+
+def write_grouped_scores(score_rows, group_cols, subject_path, summary_path):
+    """
+    Write block-model scores separately within extra analysis groups.
+
+    The model comparison itself is unchanged.  This wrapper applies the same
+    add_delta_bic/summarize_scores logic independently within each measure,
+    band, or signal-estimate group so unrelated connectivity variants are not
+    pooled before the BIC deltas are computed.
+    """
+    if not group_cols:
+        return write_scores(score_rows, subject_path, summary_path)
+
+    score_df = pd.DataFrame(score_rows)
+    if score_df.empty:
+        raise ValueError("No block-model score rows were produced")
+
+    score_frames = []
+    summary_frames = []
+    for key, group in score_df.groupby(group_cols, dropna=False):
+        key_vals = key if isinstance(key, tuple) else (key,)
+        scored = add_delta_bic(group.copy())
+        summary = summarize_scores(scored)
+        for col, val in zip(group_cols, key_vals):
+            summary[col] = val
+        score_frames.append(scored)
+        summary_frames.append(summary)
+
+    score_out = pd.concat(score_frames, ignore_index=True)
+    summary_out = pd.concat(summary_frames, ignore_index=True)
+    summary_out = summary_out.sort_values(
+        list(group_cols) + ["time_sec", "delta_bic_best_mean"]
+    )
+    score_out.to_csv(subject_path, index=False)
+    summary_out.to_csv(summary_path, index=False)
+    return score_out, summary_out

@@ -111,9 +111,25 @@ There is deliberately no all-in-one runner.
 
 ### Connectivity (`connect_`)
 
+Primary sensor connectivity analysis is specified before robustness checks:
+stimulus-locked broadband debiased wPLI (`wpli2_debiased`, dwPLI) in the
+0.25-0.45 s decision window, using strict visual-frontal and visual-central
+sensor ROI pairs, followed by the existing 25-block continuous-vs-discrete
+model comparison. Additional lagged measures, frequency bands, coherence/PLV
+contrasts, and total-vs-induced estimates are labelled robustness/convergence
+analyses and are not primary endpoints.
+
 | Script | Analysis |
 |---|---|
 | `connect_sensorwide_analysis.py` | Compute sensor-wide stim/feedback connectivity outputs |
+| `connect_multimeasure_edge_timecourse_analysis.py` | Compute strict visual-frontal/visual-central sensor-edge connectivity for imcoh, wPLI, dwPLI, PLI, coherence, and PLV |
+| `connect_multimeasure_roi_timecourse_analysis.py` | Collapse multi-measure strict sensor edges into ROI timecourses |
+| `connect_multimeasure_block_model_timecourse_analysis.py` | Compute per-measure 25-block model evidence for strict sensor ROI edges |
+| `connect_multimeasure_figure.py` | Plot dwPLI primary and robustness/convergence connectivity figures |
+| `connect_induced_primary_edge_timecourse_analysis.py` | Compute total and induced primary dwPLI strict sensor-edge timecourses |
+| `connect_induced_primary_roi_timecourse_analysis.py` | Collapse total-vs-induced primary dwPLI edges into ROI timecourses |
+| `connect_induced_primary_block_model_timecourse_analysis.py` | Compute total-vs-induced primary dwPLI 25-block model evidence |
+| `connect_induced_primary_figure.py` | Plot total-vs-induced primary dwPLI comparison |
 | `connect_sensorwide_figure.py` | Plot sensor-wide stim/feedback carpet figures |
 
 ## Parallelism
